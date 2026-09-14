@@ -1,7 +1,8 @@
 import { getEntityNumericValue, hasEntity } from "../core/app-shared.js";
 import { renderOqIcon, SENSOR_SELECTION_KEYS } from "../core/config.js";
 import { getInputDraftValue } from "../core/control-drafts.js";
-import { getEntityValue } from "../core/entity-store.js";
+import { getEntityValue, getNumberMeta } from "../core/entity-store.js";
+import { renderNumberInputControl } from "../core/number-controls.js";
 import { getHeatingEnableAdvice } from "../core/heating-strategy-matrix.js";
 import { isInstallationMonitoringBinaryActive, isInstallationMonitoringIntegrationEnabled } from "../core/installation-monitoring.js";
 import { state } from "../core/state.js";
@@ -664,6 +665,25 @@ import { escapeHtml } from "../core/html.js";
           : currentUnavailable ? `Huidige bron niet beschikbaar: ${getUnavailableSourceReason(current, config)}` : "",
       };
     };
+    const renderSourceNumber = (key, config = {}) => {
+      if (!hasEntity(key)) return "";
+      const meta = getNumberMeta(key);
+      return `
+        <label class="oq-settings-source-select">
+          <span class="oq-settings-source-select-head">
+            <span>${escapeHtml(config.label || "Waarde")}</span>
+            ${config.infoCopy ? renderSettingsInfoToggle(config.infoId || key, config.infoTitle || config.label || "Waarde", config.infoCopy) : ""}
+          </span>
+          ${renderNumberInputControl({
+            key,
+            value: getInputDraftValue(key),
+            meta,
+            controlClass: "oq-helper-control oq-helper-control--suffix",
+            unitMarkup: meta.uom ? `<span class="oq-helper-unit-chip">${escapeHtml(meta.uom)}</span>` : "",
+          })}
+        </label>
+      `;
+    };
     const buildExternalSourceSelect = (stem, externalStem, mqttTopicKey = "", extra = {}) => ({
       key: `${stem}Source`,
       label: "Bron",
@@ -686,6 +706,7 @@ import { escapeHtml } from "../core/html.js";
       icon = "",
       select,
       secondarySelects = [],
+      secondaryNumbers = [],
       summaryValue = "",
       summarySource = "",
       summaryInfo = "",
@@ -703,7 +724,11 @@ import { escapeHtml } from "../core/html.js";
         .filter((item) => item.markup);
       const secondaryMarkup = secondaries.map((item) => item.markup).join("");
       const secondaryWarning = secondaries.map((item) => item.warning).find(Boolean) || "";
-      const controlsMarkup = `${mainSelect.markup}${secondaryMarkup}`;
+      const secondaryNumberMarkup = secondaryNumbers
+        .filter((config) => config && config.when !== false)
+        .map((config) => renderSourceNumber(config.key, config))
+        .join("");
+      const controlsMarkup = `${mainSelect.markup}${secondaryMarkup}${secondaryNumberMarkup}`;
       const current = select?.key ? String(getEntityValue(select.key) || "") : "";
       const mqttValidKey = mqttValidKeyByTopicKey[getMqttTopicKey(select || {})] || "";
       const selectedInputWarning = isApiInputOption(current) && select?.apiValidKey
@@ -737,6 +762,7 @@ import { escapeHtml } from "../core/html.js";
     const currentLocalWaterSupplySource = String(getEntityValue("localWaterSupplyTempSource") || "");
     const currentFlowSource = String(getEntityValue("flowSource") || "");
     const currentQFlowSource = String(getEntityValue("qFlowSource") || "");
+    const currentControllerFlowMeter = String(getEntityValue("controllerFlowMeter") || "");
     const currentOutsideTempSource = String(getEntityValue("outsideTempSource") || "").trim();
     const waterSupplyCorrection = getWaterSupplyCorrectionView();
     const waterSupplyCalibrated = waterSupplyCorrection.calibrationActive;
@@ -924,7 +950,7 @@ import { escapeHtml } from "../core/html.js";
             key: "controllerFlowMeter",
             label: "Lokale flowmeter",
             infoId: "controllerFlowMeter-info",
-            infoCopy: "Kies het type flowmeter dat op de controller is aangesloten: Huba Control of ZJ-B10. Deze instelling bepaalt de omrekening van pulsen naar flow en wordt bewaard na een herstart.",
+            infoCopy: "Kies Huba Control voor de originele sensor of Custom voor een andere pulsflowmeter. Zoek voor Custom in de documentatie van de geleverde sensor hoeveel pulsen per liter deze afgeeft.",
             when: currentFlowSource === "Outdoor unit" && hasEntity("controllerFlowMeter") && currentQFlowSource !== "Outdoor unit",
           },
           {
@@ -935,6 +961,13 @@ import { escapeHtml } from "../core/html.js";
             when: currentFlowSource === "Outdoor unit" && hasEntity("outdoorUnitFlowMode") && (!hasEntity("qFlowSource") || currentQFlowSource !== "Local"),
           },
         ],
+        secondaryNumbers: [{
+          key: "customFlowMeterPulsesPerLiter",
+          label: "Pulsen per liter",
+          infoId: "customFlowMeterPulsesPerLiter-info",
+          infoCopy: "Vul het aantal pulsen in dat de flowmeter voor één liter water afgeeft. Deze lineaire kalibratie wordt alleen gebruikt wanneer Lokale flowmeter op Custom staat.",
+          when: currentFlowSource === "Outdoor unit" && currentQFlowSource !== "Outdoor unit" && currentControllerFlowMeter === "Custom",
+        }],
         summaryValue: getSettingsStatValue("flowSelected"),
         summarySource: flowUsedSource,
         routeWarning: invalidSourceValueWarning("flowSelected"),

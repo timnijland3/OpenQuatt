@@ -2114,7 +2114,15 @@
     setEntity("select", "Controller Flow Meter", {
       value: "Huba Control",
       state: "Huba Control",
-      option: ["Huba Control", "ZJ-B10"],
+      option: ["Huba Control", "Custom"],
+    });
+    setEntity("number", "Custom Flow Meter Pulses Per Liter", {
+      value: 476,
+      state: 476,
+      min_value: 1,
+      max_value: 10000,
+      step: 0.1,
+      uom: "pulses/L",
     });
     setEntity("select", "Aux Relay Function", {
       value: "Disabled",

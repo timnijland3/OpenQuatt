@@ -99,7 +99,8 @@ function setSourceSelectionState(mqttEnabled) {
     localWaterSupplyTempSource: { value: "PT1000", option: ["PT1000", "DS18B20"] },
     flowSource: { value: "Outdoor unit", option: ["Outdoor unit", "CIC"] },
     qFlowSource: { value: "Auto", option: ["Auto", "Local", "Outdoor unit"] },
-    controllerFlowMeter: { value: "Huba Control", option: ["Huba Control", "ZJ-B10"] },
+    controllerFlowMeter: { value: "Huba Control", option: ["Huba Control", "Custom"] },
+    customFlowMeterPulsesPerLiter: { value: 476, min_value: 1, max_value: 10000, step: 0.1, uom: "pulses/L" },
     outdoorUnitFlowMode: { value: "Local aggregate HP1/HP2", option: ["Flowmeter HP1", "Flowmeter HP2", "Local aggregate HP1/HP2"] },
     outsideTempSource: { value: "Outdoor unit", option: ["Auto", "Outdoor unit", "HA input", "API input", "MQTT"] },
     heatingEnableSource: { value: "Disabled", option: ["Disabled", "OT thermostat", "CIC", "HA input", "API input", "MQTT"] },
@@ -570,17 +571,24 @@ test("secundaire bronselecties blijven alleen zichtbaar wanneer hun hoofdkeuze z
   assert.doesNotMatch(getInspectorMarkup(markup), /data-oq-field="qFlowSource"|data-oq-field="outdoorUnitFlowMode"/);
 });
 
-test("lokale flowmeter toont beide modellen en volgt de beschikbare flowroute", () => {
+test("lokale flowmeter toont Huba en Custom en volgt de beschikbare flowroute", () => {
   setSourceSelectionState(true);
   assert.ok(SETTINGS_GROUP_KEY_MAP.integrations.includes("controllerFlowMeter"));
+  assert.ok(SETTINGS_GROUP_KEY_MAP.integrations.includes("customFlowMeterPulsesPerLiter"));
   let markup = renderFocusedSource("flow-source");
   assert.match(getSelectMarkup(markup, "controllerFlowMeter"), /<option value="Huba Control" selected>/);
-  assert.match(getSelectMarkup(markup, "controllerFlowMeter"), /<option value="ZJ-B10"/);
+  assert.match(getSelectMarkup(markup, "controllerFlowMeter"), /<option value="Custom"/);
+  assert.doesNotMatch(getInspectorMarkup(markup), /data-oq-field="customFlowMeterPulsesPerLiter"/);
+
+  state.entities.controllerFlowMeter.value = "Custom";
+  markup = renderFocusedSource("flow-source");
+  assert.match(getSelectMarkup(markup, "controllerFlowMeter"), /<option value="Custom" selected>/);
+  assert.match(getInspectorMarkup(markup), /data-oq-field="customFlowMeterPulsesPerLiter"/);
+  assert.match(getInspectorMarkup(markup), /min="1"[\s\S]*?max="10000"[\s\S]*?step="0\.1"/);
 
   state.entities.qFlowSource.value = "Local";
-  state.entities.controllerFlowMeter.value = "ZJ-B10";
   markup = renderFocusedSource("flow-source");
-  assert.match(getSelectMarkup(markup, "controllerFlowMeter"), /<option value="ZJ-B10" selected>/);
+  assert.match(getInspectorMarkup(markup), /data-oq-field="customFlowMeterPulsesPerLiter"/);
 
   state.entities.qFlowSource.value = "Outdoor unit";
   assert.doesNotMatch(getInspectorMarkup(renderFocusedSource("flow-source")), /data-oq-field="controllerFlowMeter"/);

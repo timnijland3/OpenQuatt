@@ -121,10 +121,33 @@ select:
     restore_value: true
     options:
       - Huba Control
-      - ZJ-B10
+      - Custom
     initial_option: Huba Control
     on_value:
       - lambda: |-
+          // Reapply calibration even if the pulse rate has not changed.
+          const float pulses_per_minute = id(flow_rate_controller).get_raw_state();
+          if (!isnan(pulses_per_minute)) {
+            id(flow_rate_controller).publish_state(pulses_per_minute);
+          }
+
+number:
+  - platform: template
+    id: oq_custom_flow_pulses_per_liter
+    name: "Custom Flow Meter Pulses Per Liter"
+    icon: mdi:counter
+    entity_category: config
+    unit_of_measurement: "pulses/L"
+    mode: box
+    min_value: 1
+    max_value: 10000
+    step: 0.1
+    restore_value: true
+    optimistic: true
+    initial_value: 476
+    on_value:
+      - lambda: |-
+          if (id(oq_controller_flow_meter).current_option() != "Custom") return;
           // Reapply calibration even if the pulse rate has not changed.
           const float pulses_per_minute = id(flow_rate_controller).get_raw_state();
           if (!isnan(pulses_per_minute)) {
@@ -179,11 +202,8 @@ sensor:
         pullup: true
     filters:
       - lambda: |-
-          if (id(oq_controller_flow_meter).current_option() == "ZJ-B10") {
-            // TinyTronics ZJ-B10: f[Hz] = 7.9 * Q[l/min].
-            // pulse_meter publishes pulses/minute, so Q[l/h] = x / 7.9.
-            if (isnan(x)) return NAN;
-            return x > 0.0f ? x / 7.9f : 0.0f;
+          if (id(oq_controller_flow_meter).current_option() == "Custom") {
+            return oq_flow_meter::linear_lph(x, id(oq_custom_flow_pulses_per_liter).state);
           }
           // Preserve the existing Huba Control conversion and substitutions.
           // pulse_meter publishes pulses/minute. Convert to Hz first:
