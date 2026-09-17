@@ -314,6 +314,11 @@ class Runtime {
     const int hp2_max = maximum_level(false);
     const int owner_max = single_owner == 2 ? hp2_max : hp1_max;
     const float owner_capacity_w = level_power_w(single_owner != 2, owner_max);
+    const auto dispatch_mode = oq_curve::duo_dispatch_mode(
+        id(oq_duo_dispatch_mode).has_state() ? id(oq_duo_dispatch_mode).current_option() : std::string());
+    const int share_load_start_level = static_cast<int>(std::lround(id(oq_duo_share_load_start_level).state));
+    const auto duo_thresholds =
+        oq_curve::duo_enable_thresholds(dispatch_mode, owner_max, level_cap, heat_phase, share_load_start_level);
     float duo_capacity_w = 0.0f;
     for (int first = 1; first <= hp1_max; ++first)
       for (int second = 1; second <= hp2_max; ++second) {
@@ -327,7 +332,7 @@ class Runtime {
         demand_active ? oq_curve::phase_target_power_w(heat_phase, demand_u, owner_capacity_w, duo_capacity_w) : 0.0f;
     oq_curve::DispatchCandidate best_single;
     if (demand_active)
-      for (int level = 1; level <= owner_max; ++level) {
+      for (int level = 1; level <= duo_thresholds.single_search_max_level; ++level) {
         const auto item = candidate(single_owner == 1 ? level : 0, single_owner == 2 ? level : 0, target_power_w);
         if (oq_curve::better_dispatch_candidate(item, best_single, previous_hp1, previous_hp2)) best_single = item;
       }
@@ -348,10 +353,11 @@ class Runtime {
         now_ms, lead_last_start_ms, static_cast<uint32_t>(std::max(0, tuning.dual_startup_grace_s)) * 1000UL);
     const float duo_enable_margin_w = heat_phase ? 700.0f : 450.0f;
     constexpr float duo_disable_margin_w = 250.0f;
-    const float duo_enable_min_u = heat_phase ? 0.90f : 0.80f;
-    const float duo_disable_max_u = heat_phase ? 0.70f : 0.55f;
-    const bool single_saturated = best_single.valid && (best_single.hp1_level >= std::max(6, hp1_max - 1) ||
-                                                        best_single.hp2_level >= std::max(6, hp2_max - 1));
+    const float duo_enable_min_u = duo_thresholds.enable_min_u;
+    const float duo_disable_max_u = duo_thresholds.disable_max_u;
+    const int saturated_level = duo_thresholds.single_saturated_level;
+    const bool single_saturated =
+        best_single.valid && (best_single.hp1_level >= saturated_level || best_single.hp2_level >= saturated_level);
     const bool duo_better =
         best_duo.valid && best_single.valid && best_duo.error_w + duo_enable_margin_w < best_single.error_w;
     const bool single_sufficient =

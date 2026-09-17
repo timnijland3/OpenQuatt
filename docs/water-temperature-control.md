@@ -150,9 +150,10 @@ Als je deze strategie afstelt, begin dan bijna altijd hier:
 Bij `Duo` daarna eventueel:
 
 6. `Minimum runtime`
-7. `Dual HP Enable Level`
-8. `Dual HP Enable Hold`
-9. `Dual HP Disable Hold`
+7. `Duo Dispatch Mode`
+8. `Share Load Start Level` (alleen relevant bij `Share Load`)
+9. `Dual HP Enable Hold`
+10. `Dual HP Disable Hold`
 
 ## Wat merk je bij Single en Duo?
 
@@ -166,15 +167,24 @@ Bij `Single` is het gedrag vrij rechtlijnig:
 
 ### Duo
 
-Bij `Duo` werkt deze strategie eenvoudiger dan bij `Power House`.
+Bij `Duo` werkt deze strategie eenvoudiger dan bij `Power House`. Met `Duo Dispatch Mode` kies je hoe de tweede unit erbij komt:
 
-Praktisch:
+#### 1 Running / 1 Standby (standaard)
 
-- OpenQuatt begint normaal met één warmtepomp;
-- de tweede unit komt pas bij als de vraag hoog genoeg en lang genoeg aanwezig blijft;
+- OpenQuatt begint met één warmtepomp;
+- de tweede unit komt pas bij zodra de vraag hoog genoeg is en dat lang genoeg blijft (de "lead"-unit loopt dan bijna op zijn eigen maximum);
 - er zit dus bewust wachttijd en hysterese in.
 
-Dat voorkomt onrustig schakelen tussen één en twee warmtepompen.
+Dat voorkomt onrustig schakelen tussen één en twee warmtepompen. Dit is en blijft het standaardgedrag; een bestaande Duo-installatie merkt niets van deze instelling zolang ze niet zelf wordt gewijzigd.
+
+#### Share Load
+
+- OpenQuatt begint ook hier met één warmtepomp, maar laat die nooit verder oplopen dan `Share Load Start Level` (standaard niveau 2, instelbaar van 2 tot 9);
+- is er meer vermogen nodig dan die ene unit op dat niveau kan leveren, dan start de tweede unit erbij in plaats van de eerste unit verder op te voeren — bijvoorbeeld unit 1 op niveau 2 en unit 2 op niveau 1;
+- vraagt het nog meer, dan lopen beide units daarna gelijk op (bijvoorbeeld 2+2, dan 3+2, dan 3+3, enzovoort) in plaats van dat één unit alleen doorgroeit naar zijn maximum;
+- welke unit als eerste (de "lead") start, wisselt vanzelf mee met de al opgebouwde looptijd van beide units — er is dus geen vaste "unit 1 start altijd eerst".
+
+`Share Load` is bedoeld voor wie liever het vermogen vroeg over beide units verdeelt (bijvoorbeeld voor een rustiger geluidsbeeld of gelijkmatiger slijtage) in plaats van één unit hoog te laten oplopen voordat de tweede meedoet. `Dual HP Enable Hold` en `Dual HP Disable Hold` blijven in beide modi de bescherming tegen snel heen-en-weer schakelen.
 
 ## Wat hoef je meestal niet meteen aan te raken?
 

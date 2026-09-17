@@ -423,6 +423,45 @@ inline int pick_single_owner(bool demand_active, int stored_owner_hp, bool prev_
   return lead_is_hp1 ? 1 : 2;
 }
 
+enum class DuoDispatchMode : uint8_t { SEQUENTIAL = 0, SHARE_LOAD = 1 };
+
+inline DuoDispatchMode duo_dispatch_mode(const std::string& mode_option) {
+  return mode_option == "Share Load" ? DuoDispatchMode::SHARE_LOAD : DuoDispatchMode::SEQUENTIAL;
+}
+
+// Governs when the second ODU may join. SEQUENTIAL rides the lead ODU up to
+// (near) its own maximum before duo is considered at all, matching the
+// historical behaviour. SHARE_LOAD instead caps how far the lead ODU's
+// single-only candidate search is allowed to go, so demand beyond that point
+// is forced onto the second ODU instead of raising the lead further; the
+// utilization gate is derived from that same cap so it does not silently
+// block an early hand-off.
+struct DuoEnableThresholds {
+  int single_search_max_level = 0;
+  int single_saturated_level = 0;
+  float enable_min_u = 0.0f;
+  float disable_max_u = 0.0f;
+};
+
+inline DuoEnableThresholds duo_enable_thresholds(DuoDispatchMode mode, int owner_max_level, int level_cap,
+                                                 bool heat_phase, int share_load_start_level) {
+  DuoEnableThresholds out;
+  if (mode == DuoDispatchMode::SHARE_LOAD && level_cap > 0) {
+    const int start_level = std::max(2, std::min(level_cap - 1, share_load_start_level));
+    out.single_search_max_level = std::min(owner_max_level, start_level);
+    out.single_saturated_level = out.single_search_max_level;
+    const float level_u = static_cast<float>(start_level) / static_cast<float>(level_cap);
+    out.enable_min_u = std::max(0.10f, std::min(0.95f, level_u));
+    out.disable_max_u = std::max(0.05f, out.enable_min_u - (heat_phase ? 0.20f : 0.25f));
+  } else {
+    out.single_search_max_level = owner_max_level;
+    out.single_saturated_level = std::max(6, owner_max_level - 1);
+    out.enable_min_u = heat_phase ? 0.90f : 0.80f;
+    out.disable_max_u = heat_phase ? 0.70f : 0.55f;
+  }
+  return out;
+}
+
 inline bool better_dispatch_candidate(const DispatchCandidate& candidate, const DispatchCandidate& best,
                                       int prev_hp1_level, int prev_hp2_level) {
   if (!candidate.valid) return false;

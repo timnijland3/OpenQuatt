@@ -126,11 +126,12 @@ Deze groep speelt vooral mee als je twee warmtepompen gebruikt of onrustig compr
 Belangrijke instellingen:
 
 - `Minimum runtime`
-- `Dual HP Enable Level`
+- `Duo Dispatch Mode` — `1 Running / 1 Standby` (standaard, tweede unit komt pas bij als de eerste bijna vol loopt) of `Share Load` (tweede unit komt eerder bij, vermogen wordt vroeger verdeeld)
+- `Share Load Start Level` — alleen relevant bij `Share Load`: het niveau waarop de lead-unit blijft hangen voordat de tweede unit meedoet (2-9, standaard 2)
 - `Dual HP Enable Hold`
 - `Dual HP Disable Hold`
 
-Raak deze groep pas aan nadat de strategie zelf logisch voelt.
+Raak deze groep pas aan nadat de strategie zelf logisch voelt. Zie [Water Temperature Control](water-temperature-control.md#duo) voor de volledige uitleg van beide Duo-modi.
 
 ### 4. Flow en pomp
 

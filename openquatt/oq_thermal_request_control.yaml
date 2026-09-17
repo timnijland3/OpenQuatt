@@ -238,6 +238,26 @@ globals:
 # ----------------------------
 # TUNING INPUTS
 # ----------------------------
+select:
+  # Controls when the second ODU joins in curve (Water Temperature Control) mode.
+  # Sequential keeps the historical behaviour: the lead ODU rides up to (near)
+  # its own maximum before the second unit is even considered. Share Load caps
+  # the lead ODU at "Share Load Start Level" and hands any demand beyond that
+  # to the second ODU instead, so load is split between both units sooner.
+  - platform: template
+    id: oq_duo_dispatch_mode
+    name: "Duo Dispatch Mode"
+    internal: ${hc_dual_tuning_internal}
+    disabled_by_default: true
+    icon: mdi:swap-horizontal-bold
+    optimistic: true
+    restore_value: true
+    options:
+      - "1 Running / 1 Standby"
+      - "Share Load"
+    initial_option: "1 Running / 1 Standby"
+    entity_category: config
+
 number:
   - platform: template
     id: oq_min_runtime_min
@@ -286,6 +306,26 @@ number:
     restore_value: true
     optimistic: true
     initial_value: 5
+
+  # Lead-ODU level at which "Share Load" mode hands further demand to the
+  # second ODU instead of raising the lead further. Ignored in
+  # "1 Running / 1 Standby" mode. Floored at 2: running both ODUs at level 1
+  # each gains too little capacity to be worth the extra cycling.
+  - platform: template
+    id: oq_duo_share_load_start_level
+    name: "Share Load Start Level"
+    internal: ${hc_dual_tuning_internal}
+    disabled_by_default: true
+    entity_category: config
+    icon: mdi:arrow-up-bold-hexagon-outline
+    unit_of_measurement: "lvl"
+    min_value: 2
+    max_value: 9
+    step: 1
+    mode: slider
+    restore_value: true
+    optimistic: true
+    initial_value: 2
 
 # ----------------------------
 # BUTTON
