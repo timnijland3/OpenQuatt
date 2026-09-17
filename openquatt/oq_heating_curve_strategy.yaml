@@ -119,6 +119,15 @@ globals:
     restore_value: false
     initial_value: '0'
 
+  # Predicted power (W) of the very next dispatch step from the currently
+  # applied levels: one level up on the active unit, or the second ODU
+  # joining at level 1 once the active one is capped. NAN when idle or when
+  # no further step is reachable (e.g. already at the true max in Duo).
+  - id: oq_curve_next_level_power_w
+    type: float
+    restore_value: false
+    initial_value: 'NAN'
+
 select:
   - platform: template
     id: oq_curve_control_profile
@@ -413,6 +422,22 @@ sensor:
     update_interval: 5s
     lambda: |-
       return (float) id(oq_curve_dispatch_hp2_level);
+
+  # Predicted power at the next dispatch step (one level up, or the second
+  # ODU joining once the active one is capped). NAN while idle or already at
+  # the true maximum. See oq_curve_next_level_power_w in oq_heating_curve_runtime.h.
+  - platform: template
+    id: oq_curve_next_level_power_sensor
+    name: "Curve next level power"
+    internal: true
+    icon: mdi:arrow-up-bold-hexagon-outline
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return id(oq_curve_next_level_power_w);
 
   - platform: template
     id: oq_curve_restart_inhibit_sensor

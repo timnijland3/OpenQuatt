@@ -449,6 +449,31 @@ class Runtime {
     id(oq_curve_request_owner_hp) = owner;
     id(oq_curve_dispatch_hp1_level) = hp1_level;
     id(oq_curve_dispatch_hp2_level) = hp2_level;
+#if OQ_TOPOLOGY_DUO
+    float next_level_power_w = NAN;
+    if (demand_active) {
+      const bool duo_now = hp1_level > 0 && hp2_level > 0;
+      const auto probe_step = [&](int h1, int h2) {
+        if (h1 < 0 || h1 > hp1_max || h2 < 0 || h2 > hp2_max || std::abs(h1 - h2) > 1) return;
+        const auto item = candidate(h1, h2, 0.0f);
+        if (!item.valid) return;
+        if (!std::isfinite(next_level_power_w) || item.power_w < next_level_power_w) next_level_power_w = item.power_w;
+      };
+      if (duo_now) {
+        probe_step(hp1_level + 1, hp2_level);
+        probe_step(hp1_level, hp2_level + 1);
+      } else if (hp1_level > 0) {
+        if (hp1_level < duo_thresholds.single_search_max_level) probe_step(hp1_level + 1, 0);
+        else probe_step(hp1_level, 1);
+      } else if (hp2_level > 0) {
+        if (hp2_level < duo_thresholds.single_search_max_level) probe_step(0, hp2_level + 1);
+        else probe_step(1, hp2_level);
+      }
+    }
+    id(oq_curve_next_level_power_w) = next_level_power_w;
+#else
+    id(oq_curve_next_level_power_w) = NAN;
+#endif
   }
 
  private:

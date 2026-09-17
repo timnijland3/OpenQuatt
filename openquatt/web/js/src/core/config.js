@@ -522,6 +522,7 @@
     ["curveDispatchTotalLevel", DOMAIN_SENSOR, "Curve dispatch total level"],
     ["curveTargetHp1Level", DOMAIN_SENSOR, "Curve target HP1 level"],
     ["curveTargetHp2Level", DOMAIN_SENSOR, "Curve target HP2 level"],
+    ["curveNextLevelPower", DOMAIN_SENSOR, "Curve next level power"],
     ["curveRestartInhibit", DOMAIN_SENSOR, "Curve restart inhibit"],
     ["curveRestartBlockedByRoom", DOMAIN_SENSOR, "Curve restart blocked by room"],
     ["curvePhase", DOMAIN_TEXT_SENSOR, "Curve Phase"],

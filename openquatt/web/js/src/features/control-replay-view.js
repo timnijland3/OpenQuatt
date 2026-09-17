@@ -906,6 +906,8 @@ import { replaceOuterHtmlIfSignatureChanged } from "../views/view-utils.js";
       outsideTemp: formatControlReplayNumber("outsideTempSelected", 1, "°C", "—"),
       supplyTemp: formatControlReplayNumber("supplyTemp", 1, "°C", "—"),
       flow: formatControlReplayNumber("flowSelected", 0, "L/h", "—"),
+      heatPowerNow: formatControlReplayNumber("systemHeatPower", 0, "W", "—"),
+      nextLevelPower: formatControlReplayNumber("curveNextLevelPower", 0, "W", ""),
       hp1Starts: getControlReplayCounterValue("hp1CompressorStarts24h", "—"),
       hp2Starts: getControlReplayCounterValue("hp2CompressorStarts24h", hp2Panel ? "—" : "n.v.t."),
       hp1Hours: formatControlReplayRuntimeHours("hp1RuntimeHours", "—"),
@@ -2918,6 +2920,10 @@ import { replaceOuterHtmlIfSignatureChanged } from "../views/view-utils.js";
     ];
     if (!coolingContextActive) {
       telemetryRows.push(["Strategie", current.strategyLabel]);
+      telemetryRows.push(["Vermogen nu", current.heatPowerNow]);
+      if (current.nextLevelPower) {
+        telemetryRows.push(["Volgend niveau vanaf", current.nextLevelPower]);
+      }
     }
     if (coolingContextActive) {
       telemetryRows.push(["Dauwpunt", current.cooling.dewPoint]);
