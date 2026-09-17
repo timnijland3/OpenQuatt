@@ -375,6 +375,8 @@
     ["openquattResumeAt", DOMAIN_DATETIME, "OpenQuatt resume at"],
     ["maxWater", DOMAIN_NUMBER, "Maximum water temperature", false],
     ["minRuntime", DOMAIN_NUMBER, "Minimum runtime", false],
+    ["duoDispatchMode", DOMAIN_SELECT, "Duo Dispatch Mode"],
+    ["duoShareLoadStartLevel", DOMAIN_NUMBER, "Share Load Start Level"],
     ["totalPower", DOMAIN_SENSOR, "Total Power Input", false],
     ["heatingPowerInput", DOMAIN_SENSOR, "Heating Power Input"],
     ["coolingPowerInput", DOMAIN_SENSOR, "Cooling Power Input"],
@@ -1307,6 +1309,8 @@
     "heatingCurvePidKp",
     "heatingCurvePidKi",
     "heatingCurvePidKd",
+    "duoDispatchMode",
+    "duoShareLoadStartLevel",
   ];
   export const EXCLUDED_FREQUENCY_KEYS = [
     "hp1ExcludeMinHz", "hp1ExcludeMaxHz", "hp2ExcludeMinHz", "hp2ExcludeMaxHz",
@@ -2035,6 +2039,8 @@
         "heatingCurvePidKp",
         "heatingCurvePidKi",
         "heatingCurvePidKd",
+        "duoDispatchMode",
+        "duoShareLoadStartLevel",
       ],
     },
     {

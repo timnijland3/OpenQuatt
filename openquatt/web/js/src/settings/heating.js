@@ -47,6 +47,8 @@ import { escapeHtml } from "../core/html.js";
       renderSettingsNumberField("heatingCurvePidKp", "Proportionele reactie (Kp)", "Bepaalt hoe sterk de regeling direct reageert op het verschil tussen gewenste en gemeten aanvoertemperatuur."),
       renderSettingsNumberField("heatingCurvePidKi", "Langdurige correctie (Ki)", "Corrigeert een klein temperatuurverschil dat langere tijd blijft bestaan. Verhoog alleen in kleine stappen."),
       renderSettingsNumberField("heatingCurvePidKd", "Demping (Kd)", "Remt snelle veranderingen af. Een te hoge waarde kan de regeling onnodig traag of onrustig maken."),
+      renderSettingsSelectField("duoDispatchMode", "Duo Dispatch Mode", "Bij Duo: \"1 Running / 1 Standby\" laat de tweede unit pas meedoen als de eerste bijna vol loopt (standaard). \"Share Load\" verdeelt het vermogen eerder over beide units."),
+      renderSettingsNumberField("duoShareLoadStartLevel", "Share Load Start Level", "Alleen actief bij \"Share Load\": het niveau waarop de eerste unit blijft hangen voordat de tweede unit meedoet (2-9)."),
     ].filter(Boolean).join("");
 
     return renderSettingsAdvancedDisclosure(
