@@ -59,8 +59,24 @@ import { escapeHtml } from "../core/html.js";
 
   export function renderDuoDispatchFields() {
     const fields = [
-      renderSettingsSelectField("duoDispatchMode", "Duo Dispatch Mode", "Bij Duo: \"1 Running / 1 Standby\" laat de tweede unit pas meedoen als de eerste bijna vol loopt (standaard). \"Share Load\" verdeelt het vermogen eerder over beide units."),
-      renderSettingsNumberField("duoShareLoadStartLevel", "Share Load Start Level", "Alleen actief bij \"Share Load\": het niveau waarop de eerste unit blijft hangen voordat de tweede unit meedoet (2-9)."),
+      renderSettingsSelectField(
+        "duoDispatchMode",
+        "Werkverdeling Duo",
+        "Bepaalt hoe de tweede warmtepomp erbij komt.\n\n"
+        + "1 draait / 1 stand-by (standaard)\n"
+        + "ODU1: 2 → 4 → 6 → 8 → 9\n"
+        + "ODU2: blijft uit tot ODU1 bijna vol draait\n\n"
+        + "Belasting verdelen\n"
+        + "ODU1: blijft hangen op het startniveau\n"
+        + "ODU2: komt erbij i.p.v. ODU1 verder op te voeren\n"
+        + "Daarna lopen beide units samen verder op",
+      ),
+      renderSettingsNumberField(
+        "duoShareLoadStartLevel",
+        "Startniveau verdelen",
+        "Alleen actief bij \"Belasting verdelen\". Niveau waarop ODU1 blijft hangen voordat ODU2 meedoet: "
+        + "vraagt het systeem meer, dan start ODU2 in plaats van ODU1 verder op te voeren. Instelbaar van 2 t/m 9, standaard 2.",
+      ),
     ].filter(Boolean).join("");
     return fields ? `<div class="oq-settings-grid">${fields}</div>` : "";
   }

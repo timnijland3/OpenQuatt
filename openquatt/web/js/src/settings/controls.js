@@ -205,6 +205,8 @@ export function formatSettingsOptionLabel(option) {
     "Flowmeter HP1": "Flowmeter HP1",
     "Flowmeter HP2": "Flowmeter HP2",
     "Local aggregate HP1/HP2": "Gecombineerde flow HP1/HP2",
+    "1 Running / 1 Standby": "1 draait / 1 stand-by",
+    "Share Load": "Belasting verdelen",
   };
 
   return labels[value] || value;
