@@ -1320,6 +1320,8 @@ const char* OpenQuattDecisionLog::reason_to_string_(uint8_t value) {
       return "room_demand";
     case REASON_SETPOINT_RAISE:
       return "setpoint_raise";
+    case REASON_SHARE_LOAD_LEVEL:
+      return "share_load_level";
     default:
       return "unknown";
   }

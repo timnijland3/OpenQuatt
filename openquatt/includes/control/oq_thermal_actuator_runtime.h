@@ -804,8 +804,13 @@ class Runtime {
       if (id(oq_curve_fast_intent_code) == 2) return openquatt_decision_log::REASON_SETPOINT_RAISE;
       if (id(oq_curve_fast_intent_code) == 1) return openquatt_decision_log::REASON_ROOM_DEMAND;
 #if OQ_TOPOLOGY_DUO
-      return id(oq_curve_capacity_mode_code) == 2 ? openquatt_decision_log::REASON_BETTER_HEAT
-                                                  : openquatt_decision_log::REASON_RUNTIME_LEAD;
+      if (id(oq_curve_capacity_mode_code) == 2) {
+        const bool share_load =
+            id(oq_duo_dispatch_mode).has_state() && id(oq_duo_dispatch_mode).current_option() == "Share Load";
+        return share_load ? openquatt_decision_log::REASON_SHARE_LOAD_LEVEL
+                          : openquatt_decision_log::REASON_BETTER_HEAT;
+      }
+      return openquatt_decision_log::REASON_RUNTIME_LEAD;
 #else
       return openquatt_decision_log::REASON_RUNTIME_LEAD;
 #endif

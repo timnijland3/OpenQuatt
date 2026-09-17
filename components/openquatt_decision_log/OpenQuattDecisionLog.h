@@ -124,6 +124,7 @@ enum ReasonCode : uint8_t {
   REASON_ROOM_DEMAND = 72,
   REASON_SETPOINT_RAISE = 73,
   REASON_FREQUENCY_CAP_BELOW_MINIMUM = 74,
+  REASON_SHARE_LOAD_LEVEL = 75,
 };
 
 enum Severity : uint8_t {
