@@ -555,6 +555,17 @@ import { replaceOuterHtmlIfSignatureChanged } from "../views/view-utils.js";
         ],
       };
     }
+    if (reasonCode === "share_load_level") {
+      return {
+        title: "Keuze van het systeem",
+        verdict: "Belasting verdeeld over twee pompen",
+        summary: "De eerste warmtepomp bereikte het ingestelde startniveau voor \"Belasting verdelen\". In plaats van die pomp verder te belasten, verdeelt het systeem het vermogen over beide pompen.",
+        rows: [
+          { option: "Eerste pomp verder opvoeren", result: "Bewust vermeden", code: "share_load_level", detail: "De modus \"Belasting verdelen\" voert de eerste pomp niet verder op dan het ingestelde startniveau.", tone: "muted" },
+          { option: "Tweede pomp erbij", result: "Gekozen", code: "share_load_level", detail: "Het vermogen wordt verdeeld zodra er meer nodig is dan het startniveau levert.", tone: "selected" },
+        ],
+      };
+    }
     if (reasonCode === "demand_decreased" || reasonCode === "less_power") {
       return {
         title: "Keuze van het systeem",
@@ -856,10 +867,15 @@ import { replaceOuterHtmlIfSignatureChanged } from "../views/view-utils.js";
       primaryReason = "defrost_hold";
       sinceLabel = "Tijdelijk";
     } else if (duoActive) {
-      title = "Duo-bedrijf actief";
-      copy = "Beide warmtepompen draaien omdat de warmtevraag hoog blijft. Dit is normaal winterbedrijf.";
-      expectation = "Eén warmtepomp stopt zodra de warmtevraag voldoende afneemt of single-bedrijf weer efficiënter is.";
-      primaryReason = "better_heat";
+      const shareLoadActive = getEntityStateText("duoDispatchMode", "") === "Share Load";
+      title = shareLoadActive ? "Belasting verdelen actief" : "Duo-bedrijf actief";
+      copy = shareLoadActive
+        ? "Beide warmtepompen draaien omdat de modus \"Belasting verdelen\" het vermogen bewust over twee pompen spreidt in plaats van één pomp verder op te voeren."
+        : "Beide warmtepompen draaien omdat de warmtevraag hoog blijft. Dit is normaal winterbedrijf.";
+      expectation = shareLoadActive
+        ? "Bij afnemende vraag valt het systeem terug naar één warmtepomp; bij oplopende vraag lopen beide pompen samen verder op."
+        : "Eén warmtepomp stopt zodra de warmtevraag voldoende afneemt of single-bedrijf weer efficiënter is.";
+      primaryReason = shareLoadActive ? "share_load_level" : "better_heat";
       sinceLabel = "Actief";
     } else if (!hp1Running && !hp2Running) {
       title = "Geen warmtepomp actief";
@@ -2450,12 +2466,17 @@ import { replaceOuterHtmlIfSignatureChanged } from "../views/view-utils.js";
       reasonCode = "boiler_assist";
       severity = "limited";
     } else if (hpLabels.length === 2) {
+      const shareLoad = primaryInterval.item?.reasonCode === "share_load_level";
       title = "Twee warmtepompen verwarmen";
-      summary = "HP1 en HP2 verwarmden tegelijk op dit tijdstip.";
-      detail = "Twee gelijkwaardige warmtepompen kunnen hoge vraag rustiger leveren dan één warmtepomp op hoge belasting.";
+      summary = shareLoad
+        ? "HP1 en HP2 verdeelden op dit tijdstip het vermogen omdat de eerste pomp het ingestelde startniveau bereikte."
+        : "HP1 en HP2 verwarmden tegelijk op dit tijdstip.";
+      detail = shareLoad
+        ? "De modus \"Belasting verdelen\" voert de eerste pomp niet verder op dan het ingestelde startniveau; de tweede pomp levert de rest."
+        : "Twee gelijkwaardige warmtepompen kunnen hoge vraag rustiger leveren dan één warmtepomp op hoge belasting.";
       next = "Eén warmtepomp stopt zodra single-bedrijf weer voldoende of rustiger is.";
       source = getDecisionModeSubjectLabel("BOTH", 2);
-      reasonCode = "better_heat";
+      reasonCode = shareLoad ? "share_load_level" : "better_heat";
     } else if (hpLabels.length === 1 && cvActive) {
       title = `${hpLabels[0]} en CV-ketel actief`;
       summary = "De warmtepomp draaide en de CV-ketel ondersteunde tijdelijk.";
