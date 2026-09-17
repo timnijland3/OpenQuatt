@@ -351,8 +351,8 @@ class Runtime {
     const uint32_t lead_last_start_ms = lead_is_hp1 ? id(hp1_last_start_ms) : id(hp2_last_start_ms);
     const bool startup_grace = oq_curve::elapsed_window_active(
         now_ms, lead_last_start_ms, static_cast<uint32_t>(std::max(0, tuning.dual_startup_grace_s)) * 1000UL);
-    const float duo_enable_margin_w = heat_phase ? 700.0f : 450.0f;
-    constexpr float duo_disable_margin_w = 250.0f;
+    const float duo_enable_margin_w = duo_thresholds.enable_margin_w;
+    const float duo_disable_margin_w = duo_thresholds.disable_margin_w;
     const float duo_enable_min_u = duo_thresholds.enable_min_u;
     const float duo_disable_max_u = duo_thresholds.disable_max_u;
     const int saturated_level = duo_thresholds.single_saturated_level;

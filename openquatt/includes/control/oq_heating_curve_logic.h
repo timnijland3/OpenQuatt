@@ -441,11 +441,15 @@ struct DuoEnableThresholds {
   int single_saturated_level = 0;
   float enable_min_u = 0.0f;
   float disable_max_u = 0.0f;
+  float enable_margin_w = 0.0f;
+  float disable_margin_w = 0.0f;
 };
 
 inline DuoEnableThresholds duo_enable_thresholds(DuoDispatchMode mode, int owner_max_level, int level_cap,
                                                  bool heat_phase, int share_load_start_level) {
   DuoEnableThresholds out;
+  const float base_enable_margin_w = heat_phase ? 700.0f : 450.0f;
+  constexpr float base_disable_margin_w = 250.0f;
   if (mode == DuoDispatchMode::SHARE_LOAD && level_cap > 0) {
     const int start_level = std::max(2, std::min(level_cap - 1, share_load_start_level));
     out.single_search_max_level = std::min(owner_max_level, start_level);
@@ -453,11 +457,22 @@ inline DuoEnableThresholds duo_enable_thresholds(DuoDispatchMode mode, int owner
     const float level_u = static_cast<float>(start_level) / static_cast<float>(level_cap);
     out.enable_min_u = std::max(0.10f, std::min(0.95f, level_u));
     out.disable_max_u = std::max(0.05f, out.enable_min_u - (heat_phase ? 0.20f : 0.25f));
+    // The fixed 700W/450W margin below was calibrated for near-max
+    // (Sequential) transitions, where absolute power differences are large.
+    // At a low Share Load start level the gap between "lead capped here"
+    // and "what duo could deliver" is proportionally much smaller, so an
+    // unscaled margin would silently block the hand-off forever regardless
+    // of how long demand persists. Scale it down with the same level ratio,
+    // floored so it still filters out noise-sized differences.
+    out.enable_margin_w = std::max(60.0f, base_enable_margin_w * level_u);
+    out.disable_margin_w = std::max(40.0f, base_disable_margin_w * level_u);
   } else {
     out.single_search_max_level = owner_max_level;
     out.single_saturated_level = std::max(6, owner_max_level - 1);
     out.enable_min_u = heat_phase ? 0.90f : 0.80f;
     out.disable_max_u = heat_phase ? 0.70f : 0.55f;
+    out.enable_margin_w = base_enable_margin_w;
+    out.disable_margin_w = base_disable_margin_w;
   }
   return out;
 }
