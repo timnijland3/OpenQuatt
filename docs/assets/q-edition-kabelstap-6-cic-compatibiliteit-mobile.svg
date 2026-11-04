@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 430 800" role="img" aria-labelledby="title desc">
-  <title id="title">Stap 6: optionele CiC-compatibiliteit via M2</title>
-  <desc id="desc">Verbind M2 met een aparte RS485-kabel met de vrijgekomen Modbuspoort van de CiC.</desc>
+  <title id="title">Stap 6: Quatt-app via CiC (optioneel)</title>
+  <desc id="desc">Verbind M2 met een aparte RS485-kabel met de vrijgekomen Modbuspoort van de CiC. De koppeling geeft alleen buitenunitgegevens door aan de CiC, geen thermostaatgegevens.</desc>
   <style>
     text { font-family: Inter, "Segoe UI", Arial, sans-serif; fill: #111827; }
     .kicker { font-size: 14px; font-weight: 850; letter-spacing: 1.1px; fill: #ea580c; }
@@ -9,11 +9,11 @@
     .copy { font-size: 15px; font-weight: 700; fill: #475569; }
   </style>
   <rect width="430" height="800" rx="22" fill="#f5f3ff" stroke="#ddd6fe"/>
-  <text x="22" y="34" class="kicker">06 · OPTIONEEL · CiC-COMPATIBILITEIT</text>
+  <text x="22" y="34" class="kicker">06 · OPTIONEEL · QUATT-APP VIA CiC</text>
   <text x="22" y="70" class="title">Verbind M2 met de vrijgekomen</text>
   <text x="22" y="98" class="title">CiC-Modbuspoort.</text>
-  <text x="22" y="124" class="copy">M2 geeft OpenQuatt-data door aan de CiC.</text>
-  <text x="22" y="145" class="copy">De CiC neemt de regeling niet over.</text>
+  <text x="22" y="124" class="copy">M2 geeft alleen buitenunitgegevens</text>
+  <text x="22" y="145" class="copy">via Modbus door; OpenQuatt regelt.</text>
   <svg x="20" y="166" width="390" height="238" viewBox="58 2237 400 244" preserveAspectRatio="xMidYMid meet">
     <image href="q-edition-kabels-stappen.svg" width="1000" height="2901"/>
   </svg>
@@ -25,5 +25,5 @@
   <svg x="20" y="499" width="390" height="238" viewBox="542 2237 400 244" preserveAspectRatio="xMidYMid meet">
     <image href="q-edition-kabels-stappen.svg" width="1000" height="2901"/>
   </svg>
-  <text x="215" y="769" text-anchor="middle" class="copy">Activeer CiC-compatibiliteit pas na Quick Start.</text>
+  <text x="215" y="769" text-anchor="middle" class="copy">Activeer Quatt-app via CiC na Quick Start.</text>
 </svg>

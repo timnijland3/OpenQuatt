@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "../boiler/oq_boiler_logic.h"
+#include "../performance/oq_energy_logic.h"
 #include "oq_boiler_output_logic.h"
 
 namespace oq_boiler {
@@ -27,7 +28,7 @@ inline const char* command_source_text(uint8_t source) {
 inline float estimate_boiler_heat_power(bool transport_active, float hp_outlet_c, float supply_c, float flow_lph,
                                         float cp_j_per_kgk) {
   if (!transport_active || isnan(hp_outlet_c) || isnan(supply_c) || isnan(flow_lph)) return 0.0f;
-  const float heat_power_w = (flow_lph / 3600.0f) * cp_j_per_kgk * (supply_c - hp_outlet_c);
+  const float heat_power_w = oq_energy::hydronic_heat_power(hp_outlet_c, supply_c, flow_lph, cp_j_per_kgk);
   return heat_power_w < 0.0f ? 0.0f : heat_power_w;
 }
 
@@ -173,6 +174,8 @@ inline BoilerLogDecision classify_boiler_controller_log(const BoilerControllerLo
     case BLOCK_TRANSPORT_SETTLING:
     case BLOCK_AWAITING_FRESH_COMMAND:
     case BLOCK_CONNECTION_MISMATCH:
+    case BLOCK_OPENTHERM_NOT_VERIFIED:
+    case BLOCK_OPENTHERM_LINK_LOST:
     case BLOCK_BOILER_TEMPERATURE_UNAVAILABLE:
       reason = BoilerLogReason::SENSOR_FALLBACK;
       break;
@@ -191,6 +194,15 @@ inline BoilerLogDecision classify_boiler_controller_log(const BoilerControllerLo
       break;
     case BLOCK_MIN_OFF_TIME:
       reason = BoilerLogReason::MIN_REST_ACTIVE;
+      break;
+    case BLOCK_TARGET_SATISFIED:
+    case BLOCK_TARGET_HOLD_OFF:
+      // The command still asks for heat; the relay is simply not needed
+      // because the requested target is met, or because the supply is inside
+      // the band but not yet at the stop threshold. A normal outcome of R1
+      // target control, so it is logged with normal severity rather than as a
+      // fault.
+      reason = BoilerLogReason::LESS_POWER;
       break;
     default:
       if (inputs.role == BoilerRole::FALLBACK_CM4) {

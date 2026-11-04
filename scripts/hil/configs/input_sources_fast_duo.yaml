@@ -1,0 +1,46 @@
+# ==============================================================================
+# OpenQuatt - HIL TEST ONLY: Fast Input/Source Q Duo Profile
+# ==============================================================================
+# Shortens only the timers needed by the input/source acceptance scenario.
+# The normal unified Q Duo entrypoint remains the complete firmware base.
+#
+# This overlay builds on the HCQ desktop HIL testcontroller entrypoint, not on
+# the production duo.yaml entrypoint. duo_hil.yaml pins device_name
+# "openquatt-test" and a distinct project identity, so flashing this overlay
+# can never claim the production mDNS hostname "openquatt.local". Use
+# configs/heatpump_controller_q/duo_hil.yaml as --restore-config and
+# openquatt-test.local as --device.
+
+substitutions:
+  api_input_cooling_dew_point_stale_s: "45"
+  api_input_outside_temperature_stale_s: "45"
+  api_input_room_temperature_stale_s: "45"
+  api_input_room_setpoint_stale_s: "45"
+  api_input_heating_enable_stale_s: "45"
+  api_input_cooling_enable_stale_s: "45"
+  api_input_external_heat_demand_stale_s: "45"
+  api_input_heating_supply_target_stale_s: "45"
+  # The real HA heartbeat is normally one publish per minute. Keep these HIL
+  # windows just above that cadence so stale/recovery tests stay fast without
+  # false negatives between normal beats.
+  ha_outside_temperature_stale_s: "90"
+  ha_water_supply_temperature_stale_s: "90"
+  ha_room_temperature_stale_s: "90"
+  ha_cooling_dew_point_stale_s: "90"
+  ha_external_heat_demand_stale_s: "90"
+  ha_heating_supply_target_stale_s: "90"
+  ha_ingress_fresh_s: "75"
+  oq_selected_input_stale_hold_s: "10"
+  oq_hp_min_off_s: "10"
+
+packages:
+  hil_testcontroller_q_duo: !include base_duo.yaml
+
+text_sensor:
+  - platform: template
+    id: oq_hil_test_profile
+    name: "HIL Test Profile"
+    internal: true
+    update_interval: 5s
+    lambda: |-
+      return {"input-sources-fast-v1"};

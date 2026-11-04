@@ -1,3 +1,4 @@
+import { handlePerformanceTelemetryPromptAction, handlePerformanceTelemetryPromptKeyDown } from "../features/performance-telemetry-prompt.js";
 import { patchFrequencyLimitWarnings } from "../features/frequency-limits.js";
 import { hasEntity } from "./app-shared.js";
 import { ENTITY_DEFS } from "./config.js";
@@ -13,31 +14,41 @@ import { state } from "./state.js";
 import { formatDutchAmps, getCommittedElectricalLimitRaw, getElectricalLimitChangePlan, renderElectricalLimitEstimate, renderElectricalLimitFooter, renderElectricalLimitRestore, resolveElectricalLimitView } from "../settings/electrical-limit.js";
 import { setInterfacePanelOpen } from "./runtime.js";
 import { handleDebugRecordingAction } from "../features/debug-recording.js";
+import { handleHouseLearningAction } from "../features/house-learning.js";
 import { handleControlReplayAction } from "../features/control-replay-actions.js";
 import { handleFirmwareAction } from "../features/firmware-actions.js";
 import { updateFirmwareState, updateEnergyHistoryState } from "./feature-state.js";
 import { getFirmwareLatestVersion, getFirmwareTestAssetUrls, getFirmwareTestPrNumber, getFirmwareTestTargetModel, resetFirmwareManualUploadSelection, resetFirmwareTestSelection } from "../features/firmware-update.js";
 import { handleMqttAction, syncMqttDraftFromInput } from "../features/mqtt-actions.js";
+import { setLocale, t } from "../i18n/index.js";
 import { handleOduEepromDumpAction } from "../features/odu-eeprom-dump.js";
+import { handleOduDefrostAction, updateOduDefrostDraft } from "../features/odu-defrost.js";
 import { handleOduRuntimeFrequencyAction, handleOduRuntimeFrequencyInputKeyDown, updateOduRuntimeFrequencyDraft } from "../features/odu-runtime-frequency.js";
 import { handleOduSettingsAction, updateOduSettingsDraft } from "../features/odu-settings.js";
-import { handleQuickStartAction } from "../features/quickstart-ui-actions.js";
+import { confirmQuickStartSetup, handleQuickStartAction } from "../features/quickstart-ui-actions.js";
 import { handleSecurityAction, stopLoginAuthStatusPolling } from "../features/security-actions.js";
 import { clearSettingsBackupDraft, handleSettingsBackupFileSelection, handleStorageHistoryAction, normalizeEnergyHistoryExportMode } from "../features/storage-history.js";
 import { handleSystemAction } from "../features/system-actions.js";
+import { syncUrlAppView } from "./navigation.js";
 import { handleShellAction } from "../features/shell-actions.js";
 import { handleViewAction } from "../features/view-actions.js";
 import { handleWebServerLogAction } from "../features/webserver-logs.js";
 import { handleEnergyHistoryPointerMove, setEnergyHistoryPeriodValue } from "../views/energy.js";
+import { handleHouseLearningChartPointerMove } from "../settings/house-learning-chart.js";
 import { escapeHtml } from "./html.js";
 import { render } from "./render-scheduler.js";
+import { updateCurvePointDraft, updateSimpleCurveDraft } from "./simple-curve.js";
+import { patchRunExtensionThresholds, renderSimpleCurvePreview } from "../settings/heating.js";
 
 const actionDelegates = [
+  handlePerformanceTelemetryPromptAction,
   handleViewAction,
   handleControlReplayAction,
   handleQuickStartAction,
   handleDebugRecordingAction,
+  (action, button) => handleHouseLearningAction(action, button, triggerNamedButton),
   handleOduEepromDumpAction,
+  handleOduDefrostAction,
   handleOduRuntimeFrequencyAction,
   handleOduSettingsAction,
   handleSecurityAction,
@@ -87,7 +98,7 @@ function updateFrequencyRangeControl(input) {
   control.style.setProperty("--oq-range-end", `${((maxValue - scaleMin) / span) * 100}%`);
   const value = control.querySelector("[data-oq-range-value]");
   if (value) {
-    value.textContent = disabled ? "Geen uitsluiting" : `${minValue}–${maxValue} Hz`;
+    value.textContent = disabled ? t("settings.noExclusion") : `${minValue}–${maxValue} Hz`;
   }
 }
 
@@ -138,12 +149,28 @@ function updateFrequencyRangeControl(input) {
     }
   }
 
+  function renderPendingWarmupSettings() {
+    if (!state.focusedField
+        && !document.activeElement?.closest?.("button, [data-oq-action]")
+        && !state.settingsInteractionLock
+        && !state.warmupSettingsPointerActive
+        && !state.systemModal
+        && state.warmupSettingsRenderPending
+        && state.appView === "settings"
+        && state.settingsGroup === "heating") {
+      state.warmupSettingsRenderPending = false;
+      render();
+    }
+  }
+
   export function handleFocusChange(event) {
     handleTimeInputFocus(event);
+    handleHouseLearningChartPointerMove(event);
     window.setTimeout(() => {
       const active = document.activeElement;
-      state.focusedField = active && active.dataset ? active.dataset.oqField || "" : "";
+      state.focusedField = active && active.dataset ? active.dataset.oqField || active.dataset.oqCurvePointInput || "" : "";
       state.settingsInteractionLock = Boolean(active && active.closest && active.closest(".oq-ph-concept-hotspot"));
+      renderPendingWarmupSettings();
       if (!state.focusedField
           && state.incidentMonitoringRenderPending
           && state.appView === "settings"
@@ -179,6 +206,25 @@ function updateFrequencyRangeControl(input) {
   }
 
   export function handleInput(event) {
+    if (event.target.dataset.oqCurvePointInput) {
+      updateCurvePointDraft(event.target.dataset.oqCurvePointInput, event.target.value);
+      return;
+    }
+    if (event.target.dataset.oqOduDefrostHp) {
+      updateOduDefrostDraft(event.target);
+      return;
+    }
+    if (event.target.dataset.oqSimpleCurve) {
+      const part = event.target.dataset.oqSimpleCurve;
+      if (updateSimpleCurveDraft(part, event.target.value)) {
+        const editor = event.target.closest(".oq-simple-curve-editor");
+        const output = editor?.querySelector(`[data-oq-simple-curve-value="${part}"]`);
+        if (output) output.textContent = `${Number(event.target.value).toFixed(1)} ${part === "slope" ? "K / 10°C" : "°C"}`;
+        const preview = editor?.querySelector("[data-oq-simple-curve-preview]");
+        if (preview) preview.innerHTML = renderSimpleCurvePreview();
+      }
+      return;
+    }
     if (event.target.dataset.oqOduSettingsHp) {
       updateOduSettingsDraft(event.target);
       return;
@@ -190,7 +236,7 @@ function updateFrequencyRangeControl(input) {
     }
 
     if (event.target.dataset.oqQuickstartSetupConfirm) {
-      state.quickStartSetupConfirmed = Boolean(event.target.checked);
+      confirmQuickStartSetup(Boolean(event.target.checked));
       render();
       return;
     }
@@ -249,7 +295,7 @@ function updateFrequencyRangeControl(input) {
       const urls = getFirmwareTestAssetUrls(getFirmwareTestPrNumber(), target);
       const assetNote = section?.querySelector('[data-oq-firmware-test-asset-note="true"]');
       if (assetNote) {
-        assetNote.textContent = urls ? target.otaFileName : "Vul een PR-nummer in om de OTA-build te kiezen.";
+        assetNote.textContent = urls ? target.otaFileName : t("firmware.testPrPrompt");
       }
       section?.querySelector('[data-oq-firmware-test-build-row="true"]')?.remove();
       section?.querySelector('[data-oq-firmware-test-runtime-error="true"]')?.remove();
@@ -268,7 +314,7 @@ function updateFrequencyRangeControl(input) {
       const restoreButton = event.target.closest(".oq-helper-modal")?.querySelector('[data-oq-action="confirm-settings-backup-restore"]');
       if (restoreButton) {
         restoreButton.disabled = !state.settingsBackupMqttPassword;
-        restoreButton.textContent = state.settingsBackupMqttPassword ? "Herstellen" : "Vul MQTT-wachtwoord in";
+        restoreButton.textContent = state.settingsBackupMqttPassword ? t("settingsStorage.restoreConfirm") : t("settingsStorage.restoreNeedPass");
       }
       event.target.closest(".oq-helper-modal")?.querySelector(".oq-settings-backup-error")?.remove();
       return;
@@ -342,10 +388,14 @@ function updateFrequencyRangeControl(input) {
           }
         }
       }
+      if (["roomSetpoint", "phComfortBelow", "phComfortAbove", "phRunExtensionStopMargin", "phRunExtensionRestartCooldown"].includes(field)) {
+        patchRunExtensionThresholds();
+      }
     }
   }
 
   export function handleKeyDown(event) {
+    if (handlePerformanceTelemetryPromptKeyDown(event)) return;
     if (event.key === "Enter" && event.target.type === "time") {
       event.preventDefault();
       event.target.blur();
@@ -400,6 +450,16 @@ function updateFrequencyRangeControl(input) {
   }
 
   export function handleChange(event) {
+    if (event.target.dataset.oqOduDefrostHp) {
+      updateOduDefrostDraft(event.target);
+      return;
+    }
+    if (event.target.dataset.oqCurvePointInput) {
+      const key = event.target.dataset.oqCurvePointInput;
+      updateCurvePointDraft(key, event.target.value);
+      render();
+      return;
+    }
     if (event.target.dataset.oqOduSettingsHp) {
       updateOduSettingsDraft(event.target);
       return;
@@ -503,7 +563,7 @@ function updateFrequencyRangeControl(input) {
     if (entity.domain === "datetime") {
       const normalized = normalizeDateTimeValue(event.target.value);
       if (!normalized) {
-        state.controlError = `${entity.name} verwacht datum en tijd.`;
+        state.controlError = t("actions.dateTimeExpected", { name: entity.name });
         render();
         return;
       }
@@ -514,6 +574,13 @@ function updateFrequencyRangeControl(input) {
   }
 
   export function handleClick(event) {
+    const localeButton = event.target.closest("[data-oq-locale]");
+    if (localeButton) {
+      setLocale(localeButton.dataset.oqLocale);
+      render();
+      return;
+    }
+
     const dateTimeControl = event.target.closest(".oq-settings-control--time, .oq-settings-control--datetime");
     if (dateTimeControl) {
       const pickerInput = dateTimeControl.querySelector('input[data-oq-field]');
@@ -556,6 +623,10 @@ function updateFrequencyRangeControl(input) {
         shouldRender = true;
       }
       if (modalBackdrop && event.target === modalBackdrop) {
+        if (state.systemModal === "performance-telemetry-prompt") {
+          handlePerformanceTelemetryPromptAction("defer-performance-telemetry-prompt");
+          return;
+        }
         if (modalBackdrop.dataset.oqModal === "quickstart-forced") {
           return;
         }
@@ -576,9 +647,13 @@ function updateFrequencyRangeControl(input) {
           shouldRender = true;
         }
         if (state.systemModal) {
+          const wasSystemRecorder = state.systemModal === "debug-recording";
           clearSettingsBackupDraft();
           stopLoginAuthStatusPolling();
           state.systemModal = "";
+          if (wasSystemRecorder) {
+            syncUrlAppView("replace");
+          }
           shouldRender = true;
         }
       }
@@ -629,6 +704,8 @@ function updateFrequencyRangeControl(input) {
   }
 
   export function handlePointerDown(event) {
+    state.warmupSettingsPointerActive = state.appView === "settings" && state.settingsGroup === "heating";
+    handleHouseLearningChartPointerMove(event);
     const replayScrubber = event.target.closest("[data-oq-control-replay-scrub]");
     if (replayScrubber) {
       state.controlReplayScrubbing = true;
@@ -638,10 +715,11 @@ function updateFrequencyRangeControl(input) {
     }
 
     const point = event.target.closest("[data-curve-key]");
-    if (!point || !isCurveMode()) {
+    if (!point || !isCurveMode() || state.simpleCurveApplying || state.loadingEntities) {
       return;
     }
 
+    event.preventDefault();
     state.draggingCurveKey = point.dataset.curveKey || "";
     updateCurveDraftFromPointer(event.clientY);
   }
@@ -650,6 +728,7 @@ function updateFrequencyRangeControl(input) {
     if (typeof handleEnergyHistoryPointerMove === "function") {
       handleEnergyHistoryPointerMove(event);
     }
+    handleHouseLearningChartPointerMove(event);
     if (state.controlReplayScrubbing) {
       event.preventDefault();
       updateControlReplayGraphMinuteFromPointer(event.clientX);
@@ -662,6 +741,11 @@ function updateFrequencyRangeControl(input) {
   }
 
   export function handlePointerUp() {
+    if (state.warmupSettingsPointerActive) {
+      state.warmupSettingsPointerActive = false;
+      // The click following pointerup must finish before replacing the root.
+      window.setTimeout(renderPendingWarmupSettings, 0);
+    }
     if (state.controlReplayScrubbing) {
       state.controlReplayScrubbing = false;
       return;
@@ -671,8 +755,6 @@ function updateFrequencyRangeControl(input) {
       return;
     }
 
-    const key = state.draggingCurveKey;
-    const value = normalizeNumber(key, getEntityValue(key));
     state.draggingCurveKey = "";
-    commitNumber(key, value, "Curvepunt bijgewerkt.");
+    render();
   }

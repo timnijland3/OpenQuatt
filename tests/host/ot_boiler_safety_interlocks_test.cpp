@@ -14,12 +14,25 @@ oq_boiler::BoilerCommand active_command(uint32_t updated_at_ms) {
 }
 
 oq_boiler::ControllerInput safe_input(uint32_t now_ms) {
-  return oq_boiler::ControllerInput{
-      true,   true,  true,  true,   true,  true, true,
-      false,  false, false, true,   true,  true, oq_boiler::BOILER_START_THERMAL_SAFE,
-      true,   true,  false, now_ms, 15000, 0,    30000,
-      120000,
-  };
+  oq_boiler::ControllerInput input{};
+  input.source_present = true;
+  input.assist_enabled = true;
+  input.fallback_enabled = true;
+  input.supply_temperature_valid = true;
+  input.flow_valid = true;
+  input.flow_sufficient = true;
+  input.fallback_outputs_safe = true;
+  input.transport_available = true;
+  input.transport_settled = true;
+  input.command_rearmed = true;
+  input.boiler_start_thermal_state = oq_boiler::BOILER_START_THERMAL_SAFE;
+  input.target_required = true;
+  input.target_valid = true;
+  input.now_ms = now_ms;
+  input.command_max_age_ms = 15000;
+  input.min_on_ms = 30000;
+  input.min_off_ms = 120000;
+  return input;
 }
 
 void assert_decision(const oq_boiler::ControllerDecision& decision, bool output_active, bool force_off,
@@ -258,6 +271,15 @@ void test_fail_safe_priority() {
   input.target_required = false;
   decision = oq_boiler::evaluate(command, input);
   assert_decision(decision, true, false, oq_boiler::BLOCK_NONE);
+
+  // R1 has no TSet, but a heat request it regulates around still needs a usable
+  // target, so it reuses the same guard and the same immediate force-off.
+  input.relay_target.applicable = true;
+  input.relay_target.requested_active = true;
+  input.relay_target.state = oq_boiler::RELAY_TARGET_START;
+  decision = oq_boiler::evaluate(command, input);
+  assert_decision(decision, false, true, oq_boiler::BLOCK_TARGET_INVALID);
+  assert(decision.blocked);
 }
 
 void test_transport_selection_guard() {
@@ -303,6 +325,26 @@ void test_fallback_and_flow_guards() {
   assert_decision(decision, false, true, oq_boiler::BLOCK_FLOW_INSUFFICIENT);
 
   input = safe_input(1500);
+  input.fallback_outputs_safe = false;
+  decision = oq_boiler::evaluate(command, input);
+  assert_decision(decision, false, true, oq_boiler::BLOCK_HP_STOP_UNCONFIRMED);
+}
+
+void test_fallback_degraded_link_loss_gate() {
+  // The degraded output gate (STOP_UNCONFIRMED after a confirmed link-loss
+  // timeout) is computed by the incident policy and fed into
+  // fallback_outputs_safe by the boiler runtime. The supervisor reads the
+  // very same gate for CM4 selection, so selection and the physical boiler
+  // output cannot disagree: a clear gate energizes the fallback source,
+  // a closed gate keeps BLOCK_HP_STOP_UNCONFIRMED.
+  auto command = active_command(1000);
+  command.source = oq_boiler::COMMAND_SOURCE_FALLBACK;
+
+  auto input = safe_input(1500);
+  input.fallback_outputs_safe = true;
+  auto decision = oq_boiler::evaluate(command, input);
+  assert_decision(decision, true, false, oq_boiler::BLOCK_NONE);
+
   input.fallback_outputs_safe = false;
   decision = oq_boiler::evaluate(command, input);
   assert_decision(decision, false, true, oq_boiler::BLOCK_HP_STOP_UNCONFIRMED);
@@ -411,6 +453,26 @@ void test_commissioning_wait_state() {
   assert_decision(decision, true, false, oq_boiler::BLOCK_NONE);
 }
 
+void test_opentherm_transport_block_reason() {
+  const uint8_t not_verified =
+      oq_boiler::refine_opentherm_transport_block_reason(oq_boiler::BLOCK_TRANSPORT_UNAVAILABLE, true, false, false);
+  const uint8_t link_lost =
+      oq_boiler::refine_opentherm_transport_block_reason(oq_boiler::BLOCK_TRANSPORT_UNAVAILABLE, true, true, false);
+  const uint8_t still_available =
+      oq_boiler::refine_opentherm_transport_block_reason(oq_boiler::BLOCK_TRANSPORT_UNAVAILABLE, true, true, true);
+  const uint8_t r1_unavailable =
+      oq_boiler::refine_opentherm_transport_block_reason(oq_boiler::BLOCK_TRANSPORT_UNAVAILABLE, false, false, false);
+
+  assert(not_verified == oq_boiler::BLOCK_OPENTHERM_NOT_VERIFIED);
+  assert(link_lost == oq_boiler::BLOCK_OPENTHERM_LINK_LOST);
+  assert(still_available == oq_boiler::BLOCK_TRANSPORT_UNAVAILABLE);
+  assert(r1_unavailable == oq_boiler::BLOCK_TRANSPORT_UNAVAILABLE);
+  assert(strcmp(oq_boiler::block_reason_text(oq_boiler::BLOCK_OPENTHERM_NOT_VERIFIED),
+                "OpenTherm connection not verified") == 0);
+  assert(strcmp(oq_boiler::block_reason_text(oq_boiler::BLOCK_OPENTHERM_LINK_LOST),
+                "OpenTherm link lost after verified connection") == 0);
+}
+
 void test_commissioning_start_failure_reason() {
   assert(
       strcmp(oq_boiler::commissioning_start_failure_reason(oq_boiler::BLOCK_TRANSPORT_UNAVAILABLE, true, false, false),
@@ -437,9 +499,11 @@ int main() {
   test_fail_safe_priority();
   test_transport_selection_guard();
   test_fallback_and_flow_guards();
+  test_fallback_degraded_link_loss_gate();
   test_cold_start_requires_assist_permission();
   test_minimum_times_and_ownership_loss();
   test_commissioning_wait_state();
+  test_opentherm_transport_block_reason();
   test_commissioning_start_failure_reason();
   return 0;
 }

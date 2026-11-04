@@ -2,6 +2,7 @@
 
 #include "oq_boiler_control_logic.h"
 #if OQ_HARDWARE_HEATPUMP_CONTROLLER_Q
+#include "../boiler/oq_otb_connection_state.h"
 #include "../boiler/oq_otb_telemetry.h"
 #endif
 
@@ -17,6 +18,7 @@ struct Config {
   uint32_t otb_min_on_ms = 0;
   uint32_t otb_min_off_ms = 0;
   uint32_t otb_field_timeout_ms = 0;
+  oq_boiler::RelayTargetConfig relay_target = {};
 };
 
 class Runtime {
@@ -30,6 +32,7 @@ class Runtime {
     id(oq_boiler_block_reason_code) = oq_boiler::BLOCK_COMMAND_INVALID;
     id(oq_boiler_start_thermal_state_code) = oq_boiler::BOILER_START_THERMAL_IDLE;
     id(oq_boiler_start_thermal_safe_ceiling_c) = NAN;
+    id(oq_boiler_relay_target_state_code) = oq_boiler::RELAY_TARGET_NOT_APPLICABLE;
     id(boiler_relay).turn_off();
   }
 
@@ -61,7 +64,8 @@ class Runtime {
     return true;
   }
 
-  void selected_transport_link_changed(bool available) {
+  void selected_transport_link_changed(bool available,
+                                       uint8_t unavailable_reason = oq_boiler::BLOCK_TRANSPORT_UNAVAILABLE) {
     const uint32_t now_ms = (uint32_t)millis();
     id(oq_boiler_transport_change_ms) = now_ms;
     id(oq_boiler_transport_settle_required) = true;
@@ -69,7 +73,7 @@ class Runtime {
     id(oq_boiler_rearm_after_command_ms) = now_ms;
     withdraw_output_(now_ms);
     id(oq_boiler_block_reason_code) =
-        available ? oq_boiler::BLOCK_AWAITING_FRESH_COMMAND : oq_boiler::BLOCK_TRANSPORT_UNAVAILABLE;
+        available ? static_cast<uint8_t>(oq_boiler::BLOCK_AWAITING_FRESH_COMMAND) : unavailable_reason;
   }
 
   bool command_is_fresh(uint32_t maximum_age_ms) const {
@@ -97,13 +101,24 @@ class Runtime {
     const bool flow_valid = !isnan(flow_lph);
     const bool flow_sufficient = flow_valid && flow_lph >= config.minimum_flow_lph && !id(oq_lowflow_fault_active);
     const bool target_valid = !isnan(target_c) && target_c > 0.0f && target_c <= 90.0f && flow_sufficient;
-    const bool fallback_outputs_safe = id(oq_incident_manager).all_fallback_outputs_safe();
+    // Same degraded gate as the supervisor: confirmed stops pass, and
+    // STOP_UNCONFIRMED after a confirmed link-loss timeout passes. Both call
+    // sites must stay in sync so CM4 selection and the physical boiler output
+    // cannot disagree.
+    const bool fallback_outputs_safe = id(oq_incident_manager).all_fallback_output_gates_clear();
     const auto thermal = start_thermal_decision_(command, opentherm_selected, supply_c, target_c, now_ms, config);
     publish_start_thermal_decision_(thermal, command, supply_c, target_c);
 
     const bool command_rearmed =
         oq_boiler::command_satisfies_rearm(id(oq_boiler_rearm_required), command, id(oq_boiler_rearm_after_command_ms));
     if (command_rearmed) id(oq_boiler_rearm_required) = false;
+    // The R1 relay has no target channel, so the target temperature the command
+    // already carries is realised by regulating the binary output around it.
+    // OpenTherm keeps receiving the target over the bus and is unaffected.
+    const auto relay_target = oq_boiler::evaluate_relay_target(
+        {oq_boiler::relay_target_control_applies(command.source, opentherm_selected), command.heat_request,
+         id(oq_boiler_output_request), supply_c, target_c, config.relay_target});
+    publish_relay_target_state_(relay_target, supply_c, target_c);
     const uint32_t minimum_on_ms = opentherm_selected ? config.otb_min_on_ms : config.relay_min_on_ms;
     const uint32_t minimum_off_ms = opentherm_selected ? config.otb_min_off_ms : config.relay_min_off_ms;
     const oq_boiler::ControllerInput input{
@@ -123,6 +138,7 @@ class Runtime {
         thermal.state,
         opentherm_selected,
         target_valid,
+        relay_target,
         id(oq_boiler_output_request),
         now_ms,
         config.command_max_age_ms,
@@ -130,7 +146,12 @@ class Runtime {
         minimum_on_ms,
         minimum_off_ms,
     };
-    const auto decision = oq_boiler::evaluate(command, input);
+    auto decision = oq_boiler::evaluate(command, input);
+#if OQ_HARDWARE_HEATPUMP_CONTROLLER_Q
+    decision.block_reason = oq_boiler::refine_opentherm_transport_block_reason(
+        decision.block_reason, opentherm_selected, oq_otb::connection_verification_state.ever_verified(),
+        oq_otb::connection_verification_state.currently_verified());
+#endif
     const auto role = oq_boiler::boiler_role_for_source(command.source);
     const bool output_changed = id(oq_boiler_output_request) != decision.output_active;
     id(oq_boiler_output_request) = decision.output_active;
@@ -212,6 +233,20 @@ class Runtime {
              thermal.safe_ceiling_c, (unsigned int)command.source);
   }
 
+  // Target control is a normal part of R1 operation, so its state is published
+  // for the debug recording instead of a new public entity. It answers whether
+  // a requested-but-inactive relay is target-satisfied or blocked by a guard.
+  static void publish_relay_target_state_(const oq_boiler::RelayTargetDecision& decision, float supply_c,
+                                          float target_c) {
+    if (id(oq_boiler_relay_target_state_code) == decision.state) return;
+    id(oq_boiler_relay_target_state_code) = decision.state;
+    if (decision.state == oq_boiler::RELAY_TARGET_NOT_APPLICABLE || decision.state == oq_boiler::RELAY_TARGET_IDLE) {
+      return;
+    }
+    ESP_LOGI("quatt.boiler", "R1 target control: %s (supply=%.1fC target=%.1fC)",
+             oq_boiler::relay_target_state_text(decision.state), supply_c, target_c);
+  }
+
   static const oq_boiler::BoilerLogCodes& log_codes_() {
     static const oq_boiler::BoilerLogCodes value{
         {
@@ -239,7 +274,10 @@ class Runtime {
   void publish_controller_log_(int control_mode, float supply_c, bool supply_valid,
                                const oq_boiler::ControllerDecision& decision, oq_boiler::BoilerRole role,
                                const oq_boiler::BoilerLogDecision& controller_log) {
-    const bool blocked = decision.demand_present && !decision.output_active;
+    // Use the controller's own verdict. Recomputing it here would re-report a
+    // satisfied target as a blocked boiler, which is a normal control stop and
+    // not a fault.
+    const bool blocked = decision.blocked;
     const bool became_blocked = blocked && !last_blocked_;
     const bool reason_changed = !have_controller_state_ || decision.block_reason != last_block_reason_;
     if (!have_controller_state_ || decision.output_active != last_allowed_ || reason_changed || became_blocked) {

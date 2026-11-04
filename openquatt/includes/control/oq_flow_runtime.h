@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "oq_flow_control_logic.h"
+#include "oq_flow_delta_t_runtime.h"
 #include "../service/oq_service_logic.h"
 #include "../service/tasks/oq_manual_hp_logic.h"
 
@@ -64,8 +65,7 @@ class Runtime {
   }
 
   void tick(const TickConfig& config) {
-    migrate_cooling_settings_();
-
+    oq_flow_delta_t_runtime::TickScope delta_t_scope;  // ends the Delta T cycle on paths that skip apply()
     const int cm_code = id(oq_control_mode_code);
     const int task_code = id(oq_commissioning_task_code);
     const bool want_manual = id(oq_flow_control_mode).active_index().value_or(0) == 1;
@@ -154,9 +154,10 @@ class Runtime {
     } else {
       const bool cooling_target = oq_flow_control::uses_cooling_setpoint(
           cm_code, oq_manual_hp::owns_control(), id(oq_manual_hp1_mode_code), id(oq_manual_hp2_mode_code));
-      const float setpoint_lph =
+      float setpoint_lph =
           oq_flow_control::select_flow_setpoint(manual_flow_pi, id(oq_manual_flow_setpoint_lph).state, cooling_target,
                                                 id(oq_cooling_flow_setpoint_lph).state, id(oq_flow_setpoint_lph).state);
+      setpoint_lph = oq_flow_delta_t_runtime::apply(setpoint_lph, cm_code);
       oq_flow_control::PiInputs inputs{id(flow_rate_selected).state, setpoint_lph,         pwm,
                                        id(oq_flow_kp).state,         id(oq_flow_ki).state, config.dt_s};
       const auto result = oq_flow_control::update_pi(pi_, inputs);
@@ -184,18 +185,6 @@ class Runtime {
   }
 
  private:
-  void migrate_cooling_settings_() {
-    if (id(oq_flow_cooling_settings_migrated) || isnan(id(oq_flow_setpoint_lph).state)) return;
-    const float setpoint_lph = id(oq_flow_setpoint_lph).state;
-    auto call = id(oq_cooling_flow_setpoint_lph).make_call();
-    call.set_value(setpoint_lph);
-    call.perform();
-    id(oq_flow_last_good_pwm_cooling) = id(oq_flow_last_good_pwm);
-    id(oq_flow_cooling_settings_migrated) = true;
-    ESP_LOGI("flow", "Initialized cooling flow settings from current flow setpoint: sp=%.0f L/h last_good=%d",
-             setpoint_lph, (int)id(oq_flow_last_good_pwm_cooling));
-  }
-
   void start_auto_(const TickConfig& config, const char* reason) {
     const int cm_code = id(oq_control_mode_code);
     const bool cooling_target = cm_code == 5;

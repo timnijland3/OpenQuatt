@@ -24,10 +24,22 @@ enum class Source : uint8_t {
 struct NumericSample {
   float value = NAN;
   bool valid = false;
+  bool invalid_received = false;
 };
 
 inline NumericSample numeric_sample(bool enabled, bool has_state, float value) {
-  return {value, enabled && has_state && isfinite(value)};
+  return {value, enabled && has_state && isfinite(value), has_state && !isfinite(value)};
+}
+
+constexpr float ROOM_SETPOINT_MIN_C = 5.0f;
+constexpr float ROOM_SETPOINT_MAX_C = 35.0f;
+
+inline bool room_setpoint_usable(float value) {
+  return isfinite(value) && value >= ROOM_SETPOINT_MIN_C && value <= ROOM_SETPOINT_MAX_C;
+}
+
+inline NumericSample room_setpoint_sample(bool enabled, bool has_state, float value) {
+  return {value, enabled && has_state && room_setpoint_usable(value), has_state && !room_setpoint_usable(value)};
 }
 
 struct BinarySample {
@@ -66,6 +78,42 @@ inline Freshness evaluate_freshness(const TimedState& state, uint32_t now_ms, ui
   return {static_cast<float>(age_ms) / 1000.0f, stale_s == 0U || age_ms <= seconds_to_millis(stale_s)};
 }
 
+// Single definition of validity for live HA inputs: the proxy entities must
+// be valid AND the central HA ingress heartbeat must be fresh. A constant
+// proxy value therefore stays usable while the heartbeat keeps arriving, and
+// goes stale when the HA -> ESPHome link stops delivering updates. Stateful
+// HA inputs (room setpoint, heating/cooling enable) intentionally keep plain
+// entity validity instead, so they never expire on a constant value.
+template <typename B, typename S>
+inline bool ha_live_valid(const B& valid_entity, const S& value_entity, const TimedState& ingress, uint32_t now_ms,
+                          uint32_t stale_s) {
+  const bool entity_valid =
+      valid_entity.has_state() && valid_entity.state && value_entity.has_state() && isfinite(value_entity.state);
+  return evaluate_freshness(ingress, now_ms, stale_s, entity_valid).valid;
+}
+
+// Legacy-aware variant of the live-HA rule above, used for the firmware
+// member wrapper: while this boot never received a heartbeat (pre-heartbeat
+// HA package or custom proxies without one), plain entity validity applies
+// so an OTA never suddenly rejects existing HA ingress. After the first
+// heartbeat, freshness gating is permanent for that boot.
+inline bool ha_live_valid_with_legacy(bool entity_valid, const TimedState& ingress, uint32_t now_ms, uint32_t stale_s) {
+  if (!ingress.has_value) return entity_valid;
+  return evaluate_freshness(ingress, now_ms, stale_s, entity_valid).valid;
+}
+
+/**
+ * Migration helper for a live HA input that already had its own freshness
+ * timer before the shared ingress heartbeat existed. Until the first shared
+ * heartbeat is seen, preserve that old timer. Once a heartbeat has been seen,
+ * the shared ingress clock remains authoritative for the rest of the boot.
+ */
+inline bool ha_live_valid_with_legacy_freshness(bool entity_valid, const TimedState& ingress,
+                                                const TimedState& legacy_freshness, uint32_t now_ms, uint32_t stale_s) {
+  const TimedState& freshness = ingress.has_value ? ingress : legacy_freshness;
+  return evaluate_freshness(freshness, now_ms, stale_s, entity_valid).valid;
+}
+
 struct NumericSources {
   NumericSample local;
   NumericSample outdoor;
@@ -102,6 +150,7 @@ struct NumericSelection {
   Source route = Source::NONE;
   bool valid = false;
   bool held = false;
+  bool invalid_received = false;
 };
 
 struct HoldState {
@@ -142,25 +191,28 @@ inline NumericSelection select_direct(Source selected, const NumericSources& sou
       hold.remember(sample.value, now_ms, selected);
     else
       hold.reset();
-    return {sample.value, selected, true, false};
+    return {sample.value, selected, true, false, sample.invalid_received};
   }
   if (hold_ha && selected == Source::HA && hold.available(selected, now_ms, hold_ms)) {
-    return {hold.value, selected, true, true};
+    return {hold.value, selected, true, true, sample.invalid_received};
   }
-  return {};
+  return {NAN, selected, false, false, sample.invalid_received};
 }
 
 inline NumericSelection select_lowest_outside(const NumericSources& sources) {
   NumericSelection selected;
   const auto take = [&](Source route, const NumericSample& sample) {
     if (sample.valid && (!selected.valid || sample.value < selected.value)) {
-      selected = {sample.value, route, true, false};
+      selected = {sample.value, route, true, false, sample.invalid_received};
     }
   };
   take(Source::HA, sources.ha);
   take(Source::OUTDOOR, sources.outdoor);
   take(Source::API, sources.api);
   take(Source::MQTT, sources.mqtt);
+  if (!selected.valid)
+    selected.invalid_received = sources.ha.invalid_received || sources.outdoor.invalid_received ||
+                                sources.api.invalid_received || sources.mqtt.invalid_received;
   return selected;
 }
 
@@ -220,6 +272,27 @@ inline BinarySample select_cooling_enable(Source selected, const EnableSources& 
 enum class FlowRoute : uint8_t { NONE = 0, CIC, CONTROLLER, HP1, HP2, AGGREGATE, PUMPS_STOPPED };
 enum class ControllerFlowMode : uint8_t { OTHER = 0, LOCAL, AUTO };
 enum class OutdoorFlowMode : uint8_t { AGGREGATE = 0, HP1, HP2 };
+enum class FlowAggregateOperation : uint8_t { NONE = 0, ARITHMETIC_MEAN, MAXIMUM };
+
+inline const char* flow_route_name(FlowRoute route) {
+  switch (route) {
+    case FlowRoute::CIC:
+      return "CIC";
+    case FlowRoute::CONTROLLER:
+      return "Controller";
+    case FlowRoute::HP1:
+      return "HP1";
+    case FlowRoute::HP2:
+      return "HP2";
+    case FlowRoute::AGGREGATE:
+      return "Aggregate";
+    case FlowRoute::PUMPS_STOPPED:
+      return "Pumps stopped";
+    case FlowRoute::NONE:
+    default:
+      return "Unavailable";
+  }
+}
 
 struct FlowInputs {
   Source selected = Source::NONE;
@@ -240,10 +313,22 @@ struct FlowSelection {
   float value = NAN;
   FlowRoute route = FlowRoute::NONE;
   bool valid = false;
+  FlowAggregateOperation aggregate_operation = FlowAggregateOperation::NONE;
+  bool invalid_received = false;
 };
 
 inline FlowSelection flow_sample(const NumericSample& sample, FlowRoute route) {
-  return sample.valid ? FlowSelection{sample.value, route, true} : FlowSelection{};
+  return {sample.valid ? sample.value : NAN, route, sample.valid, FlowAggregateOperation::NONE,
+          sample.invalid_received};
+}
+
+inline FlowAggregateOperation observed_flow_aggregate_operation(const FlowInputs& input) {
+  if (!input.duo || !input.aggregate.valid || !input.hp1.valid || !input.hp2.valid) return {};
+  const float average = 0.5f * (input.hp1.value + input.hp2.value);
+  const float maximum = fmaxf(input.hp1.value, input.hp2.value);
+  if (fabsf(input.aggregate.value - average) <= 0.01f) return FlowAggregateOperation::ARITHMETIC_MEAN;
+  if (fabsf(input.aggregate.value - maximum) <= 0.01f) return FlowAggregateOperation::MAXIMUM;
+  return {};
 }
 
 inline FlowSelection select_flow(const FlowInputs& input) {
@@ -256,7 +341,9 @@ inline FlowSelection select_flow(const FlowInputs& input) {
   if (input.all_relevant_pumps_stopped) return {0.0f, FlowRoute::PUMPS_STOPPED, true};
   if (input.duo && input.outdoor_mode == OutdoorFlowMode::HP1) return flow_sample(input.hp1, FlowRoute::HP1);
   if (input.duo && input.outdoor_mode == OutdoorFlowMode::HP2) return flow_sample(input.hp2, FlowRoute::HP2);
-  return flow_sample(input.aggregate, FlowRoute::AGGREGATE);
+  auto result = flow_sample(input.aggregate, FlowRoute::AGGREGATE);
+  result.aggregate_operation = observed_flow_aggregate_operation(input);
+  return result;
 }
 
 }  // namespace oq_input_source

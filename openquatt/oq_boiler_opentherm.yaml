@@ -14,8 +14,6 @@ external_components:
     components: [opentherm]
 
 esphome:
-  includes:
-    - ../../openquatt/includes/boiler/oq_boiler_transport_logic.h
   on_boot:
     priority: -100
     then:
@@ -34,10 +32,27 @@ esphome:
             call.set_value(0.0f);
             call.perform();
           }
+          const bool source_present = id(oq_aux_heat_source_present).state;
           const bool opentherm_selected =
               id(oq_boiler_connection).has_state() &&
               id(oq_boiler_connection).current_option() == "OpenTherm";
-          if (opentherm_selected) {
+          if (!source_present) {
+            oq_otb::connection_verification_state.reset();
+            // Physical absence is the top-level transport lifecycle gate. Keep
+            // the restored connection choice, but do not probe or poll a bus
+            // that the installation explicitly says is not connected.
+            oq_otb::startup_probe_state.end();
+            id(oq_otb_startup_probe_active) = false;
+            id(oq_boiler_connection_mismatch_state) = false;
+            id(oq_boiler_connection_mismatch).publish_state(false);
+            id(boiler_relay).turn_off();
+            id(oq_otb_hub).set_no_response_expected(false);
+            id(oq_otb_hub).suspend_polling();
+            ESP_LOGI(
+                "quatt.boiler",
+                "Auxiliary heat source not connected; OpenTherm boiler polling disabled");
+          } else if (opentherm_selected) {
+            oq_otb::connection_verification_state.begin_opentherm((uint32_t)millis());
             oq_otb::startup_probe_state.end();
             id(oq_otb_startup_probe_active) = false;
             id(oq_boiler_connection_mismatch_state) = false;
@@ -45,6 +60,7 @@ esphome:
             id(oq_otb_hub).set_no_response_expected(false);
             id(oq_otb_hub).resume_polling();
           } else {
+            oq_otb::connection_verification_state.begin_r1_probe();
             // Before R1 can become available, actively check whether an
             // OpenTherm boiler is physically responding. STATUS(CH=off) and
             // TSet=0 are prioritized; a matching complete STATUS response
@@ -169,11 +185,13 @@ opentherm:
             const auto handshake_before =
                 oq_otb::start_handshake_state.result();
             oq_otb::telemetry_state.record_response(
-                millis(), response_id, response_type);
+                millis(), oq_sources::monotonic_ms(), response_id, response_type,
+                static_cast<uint16_t>((x.valueHB << 8) | x.valueLB));
             oq_otb::start_handshake_state.record_response(
                 response_id, response_type, x.valueHB, x.valueLB);
 
             if (oq_otb::telemetry_state.last_response_is_correlated()) {
+              oq_otb::connection_verification_state.record_correlated_response((uint32_t)millis());
               oq_otb::off_flush_state.record_response(
                   response_id, response_type, x.valueHB, x.valueLB);
               oq_otb::startup_probe_state.record_response(
@@ -357,6 +375,14 @@ switch:
       name: "OTB - Central Heating Command"
       internal: true
       restore_mode: ALWAYS_OFF
+    dhw_enable:
+      id: oq_otb_dhw_enable
+      name: "OTB - Domestic Hot Water Permission"
+      internal: true
+      # The thermostat is authoritative only after a current STATUS frame.
+      # Start fail-open, so a reboot or lost thermostat link never leaves
+      # normal tap water disabled.
+      restore_mode: ALWAYS_ON
 
 # Keep Home Assistant lean: expose primary operational values by default,
 # publish secondary status as disabled-by-default, and keep service/protocol
@@ -667,6 +693,14 @@ sensor:
 
 text_sensor:
   - platform: template
+    id: otb_connection_state
+    name: "OTB - Boiler Connection State"
+    internal: true
+    update_interval: 1s
+    lambda: |-
+      return {oq_otb::boiler_connection_state_text(oq_otb::connection_verification_state.state())};
+
+  - platform: template
     id: otb_last_response_type
     name: "OTB - Last Response Type"
     internal: true
@@ -722,10 +756,12 @@ interval:
             id(oq_otb_startup_probe_active) = startup_probe_active;
           }
 
+          const bool source_present = id(oq_aux_heat_source_present).state;
           const bool opentherm_selected =
               id(oq_boiler_connection).has_state() &&
               id(oq_boiler_connection).current_option() == "OpenTherm";
           const bool keep_polling = oq_otb::should_keep_opentherm_polling(
+              source_present,
               opentherm_selected,
               startup_probe_active,
               id(oq_boiler_connection_mismatch_state));
@@ -733,7 +769,9 @@ interval:
             if (id(oq_otb_hub).is_polling_enabled()) {
               ESP_LOGW(
                   "quatt.boiler",
-                  "Stopping stray OpenTherm polling while R1 is selected");
+                  source_present
+                      ? "Stopping stray OpenTherm polling while R1 is selected"
+                      : "Stopping stray OpenTherm polling because auxiliary heat source is not connected");
               id(oq_otb_hub).suspend_polling();
             }
             return;
@@ -761,6 +799,7 @@ interval:
           id(oq_boiler_rearm_after_command_ms) = now_ms;
 
           if (result == oq_otb::STARTUP_PROBE_OPENTHERM_DETECTED) {
+            oq_otb::connection_verification_state.mark_r1_opentherm_detected();
             if (oq_otb::should_auto_select_opentherm(
                     result, id(oq_setup_complete))) {
               // During onboarding a matching response is positive evidence for
@@ -796,6 +835,7 @@ interval:
 
           // No valid STATUS response was observed during the bounded probe.
           // This is the only path that makes an R1 selection available.
+          oq_otb::connection_verification_state.mark_r1_ready();
           id(oq_boiler_connection_auto_selected_state) = false;
           id(oq_boiler_connection_auto_selected).publish_state(false);
           id(oq_boiler_connection_mismatch_state) = false;
@@ -900,4 +940,5 @@ interval:
       - lambda: |-
           oq_boiler_otb_runtime::link_watch(
               (uint32_t) (${oq_otb_link_timeout_s} * 1000UL),
-              (uint32_t) (${oq_otb_field_timeout_s} * 1000UL));
+              (uint32_t) (${oq_otb_field_timeout_s} * 1000UL),
+              (uint32_t) (${oq_otb_connection_verify_timeout_s} * 1000UL));

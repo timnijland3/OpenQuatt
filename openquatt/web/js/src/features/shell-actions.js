@@ -2,6 +2,7 @@ import { render } from "../core/render-scheduler.js";
 import { ensureNativeFrontendLoaded, setDevPanelOpen, setInterfacePanelOpen, setStoredSurface, syncSurfaceRuntime } from "../core/runtime.js";
 import { state } from "../core/state.js";
 import { invokeActionMap } from "../core/action-router.js";
+import { registerMatrixVersionTap } from "./matrix-easter-egg.js";
 import { resetFirmwareManualUploadSelection, resetFirmwareTestSelection } from "./firmware-update.js";
 import { updateFirmwareState } from "../core/feature-state.js";
 import { stopLoginAuthStatusPolling } from "./security-actions.js";
@@ -61,6 +62,9 @@ const shellActionHandlers = {
     render();
   },
   "select-surface": (button) => selectSurface(button),
+  "matrix-version-tap": () => {
+    registerMatrixVersionTap();
+  },
 };
 
 export function handleShellAction(action, button) {

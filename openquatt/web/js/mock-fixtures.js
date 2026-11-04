@@ -135,8 +135,6 @@
     ],
     hardware: [
       { value: "heatpump_controller_q", label: "Q-edition" },
-      { value: "heatpump_listener", label: "Listener" },
-      { value: "waveshare", label: "Waveshare" },
     ],
     connection: [
       { value: "wifi", label: "Wi-Fi" },

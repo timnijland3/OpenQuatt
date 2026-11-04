@@ -28,19 +28,15 @@
   .oq-helper-logo-lockup {
     flex-direction: column;
     align-items: flex-start;
-    gap: 12px;
-  }
-
-  .oq-helper-brand-copy {
-    width: 100%;
+    gap: 6px;
   }
 
   .oq-helper-logo-mark {
-    width: clamp(104px, 20vw, 126px);
+    width: 230px;
   }
 
   .oq-helper-head h1 {
-    font-size: clamp(1.9rem, 8vw, 2.7rem);
+    font-size: 1rem;
   }
 }
 
@@ -56,7 +52,7 @@
   }
 
   .oq-helper-head h1 {
-    font-size: clamp(1.95rem, 7.5vw, 2.5rem);
+    font-size: 1rem;
   }
 
   .oq-native-surface-controls {
@@ -281,19 +277,6 @@
     padding: 14px;
   }
 
-  .oq-overview-trendcard-head {
-    grid-template-columns: 1fr;
-  }
-
-  .oq-overview-trendcard-meta {
-    justify-items: flex-start;
-    min-height: 0;
-  }
-
-  .oq-overview-trendcard-latest {
-    justify-content: flex-start;
-  }
-
   
 
   
@@ -318,10 +301,6 @@
     display: none;
   }
 
-  .oq-helper-curve-grid {
-    grid-template-columns: 1fr;
-  }
-
   .oq-helper-grid--quickstart-modal {
     grid-template-columns: 1fr;
   }
@@ -332,7 +311,6 @@
   .oq-settings-choice-inline-grid,
   .oq-settings-storage-summary,
   .oq-settings-rule-groups,
-  .oq-settings-curve-grid,
   .oq-settings-hp-columns,
   .oq-settings-hp-group-grid {
     grid-template-columns: 1fr;
@@ -427,12 +405,12 @@
     align-items: stretch;
   }
 
-  .oq-ph-concept-card {
-    grid-template-columns: 1fr;
+  .oq-house-learning-chart-axis {
+    font-size: 18px;
   }
 
-  .oq-ph-concept-zones {
-    grid-template-columns: 1fr;
+  .oq-house-learning-chart-unit {
+    font-size: 16px;
   }
 
   #oq-helper-root {
@@ -447,6 +425,21 @@
 
   esp-app.oq-native-app {
     width: calc(100vw - 16px);
+  }
+}
+
+@media (min-width: 741px) and (max-width: 1200px) {
+  .oq-overview-summary-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 0.7fr);
+  }
+
+  .oq-overview-top,
+  .oq-overview-statusgrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .oq-overview-controlpanel-state {
+    flex-shrink: 0;
   }
 }
 
@@ -543,11 +536,11 @@
   }
 
   .oq-helper-logo-mark {
-    width: clamp(96px, 28vw, 118px);
+    width: 200px;
   }
 
   .oq-helper-head h1 {
-    font-size: clamp(1.72rem, 9vw, 2.1rem);
+    font-size: 0.95rem;
     line-height: 1.03;
   }
 
@@ -635,6 +628,10 @@
     grid-template-columns: 1fr 1fr;
   }
 
+  .oq-helper-hub-switches--theme {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .oq-helper-status-item {
     padding: 8px 10px;
     border-radius: 13px;
@@ -658,88 +655,6 @@
 
   .oq-helper-card--wide-flush .oq-overview-hp-grid {
     margin-inline: -4px;
-  }
-
-  .oq-ph-concept-card {
-    margin: 14px 0 16px;
-    padding: 14px 12px;
-    gap: 10px;
-    border-radius: 20px;
-  }
-
-  .oq-ph-concept-kicker {
-    font-size: 0.72rem;
-    letter-spacing: 0.07em;
-  }
-
-  .oq-ph-concept-caption {
-    font-size: 0.88rem;
-    line-height: 1.42;
-  }
-
-  .oq-ph-concept-meta {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 6px;
-  }
-
-  .oq-ph-concept-meta-pill {
-    width: 100%;
-    min-width: 0;
-    box-sizing: border-box;
-    justify-content: space-between;
-    padding: 7px 10px;
-    font-size: 0.79rem;
-  }
-
-  .oq-ph-concept-svg {
-    margin-block: 2px 4px;
-  }
-
-  .oq-ph-concept-label {
-    font-size: 8px;
-  }
-
-  .oq-ph-concept-tick-value {
-    font-size: 7px;
-  }
-
-  .oq-ph-concept-zones {
-    gap: 8px;
-  }
-
-  .oq-ph-concept-zone-chip {
-    min-height: 0;
-    padding: 10px 12px;
-    border-radius: 16px;
-  }
-
-  .oq-ph-concept-zone-chip-label {
-    font-size: 0.84rem;
-  }
-
-  .oq-ph-concept-zone-chip-meta {
-    font-size: 0.75rem;
-  }
-
-  .oq-ph-concept-notes {
-    grid-template-columns: 1fr;
-    gap: 8px;
-  }
-
-  .oq-ph-concept-note {
-    min-height: 0;
-    padding: 12px;
-    gap: 6px;
-  }
-
-  .oq-ph-concept-note-title {
-    font-size: 0.84rem;
-  }
-
-  .oq-ph-concept-note p {
-    font-size: 0.8rem;
-    line-height: 1.4;
   }
 
   .oq-overview-board {
@@ -814,17 +729,8 @@
     border-radius: 16px;
   }
 
-  .oq-overview-trendcard-copy {
-    min-height: 0;
-  }
-
-  .oq-overview-trendcard-copy p {
-    min-height: 0;
+  .oq-overview-trendcard-copy > p:last-child {
     -webkit-line-clamp: 3;
-  }
-
-  .oq-overview-trendcard-meta {
-    min-height: 0;
   }
 
   .oq-overview-trend-hover {
@@ -845,9 +751,8 @@
   }
 
   .oq-overview-trend-pill {
-    min-width: 72px;
-    padding: 7px 9px;
-    border-radius: 12px;
+    padding: 6px 8px;
+    border-radius: 10px;
   }
 
   .oq-overview-trend-pill span {
@@ -936,6 +841,22 @@
 
   esp-app.oq-native-app {
     width: calc(100vw - 12px);
+  }
+}
+
+@media (max-width: 480px) {
+  .oq-overview-trendcard-head {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "kicker"
+      "title"
+      "description"
+      "meta";
+  }
+
+  .oq-overview-trendcard-meta,
+  .oq-overview-trendcard-latest {
+    justify-content: flex-start;
   }
 }
 
@@ -1112,6 +1033,24 @@
 
   .oq-working-chart-control {
     left: 90px;
+  }
+}
+
+@media (max-width: 860px) {
+  .oq-usage-facts-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .oq-usage-facts-grid > .oq-usage-disclosure-column {
+    padding-right: 2px;
+  }
+
+  .oq-usage-facts {
+    margin-top: 12px;
+    padding-top: 14px;
+    padding-left: 0;
+    border-top: 1px solid var(--oq-helper-line);
+    border-left: none;
   }
 }
 

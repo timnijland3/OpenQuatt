@@ -11,12 +11,14 @@ esphome:
   project:
     name: ${project_name}
     version: ${project_version}
-  min_version: 2026.8.2
+  min_version: 2026.10.0
   name_add_mac_suffix: false
   includes:
     - ${oq_cpp_headers_dir}
     - ${oq_component_psram_buffer_header}
+    - ${oq_component_external_telemetry_transport_header}
     - ${oq_component_flash_layout_header}
+    - ${oq_component_http_status_header}
   build_flags:
     # Hard-pinned by the topology entrypoint to prevent accidental topology drift.
     - ${oq_topology_build_flag}
@@ -79,6 +81,8 @@ esp32:
       CONFIG_COMPILER_OPTIMIZATION_SIZE: y
       CONFIG_BT_ENABLED: n
       CONFIG_ESP_MAIN_TASK_STACK_SIZE: "8192"
+      # Digest authentication and reverse-proxy headers need more than the 1024-byte default.
+      # ESPHome must include esphome/esphome#18657 to preserve this explicit value.
       CONFIG_HTTPD_MAX_REQ_HDR_LEN: "4096"
       CONFIG_SPIRAM_USE_MALLOC: y
       CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "8192"

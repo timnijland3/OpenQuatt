@@ -11,8 +11,8 @@
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
 #include "freertos/idf_additions.h"
-#if defined(CONFIG_IDF_TARGET_ESP32S3) && __has_include("heatpump_controller_q_hardware_revision.h")
-#include "heatpump_controller_q_hardware_revision.h"
+#if __has_include("includes/hardware/heatpump_controller_q_hardware_revision.h")
+#include "includes/hardware/heatpump_controller_q_hardware_revision.h"
 #define OPENQUATT_HAS_Q_HARDWARE_REVISION
 #endif
 #include "esp_system.h"
@@ -43,6 +43,31 @@ void log_heap_state_(const char* phase) {
            phase, static_cast<unsigned>(free_internal),
            static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)),
            static_cast<unsigned>(largest_internal), static_cast<unsigned>(fragmentation_percent),
+           static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+}
+
+void log_mqtt_failure_(const esp_mqtt_error_codes_t* error) {
+  // The event owns this pointer. Read only the fields valid for its error type
+  // and never retain it across callbacks or log broker credentials/payloads.
+  if (error == nullptr) {
+    ESP_LOGW(TAG, "MQTT failed without transport error details");
+  } else if (error->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
+    ESP_LOGW(TAG, "MQTT transport failed: errno=%d, esp_err=0x%X, tls_err=0x%X, cert_flags=0x%X",
+             error->esp_transport_sock_errno, static_cast<unsigned>(error->esp_tls_last_esp_err),
+             static_cast<unsigned>(error->esp_tls_stack_err), static_cast<unsigned>(error->esp_tls_cert_verify_flags));
+  } else if (error->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
+    ESP_LOGW(TAG, "MQTT connection refused: broker_code=%d", static_cast<int>(error->connect_return_code));
+  } else {
+    ESP_LOGW(TAG, "MQTT failed: error_type=%d", static_cast<int>(error->error_type));
+  }
+
+  // A minimum since boot is not the current allocation margin. Keep the
+  // current free bytes and largest block together, sampled at the failure.
+  constexpr uint32_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+  ESP_LOGW(TAG, "MQTT failure resources: internal_free=%u, internal_min=%u, internal_largest=%u, PSRAM_free=%u",
+           static_cast<unsigned>(heap_caps_get_free_size(caps)),
+           static_cast<unsigned>(heap_caps_get_minimum_free_size(caps)),
+           static_cast<unsigned>(heap_caps_get_largest_free_block(caps)),
            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
 }
 
@@ -121,6 +146,19 @@ void append_json_flow_source_(FixedBufferWriter& payload, const select::Select* 
       q_source_available && q_flow_source->has_state() ? q_flow_source->current_option() : empty_option;
   append_json_wire_value_(payload, "flow_source_config",
                           flow_source_config_wire_value(flow_option, q_source_available, q_flow_option));
+}
+
+void append_json_water_supply_source_(FixedBufferWriter& payload, const select::Select* source,
+                                      const select::Select* local_source) {
+  if (source == nullptr || !source->has_state()) {
+    append_json_wire_value_(payload, "water_supply_source", nullptr);
+    return;
+  }
+  const std::string empty_option;
+  const std::string& local_option =
+      local_source != nullptr && local_source->has_state() ? local_source->current_option() : empty_option;
+  const char* value = water_supply_source_wire_value(source->current_option(), local_source != nullptr, local_option);
+  append_json_wire_value_(payload, "water_supply_source", value);
 }
 
 void append_json_boiler_connection_(FixedBufferWriter& payload, const select::Select* source) {
@@ -243,18 +281,6 @@ void OpenQuattUsageTelemetry::loop() {
     this->start_task_running_.store(false);
   }
   if (this->cleanup_task_complete_.exchange(false)) {
-    if (!MQTT_WORKER_STACK_IN_PSRAM) {
-      const TaskHandle_t handle = this->worker_task_state_.get_handle();
-      if (handle != nullptr && eTaskGetState(handle) != eSuspended) {
-        // The classic-ESP32 worker publishes completion immediately before it
-        // parks itself. Do not free a static stack that may still be executing
-        // on the other core.
-        this->cleanup_task_complete_.store(true);
-        return;
-      }
-      this->worker_task_state_.deallocate();
-      this->worker_task_region_valid_ = false;
-    }
     this->complete_publish_session_();
   }
   if (this->finishing_session_.load()) {
@@ -265,7 +291,7 @@ void OpenQuattUsageTelemetry::loop() {
     if (this->start_task_running_.load()) {
       return;
     }
-    if (!this->enabled_.load()) {
+    if (!this->session_permitted_()) {
       this->finish_publish_session_(false);
       return;
     }
@@ -275,6 +301,14 @@ void OpenQuattUsageTelemetry::loop() {
     }
     if (this->publish_failed_.load() || time_reached_(millis(), this->session_started_ms_ + SESSION_TIMEOUT_MS)) {
       this->finish_publish_session_(false);
+    }
+    return;
+  }
+
+  if (this->external_publish_pending_.load()) {
+    if (!this->external_publish_blocked_.load() && this->is_setup_complete_() && this->is_configured() &&
+        network::is_connected()) {
+      this->start_publish_session_(SessionKind::EXTERNAL);
     }
     return;
   }
@@ -293,7 +327,7 @@ void OpenQuattUsageTelemetry::loop() {
     }
   }
   if (time_reached_(millis(), this->next_publish_ms_)) {
-    this->start_publish_session_();
+    this->start_publish_session_(SessionKind::USAGE);
   }
 }
 
@@ -389,6 +423,95 @@ void OpenQuattUsageTelemetry::write_state(bool state) {
   }
 }
 
+bool OpenQuattUsageTelemetry::ensure_installation_id_for_external() {
+  Storage storage{};
+  if (!this->load_storage_(&storage)) {
+    storage.magic = STORAGE_MAGIC;
+    storage.version = STORAGE_VERSION;
+    storage.enabled = this->enabled_.load() ? 1U : 0U;
+    storage.choice_configured = this->choice_configured_.load() ? 1U : 0U;
+    storage.installation_id_present = this->installation_id_.empty() ? 0U : 1U;
+    storage.reserved.fill(0);
+    storage.installation_id = this->installation_id_bytes_;
+  }
+  if (!this->ensure_installation_id_(&storage) || !this->save_storage_(storage)) {
+    ESP_LOGE(TAG, "Could not persist an anonymous installation ID for external telemetry");
+    return false;
+  }
+  return this->apply_external_installation_id_(storage);
+}
+
+bool OpenQuattUsageTelemetry::request_external_publish(const char* suffix, const char* payload, size_t payload_size) {
+  if (suffix == nullptr || suffix[0] != '/' || payload == nullptr || payload_size == 0U ||
+      payload_size > EXTERNAL_PAYLOAD_MAX || this->installation_id_.empty() || this->consent_mutex_ == nullptr) {
+    return false;
+  }
+  if (xSemaphoreTake(this->consent_mutex_, portMAX_DELAY) != pdTRUE) {
+    return false;
+  }
+  if (this->external_publish_pending_.load() || this->session_kind_.load() == SessionKind::EXTERNAL ||
+      esp_timer_get_time() < this->external_next_publish_allowed_us_) {
+    xSemaphoreGive(this->consent_mutex_);
+    return false;
+  }
+
+  const size_t topic_size = this->topic_.size() + 1U + this->installation_id_.size() + std::strlen(suffix);
+  if (!this->external_publish_topic_.allocate_external(topic_size + 1U) ||
+      !this->external_payload_.allocate_external(payload_size + 1U)) {
+    this->external_publish_topic_.release();
+    this->external_payload_.release();
+    xSemaphoreGive(this->consent_mutex_);
+    ESP_LOGW(TAG, "Could not allocate external telemetry payload in PSRAM");
+    return false;
+  }
+  FixedBufferWriter topic_writer(this->external_publish_topic_.data(), this->external_publish_topic_.size());
+  topic_writer += this->topic_;
+  topic_writer += '/';
+  topic_writer += this->installation_id_;
+  topic_writer += suffix;
+  if (!topic_writer.ok()) {
+    this->external_publish_topic_.release();
+    this->external_payload_.release();
+    xSemaphoreGive(this->consent_mutex_);
+    return false;
+  }
+  std::memcpy(this->external_payload_.data(), payload, payload_size);
+  this->external_payload_.data()[payload_size] = '\0';
+  this->external_payload_size_ = payload_size;
+  this->external_publish_result_.store(ExternalPublishResult::NONE);
+  this->external_publish_blocked_.store(false);
+  this->external_publish_pending_.store(true);
+  xSemaphoreGive(this->consent_mutex_);
+  App.wake_loop_threadsafe();
+  return true;
+}
+
+void OpenQuattUsageTelemetry::cancel_external_publish() {
+  // Close before the mutex: an MQTT callback that has not entered its critical
+  // section cannot enqueue after this point.
+  this->external_publish_blocked_.store(true);
+  if (this->consent_mutex_ == nullptr || xSemaphoreTake(this->consent_mutex_, portMAX_DELAY) != pdTRUE) {
+    return;
+  }
+  if (this->session_kind_.load() != SessionKind::EXTERNAL) {
+    this->external_publish_pending_.store(false);
+    this->external_publish_topic_.release();
+    this->external_payload_.release();
+    this->external_payload_size_ = 0U;
+    this->external_publish_result_.store(ExternalPublishResult::CANCELLED);
+  }
+  xSemaphoreGive(this->consent_mutex_);
+  App.wake_loop_threadsafe();
+}
+
+OpenQuattUsageTelemetry::ExternalPublishResult OpenQuattUsageTelemetry::take_external_publish_result() {
+  const ExternalPublishResult result = this->external_publish_result_.load();
+  if (result != ExternalPublishResult::NONE) {
+    this->external_publish_result_.store(ExternalPublishResult::NONE);
+  }
+  return result;
+}
+
 bool OpenQuattUsageTelemetry::load_storage_(Storage* storage) {
   if (storage == nullptr || !this->pref_.load(storage)) {
     return false;
@@ -451,9 +574,47 @@ bool OpenQuattUsageTelemetry::ensure_installation_id_(Storage* storage) {
   return uuid_is_present_(storage->installation_id);
 }
 
+bool OpenQuattUsageTelemetry::apply_external_installation_id_(const Storage& storage) {
+  if (storage.installation_id_present == 0U || !uuid_is_present_(storage.installation_id) ||
+      this->consent_mutex_ == nullptr || xSemaphoreTake(this->consent_mutex_, portMAX_DELAY) != pdTRUE) {
+    return false;
+  }
+  // External telemetry may create the shared anonymous ID, but it must never
+  // reapply the independently managed usage-consent fields from preferences.
+  if (this->installation_id_bytes_ != storage.installation_id) {
+    this->installation_id_bytes_ = storage.installation_id;
+    this->installation_id_ = format_uuid_(storage.installation_id);
+  }
+  xSemaphoreGive(this->consent_mutex_);
+  if (this->installation_id_sensor_ != nullptr) {
+    this->installation_id_sensor_->publish_state(this->installation_id_);
+  }
+  return !this->installation_id_.empty();
+}
+
 bool OpenQuattUsageTelemetry::is_setup_complete_() const {
   return this->setup_complete_sensor_ != nullptr && this->setup_complete_sensor_->has_state() &&
          this->setup_complete_sensor_->state;
+}
+
+bool OpenQuattUsageTelemetry::session_permitted_() const {
+  if (this->session_kind_.load() == SessionKind::EXTERNAL) {
+    return !this->external_publish_blocked_.load();
+  }
+  return this->enabled_.load() && !this->consent_publish_blocked_.load();
+}
+
+const char* OpenQuattUsageTelemetry::active_publish_topic_() const {
+  return this->session_kind_.load() == SessionKind::EXTERNAL ? this->external_publish_topic_.data()
+                                                             : this->publish_topic_.data();
+}
+
+const char* OpenQuattUsageTelemetry::active_payload_() const {
+  return this->session_kind_.load() == SessionKind::EXTERNAL ? this->external_payload_.data() : this->payload_.data();
+}
+
+size_t OpenQuattUsageTelemetry::active_payload_size_() const {
+  return this->session_kind_.load() == SessionKind::EXTERNAL ? this->external_payload_size_ : this->payload_size_;
 }
 
 bool OpenQuattUsageTelemetry::apply_storage_(const Storage& storage) {
@@ -505,26 +666,41 @@ void OpenQuattUsageTelemetry::schedule_retry_() {
   this->next_publish_ms_ = millis() + delay_ms;
 }
 
-void OpenQuattUsageTelemetry::start_publish_session_() {
+void OpenQuattUsageTelemetry::start_publish_session_(SessionKind kind) {
   if (this->session_active_.load() || this->start_task_running_.exchange(true)) {
     return;
   }
 
-  this->boot_publish_pending_ = false;
+  if (kind == SessionKind::EXTERNAL && (!this->external_publish_pending_.load() ||
+                                        this->external_publish_blocked_.load() || this->external_payload_size_ == 0U)) {
+    this->start_task_running_.store(false);
+    return;
+  }
+  this->session_kind_.store(kind);
+  if (kind == SessionKind::USAGE) this->boot_publish_pending_ = false;
   log_heap_state_("Usage telemetry session begin");
 
-  if (this->payload_size_ == 0U && !this->build_payload_()) {
+  if (kind == SessionKind::USAGE && this->payload_size_ == 0U && !this->build_payload_()) {
+    this->session_kind_.store(SessionKind::NONE);
     this->start_task_running_.store(false);
     this->schedule_retry_();
     return;
   }
 
-  // The same worker owns both client startup and teardown. On S3 its stack is
-  // persistent in PSRAM; classic ESP32 uses a per-session internal stack.
+  // The persistent worker owns both client startup and teardown in PSRAM.
   if (!this->ensure_worker_task_()) {
-    this->clear_payload_();
+    if (kind == SessionKind::USAGE) this->clear_payload_();
+    this->session_kind_.store(SessionKind::NONE);
     this->start_task_running_.store(false);
-    this->schedule_retry_();
+    if (kind == SessionKind::USAGE)
+      this->schedule_retry_();
+    else {
+      this->external_publish_pending_.store(false);
+      this->external_publish_topic_.release();
+      this->external_payload_.release();
+      this->external_payload_size_ = 0U;
+      this->external_publish_result_.store(ExternalPublishResult::FAILED);
+    }
     return;
   }
   log_heap_state_("Usage telemetry worker ready");
@@ -541,12 +717,26 @@ void OpenQuattUsageTelemetry::start_publish_session_() {
   this->cleanup_disconnect_requested_ = false;
   this->session_started_ms_ = millis();
   this->session_active_.store(true);
+  if (kind == SessionKind::EXTERNAL) {
+    // The shared external transport is rate-limited from session start. This
+    // keeps a fixed device-uptime cadence from being shifted by teardown time.
+    this->external_next_publish_allowed_us_ = esp_timer_get_time() + EXTERNAL_PUBLISH_INTERVAL_US;
+  }
 
   if (!this->notify_worker_(WorkerCommand::START)) {
     this->session_active_.store(false);
+    this->session_kind_.store(SessionKind::NONE);
     this->start_task_running_.store(false);
-    this->clear_payload_();
-    this->schedule_retry_();
+    if (kind == SessionKind::USAGE) {
+      this->clear_payload_();
+      this->schedule_retry_();
+    } else {
+      this->external_publish_pending_.store(false);
+      this->external_publish_topic_.release();
+      this->external_payload_.release();
+      this->external_payload_size_ = 0U;
+      this->external_publish_result_.store(ExternalPublishResult::FAILED);
+    }
     ESP_LOGE(TAG, "Failed to notify usage telemetry MQTT worker");
   }
 }
@@ -588,8 +778,8 @@ bool OpenQuattUsageTelemetry::notify_worker_(WorkerCommand command) {
 }
 
 bool OpenQuattUsageTelemetry::start_client_() {
-  if (!this->enabled_.load() || !this->session_active_.load() || !this->is_setup_complete_() ||
-      !this->is_configured() || this->mqtt_client_ != nullptr || this->consent_publish_blocked_.load()) {
+  if (!this->session_permitted_() || !this->session_active_.load() || !this->is_setup_complete_() ||
+      !this->is_configured() || this->mqtt_client_ != nullptr || this->installation_id_.empty()) {
     return false;
   }
 
@@ -608,7 +798,10 @@ bool OpenQuattUsageTelemetry::start_client_() {
   mqtt_config.task.stack_size = MQTT_TASK_STACK_SIZE;
   mqtt_config.buffer.size = 1024;
   mqtt_config.buffer.out_size = 1024;
-  mqtt_config.outbox.limit = 2048;
+  // The performance-map batch is capped at 4 KiB and is sent as one QoS 1
+  // enqueue. ESP-MQTT may fragment transport writes internally, but must keep
+  // the complete logical PUBLISH in its outbox until PUBACK arrives.
+  mqtt_config.outbox.limit = 4608;
   if (!this->username_.empty()) {
     mqtt_config.credentials.username = this->username_.c_str();
   }
@@ -619,7 +812,7 @@ bool OpenQuattUsageTelemetry::start_client_() {
   if (this->consent_mutex_ == nullptr || xSemaphoreTake(this->consent_mutex_, portMAX_DELAY) != pdTRUE) {
     return false;
   }
-  if (!this->enabled_.load() || !this->session_active_.load() || this->consent_publish_blocked_.load()) {
+  if (!this->session_permitted_() || !this->session_active_.load()) {
     xSemaphoreGive(this->consent_mutex_);
     return false;
   }
@@ -631,7 +824,7 @@ bool OpenQuattUsageTelemetry::start_client_() {
     return false;
   }
 
-  if (!this->enabled_.load() || !this->session_active_.load() || this->consent_publish_blocked_.load()) {
+  if (!this->session_permitted_() || !this->session_active_.load()) {
     xSemaphoreGive(this->consent_mutex_);
     esp_mqtt_client_destroy(client);
     return false;
@@ -726,6 +919,7 @@ void OpenQuattUsageTelemetry::finish_publish_session_(bool succeeded) {
 
 void OpenQuattUsageTelemetry::complete_publish_session_() {
   const bool succeeded = this->cleanup_succeeded_.load();
+  const SessionKind completed_kind = this->session_kind_.load();
 
   this->session_active_.store(false);
   this->publish_succeeded_.store(false);
@@ -733,6 +927,27 @@ void OpenQuattUsageTelemetry::complete_publish_session_() {
   this->pending_message_id_.store(-1);
   this->finishing_session_.store(false);
   this->cleanup_succeeded_.store(false);
+
+  if (completed_kind == SessionKind::EXTERNAL) {
+    // The cooldown was anchored at session start, so teardown latency does not
+    // move the next fixed device-uptime publication deadline.
+    const bool cancelled = this->external_publish_blocked_.load();
+    this->session_kind_.store(SessionKind::NONE);
+    this->external_publish_pending_.store(false);
+    this->external_publish_topic_.release();
+    this->external_payload_.release();
+    this->external_payload_size_ = 0U;
+    this->external_publish_result_.store(
+        cancelled ? ExternalPublishResult::CANCELLED
+                  : (succeeded ? ExternalPublishResult::SUCCEEDED : ExternalPublishResult::FAILED));
+    App.wake_loop_threadsafe();
+    return;
+  }
+  this->session_kind_.store(SessionKind::NONE);
+
+  if (succeeded) {
+    this->counter_snapshot_.commit();
+  }
 
   if (!this->enabled_.load()) {
     this->clear_payload_();
@@ -758,8 +973,10 @@ void OpenQuattUsageTelemetry::complete_publish_session_() {
 
 bool OpenQuattUsageTelemetry::build_payload_() {
   const uint64_t uptime_s = static_cast<uint64_t>(esp_timer_get_time()) / 1000000ULL;
-  const std::string hardware_revision = this->read_hardware_revision_();
+  uint16_t hardware_serial = 0;
+  const std::string hardware_revision = this->read_hardware_revision_(hardware_serial);
   if (this->payload_message_id_.empty()) {
+    this->counter_snapshot_.reset();
     this->payload_message_id_ = random_message_id_();
   }
 
@@ -822,6 +1039,12 @@ bool OpenQuattUsageTelemetry::build_payload_() {
     payload += hardware_revision;
     payload += '"';
   }
+  append_json_key_(payload, "hardware_serial");
+  if (hardware_serial == 0U) {
+    payload += "null";
+  } else {
+    payload.append_uint(hardware_serial);
+  }
   payload += R"(,"topology":")";
   append_json_escaped(payload, this->topology_);
   payload += R"(","connection":")";
@@ -858,6 +1081,8 @@ bool OpenQuattUsageTelemetry::build_payload_() {
   payload += '"';
   append_json_optional_select_(payload, "quatt_hybrid_generation_config", this->quatt_hybrid_generation_select_,
                                quatt_hybrid_generation_wire_value);
+  append_json_water_supply_source_(payload, this->water_supply_source_select_,
+                                   this->local_water_supply_temp_source_select_);
   append_json_flow_source_(payload, this->flow_source_select_, this->q_flow_source_select_);
   append_json_optional_select_(payload, "heating_strategy", this->heating_strategy_select_,
                                heating_strategy_wire_value);
@@ -877,6 +1102,31 @@ bool OpenQuattUsageTelemetry::build_payload_() {
                                configured_source_wire_value);
   append_json_optional_select_(payload, "heating_supply_target_source", this->heating_supply_target_source_select_,
                                configured_source_wire_value);
+  std::array<uint32_t, COUNTER_COUNT> counters{};
+  if (this->modbus_hub_ != nullptr) {
+    counters[MODBUS_PARTIAL_RESPONSE] = this->modbus_hub_->partial_response_count();
+    counters[MODBUS_PARSE_FAILED] = this->modbus_hub_->parse_failed_count();
+    counters[MODBUS_RECOVERED_RESPONSE] = this->modbus_hub_->recovered_response_count();
+    counters[MODBUS_OFFLINE] = this->modbus_hub_->offline_count();
+  }
+#ifdef USE_OPENQUATT_MAX31865_COUNTERS
+  if (this->max31865_sensor_ != nullptr) {
+    counters[MAX31865_REFIN_LOW] = this->max31865_sensor_->refin_low_fault_count();
+    counters[MAX31865_RTDIN_LOW] = this->max31865_sensor_->rtdin_low_fault_count();
+  }
+#endif
+  this->counter_snapshot_.capture(counters);
+  append_json_uint_(payload, "modbus_partial_response_count", this->counter_snapshot_.delta(MODBUS_PARTIAL_RESPONSE));
+  append_json_uint_(payload, "modbus_parse_failed_count", this->counter_snapshot_.delta(MODBUS_PARSE_FAILED));
+  append_json_uint_(payload, "modbus_recovered_response_count",
+                    this->counter_snapshot_.delta(MODBUS_RECOVERED_RESPONSE));
+  append_json_uint_(payload, "modbus_offline_count", this->counter_snapshot_.delta(MODBUS_OFFLINE));
+#ifdef USE_OPENQUATT_MAX31865_COUNTERS
+  if (this->max31865_sensor_ != nullptr) {
+    append_json_uint_(payload, "max31865_refin_low_fault_count", this->counter_snapshot_.delta(MAX31865_REFIN_LOW));
+    append_json_uint_(payload, "max31865_rtdin_low_fault_count", this->counter_snapshot_.delta(MAX31865_RTDIN_LOW));
+  }
+#endif
   append_json_uint_(payload, "heap_free_b", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
   append_json_uint_(payload, "heap_min_free_b", heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
   append_json_uint_(payload, "heap_largest_block_b", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
@@ -899,6 +1149,7 @@ bool OpenQuattUsageTelemetry::build_payload_() {
   append_json_optional_bool_(payload, "trend_flash_enabled", this->trend_flash_switch_);
   append_json_optional_bool_(payload, "decision_log_flash_enabled", this->decision_log_flash_switch_);
   append_json_optional_bool_(payload, "energy_history_flash_enabled", this->energy_history_flash_switch_);
+  append_json_optional_bool_(payload, "house_learning_enabled", this->house_learning_switch_);
   append_json_optional_bool_(payload, "ram_log_history_enabled", true, true);
   payload += '}';
 
@@ -917,7 +1168,8 @@ void OpenQuattUsageTelemetry::clear_payload_() {
   this->payload_size_ = 0U;
 }
 
-std::string OpenQuattUsageTelemetry::read_hardware_revision_() const {
+std::string OpenQuattUsageTelemetry::read_hardware_revision_(uint16_t& serial) const {
+  serial = 0;
   if (this->hardware_profile_ != "heatpump_controller_q") {
     return "";
   }
@@ -926,6 +1178,7 @@ std::string OpenQuattUsageTelemetry::read_hardware_revision_() const {
   if (revision.error != ESP_OK || !revision.programmed) {
     return "";
   }
+  serial = revision.serial;
   char revision_text[32];
   std::snprintf(revision_text, sizeof(revision_text), "%u.%u (batch %u)", static_cast<unsigned>(revision.major),
                 static_cast<unsigned>(revision.minor), static_cast<unsigned>(revision.batch));
@@ -991,9 +1244,6 @@ void OpenQuattUsageTelemetry::worker_task_(void* arg) {
       log_heap_state_("Usage telemetry MQTT cleanup complete");
       self->cleanup_task_complete_.store(true);
       App.wake_loop_threadsafe();
-      if (!MQTT_WORKER_STACK_IN_PSRAM) {
-        vTaskSuspend(nullptr);
-      }
       continue;
     }
 
@@ -1025,10 +1275,12 @@ void OpenQuattUsageTelemetry::mqtt_event_handler_(void* handler_args, esp_event_
         break;
       }
       int message_id = -1;
-      if (self->enabled_.load() && self->session_active_.load() && !self->finishing_session_.load() &&
-          !self->consent_publish_blocked_.load()) {
-        message_id = esp_mqtt_client_enqueue(event->client, self->publish_topic_.data(), self->payload_.data(),
-                                             static_cast<int>(self->payload_size_), 1, MQTT_PUBLISH_RETAIN, true);
+      if (self->session_permitted_() && self->session_active_.load() && !self->finishing_session_.load() &&
+          self->active_publish_topic_() != nullptr && self->active_payload_() != nullptr &&
+          self->active_payload_size_() != 0U) {
+        message_id =
+            esp_mqtt_client_enqueue(event->client, self->active_publish_topic_(), self->active_payload_(),
+                                    static_cast<int>(self->active_payload_size_()), 1, MQTT_PUBLISH_RETAIN, true);
       }
       xSemaphoreGive(self->consent_mutex_);
       ESP_LOGD(TAG, "esp-mqtt task stack free after enqueue: %u bytes",
@@ -1050,6 +1302,7 @@ void OpenQuattUsageTelemetry::mqtt_event_handler_(void* handler_args, esp_event_
       }
       break;
     case MQTT_EVENT_ERROR:
+      log_mqtt_failure_(event->error_handle);
       self->publish_failed_.store(true);
       App.wake_loop_threadsafe();
       break;

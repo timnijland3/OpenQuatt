@@ -10,6 +10,8 @@
 #   - HA heating/cooling enable proxy contracts
 #   - Optional HA external heat demand proxy used as Power House feedforward
 #   - Aggregate HA cooling proxy contract used for cooling safety
+#   - Single HA ingress heartbeat: the shared freshness signal for all live
+#     HA inputs (issue #698)
 #
 # Notes:
 #   - Entity IDs are compile-time substitutions in oq_substitutions_common.yaml.
@@ -94,11 +96,40 @@ sensor:
     device_class: temperature
     state_class: measurement
     accuracy_decimals: 1
-    # Timestamp every HA publish at ingress (like the API/MQTT triplets), so a
-    # frozen value after connection loss still goes stale (issue #649).
+    # Legacy migration only: before the first shared heartbeat, preserve the
+    # old per-target freshness clock. Once a heartbeat is seen this clock is
+    # ignored for the rest of the boot.
     on_value:
       - lambda: |-
           oq_sensor_source::runtime().observe_heating_supply_target_ha((uint32_t) millis());
+
+  - platform: homeassistant
+    id: heating_curve_modifier_ha
+    name: "HA - Heating Curve Modifier"
+    entity_id: ${ha_heating_curve_modifier_entity_id}
+    internal: false
+    disabled_by_default: true
+    unit_of_measurement: "K"
+    state_class: measurement
+    accuracy_decimals: 1
+
+  # HA ingress heartbeat: the single freshness signal for all live HA inputs.
+  # The state itself changes about once per minute (whole minutes since
+  # epoch), because Home Assistant does not forward attribute-only changes to
+  # ESPHome sensors subscribed to the bare state (issue #698). Only a finite
+  # heartbeat proves freshness: an `unknown`/`unavailable` publish arrives as
+  # NAN and must not restart the stale clock.
+  - platform: homeassistant
+    id: ha_ingress_heartbeat
+    name: "HA - Ingress Heartbeat"
+    entity_id: ${ha_ingress_heartbeat_entity_id}
+    internal: true
+    accuracy_decimals: 0
+    on_value:
+      - lambda: |-
+          if (isfinite(x)) {
+            oq_sensor_source::runtime().observe_ha_ingress((uint32_t) millis());
+          }
 
 binary_sensor:
   - platform: homeassistant
@@ -172,8 +203,14 @@ binary_sensor:
     name: "HA - Heating Supply Target Valid"
     entity_id: ${ha_heating_supply_target_valid_entity_id}
     internal: true
-    # A validity flip without a value change still refreshes freshness, so
-    # re-arming after a dropout takes effect immediately.
+    # Match pre-heartbeat behaviour: validity transitions also re-arm the
+    # legacy target timer. Shared-heartbeat mode ignores this clock.
     on_state:
       - lambda: |-
           oq_sensor_source::runtime().observe_heating_supply_target_ha((uint32_t) millis());
+
+  - platform: homeassistant
+    id: heating_curve_modifier_valid_ha
+    name: "HA - Heating Curve Modifier Valid"
+    entity_id: ${ha_heating_curve_modifier_valid_entity_id}
+    internal: true

@@ -1,9 +1,9 @@
 (function () {
   const OPENQUATT_RESUME_CLEAR_VALUE = "2000-01-01 00:00:00";
   const OPENQUATT_AUTH_RECOVERY_WINDOW_MS = 600000;
-  const DEBUG_RECORDING_BUFFER_BYTES = 1024 * 1024;
+  const DEBUG_RECORDING_BUFFER_BYTES = 2 * 1024 * 1024;
   const DEBUG_RECORDING_SYSTEM_FIELD_COUNT = 5;
-  const DEBUG_RECORDING_FIELD_CAPACITY = 240;
+  const DEBUG_RECORDING_FIELD_CAPACITY = 336;
   const DEBUG_RECORDING_SAMPLE_HEADER_BYTES = 8;
   const DEBUG_RECORDING_CSRF_TOKEN = "mock-debug-recording-csrf-token";
   const MOCK_STABLE_VERSION = "v0.0.0-demo";
@@ -26,6 +26,7 @@
   const DOMAINS = new Set(mockEntityDefs.map(([domain]) => domain));
   const entities = new Map();
   let devControlsRoot = null;
+  const learningPreview = new URL(window.location.href).searchParams.get("learningPreview");
   const state = {
     scenario: "heating",
     installation: "duo",
@@ -37,6 +38,11 @@
     oduWriteState: "scenario",
     auxTempGateOn: false,
     auxRelayLastMode: 0,
+    auxRelayOn: false,
+    auxRelayLastFunction: "Disabled",
+    auxRunOnActive: false,
+    auxRunOnMode: 0,
+    auxRunOnStartedMs: 0,
     complete: true,
     tick: 0,
     autoAnimate: true,
@@ -187,12 +193,11 @@
     energyCountersReset: false,
     logHistoryEntries: [],
     debugRecording: {
+      enabled: true,
       active: false,
-      mode: "manual",
-      frozen: false,
+      mode: "rolling",
       startedAt: 0,
       stoppedAt: 0,
-      durationS: 15 * 60,
       nextOffsetS: 0,
       fields: [],
       samples: [],
@@ -220,11 +225,25 @@
       1: { loaded: false, armed: false, busy: false, status: "Ready: load the current compressor frequency table from the ODU", extendedLayout: false },
       2: { loaded: false, armed: false, busy: false, status: "Ready: load the current compressor frequency table from the ODU", extendedLayout: false },
     },
+    houseLearning: {
+      journalStatus: "ready",
+      preview: learningPreview,
+      records: 32,
+      rlsSamples: 174,
+      resetCount: 0,
+    },
     oduSettingsService: {
       1: { loaded: false, busy: false, status: "READY", profileAvailable: false, autoReapply: false, actual: { mode: 1, startTemperatureC: 4, stopDeltaC: 3 } },
       2: { loaded: false, busy: false, status: "READY", profileAvailable: false, autoReapply: false, actual: { mode: 3, startTemperatureC: 4, stopDeltaC: 3 } },
     },
+    oduDefrostService: {
+      1: { loaded: false, busy: false, state: "IDLE", active: false, manual: false, mode: 0 },
+      2: { loaded: false, busy: false, state: "IDLE", active: false, manual: false, mode: 0 },
+    },
   };
+
+  if (learningPreview === "spread") state.houseLearning.records = 16;
+  if (learningPreview === "days") state.houseLearning.records = 8;
 
   function isCoolingScenario(name = state.scenario) {
     return name === "cooling" || name === "cooling_startup_wait" || name === "cooling_limited" || name === "cooling_buffer_stop" || name === "cooling_stop_reasons" || name === "cooling_limiter_log";
@@ -305,6 +324,7 @@
     settings.busy = false;
     settings.status = "READY";
     settings.actual = { mode: profile.generation === "V1" ? 1 : 3, startTemperatureC: 4, stopDeltaC: 3 };
+    state.oduDefrostService[hp === 2 ? 2 : 1] = { loaded: false, busy: false, state: "IDLE", active: false, manual: false, mode: 0 };
     syncMockOduIdentityEntities(hp);
   }
 
@@ -327,6 +347,24 @@
       value: "",
       ...payload,
     });
+  }
+
+  function hasHouseLearningCapability() {
+    return state.hardware === "heatpump_controller_q";
+  }
+
+  function syncHouseLearningCapability() {
+    const definitions = [
+      ["switch", "Power House Passive Learning"],
+      ["button", "Power House Learning Reset"],
+    ];
+    if (!hasHouseLearningCapability()) {
+      definitions.forEach(([domain, name]) => entities.delete(entityKey(domain, name)));
+      return;
+    }
+    const learningEnabled = getEntity("switch", "Power House Passive Learning");
+    setEntity("switch", "Power House Passive Learning", learningEnabled || { state: false, value: false });
+    setEntity("button", "Power House Learning Reset", {});
   }
 
   function seedEntityDefinitions() {
@@ -998,6 +1036,8 @@
   }
 
   const SERVICE_STATUS_ENTITY_MAP = {
+    warmupStatus: ["sensor", "Controlled warmup status"],
+    warmupElapsed: ["sensor", "Controlled warmup elapsed"],
     commissioningStatus: ["text_sensor", "Commissioning status"],
     cm100Active: ["binary_sensor", "CM100 active"],
     boilerPowerTestResult: ["sensor", "Boiler power test result"],
@@ -1202,6 +1242,14 @@
       });
     };
 
+    const pushHeatingStop = (age, subject, reason, power, room, water, ageSeconds = 0) => {
+      [power, room, water].forEach((values, index) => {
+        pushEvent(age, "heating_stop_context", subject, reason, "normal", 2, "active", "idle",
+          values[0], values[1], values[2], ageSeconds, index + 1);
+      });
+      pushEvent(age, "source_stop", subject, reason, "normal", 2, "active", "idle", 3, 0, 0, 0, 32);
+    };
+
     if (!isIncidentScenarioActive()) {
     if (state.scenario !== "cooling_limiter_log" && state.scenario !== "cooling_stop_reasons" && state.scenario !== "heating_stop_reasons") {
       pushEvent(6 * 24 * 60 + 9 * 60, "sticky_pump_run", "PUMP", "sticky_protection", "normal", 98, "standby", "active", 60, 0, 0, 60);
@@ -1225,10 +1273,14 @@
       pushEvent(116, "topology_change", "BOTH", "better_heat", "normal", 2, "single", "duo", 2, 1, 15);
       pushEvent(115, "source_start", "HP1", "better_heat", "normal", 2, "idle", "active", 2);
       pushEvent(76, "topology_change", "HP2", "less_power", "normal", 2, "duo", "single", 0, 3);
-      pushEvent(76, "source_stop", "HP1", "less_power", "normal", 2, "active", "idle", 2);
+      pushHeatingStop(76, "HP1", "heating_optimizer", [2400, 2400, 2600], [2010, -32768, -32768], [-32768, -32768, -32768]);
       pushEvent(29, "flow_hold_start", "SYSTEM", "flow_postflow", "normal", 1, "active", "limited");
       pushEvent(27, "topology_change", "SYSTEM", "heating_request_cleared", "normal", 1, "single", "idle");
-      pushEvent(27, "source_stop", "HP2", "heating_request_cleared", "normal", 1, "active", "idle", 3);
+      pushHeatingStop(27, "HP2", "ph_comfort_hold", [900, 0, 2500], [2050, 2030, 2050], [-32768, -32768, -32768], 60);
+      pushHeatingStop(240, "HP1", "ph_low_load", [1550, 1550, 2500], [-32768, -32768, -32768], [-32768, 2200, 1600]);
+      pushHeatingStop(310, "HP1", "curve_water_stop", [-32768, -32768, 2500], [2040, 1995, 2030], [3590, 3420, 3590], 30);
+      pushHeatingStop(370, "HP2", "curve_low_load", [-32768, -32768, 2500], [2000, 1995, 1995], [3525, 3420, 3525], 20);
+      pushHeatingStop(430, "HP1", "heating_input_invalid", [-32768, -32768, -32768], [-32768, -32768, -32768], [-32768, -32768, -32768]);
       pushEvent(25, "flow_hold_clear", "SYSTEM", "flow_postflow", "normal", 1, "limited", "standby", 0, 0, 0, 120);
     } else if (isCandidateBlockedScenario()) {
       pushEvent(18, "source_start", "HP1", "runtime_lead", "normal", 2, "standby", "active", 4);
@@ -1684,6 +1736,9 @@
     const strategy = String(getEntity("select", "Heating Control Mode")?.value || "");
     const roomTemp = Number(getEntity("sensor", "Room Temperature (Selected)")?.value);
     const roomSetpoint = Number(getEntity("sensor", "Room Setpoint (Selected)")?.value);
+    if (Number.isFinite(roomSetpoint)) {
+      setEntity("sensor", "Controlled warmup effective target", { value: roomSetpoint, uom: "°C" });
+    }
     const housePower = Number(getEntity("number", "Rated maximum house power")?.value);
     const houseCold = Number(getEntity("number", "House cold temp")?.value);
     const outdoorMax = Number(getEntity("number", "Maximum heating outdoor temperature")?.value);
@@ -1772,6 +1827,7 @@
     setBinary("Boiler command valid", true);
     setBinary("Boiler command active", boilerActive);
     setBinary("OTB - Boiler Link Available", otbLinkAvailable);
+    setText("text_sensor", "OTB - Boiler Connection State", openthermSelected ? (otbLinkAvailable ? "ot_verified" : "ot_no_response") : "r1_ready");
     setBinary("OTB - Central Heating Active", otbLinkAvailable && boilerActive);
     setBinary("OTB - Domestic Hot Water Active", false);
     setBinary("OTB - Flame On", otbLinkAvailable && boilerActive);
@@ -1830,8 +1886,11 @@
     const heatingActive = cmLabel.startsWith("CM2") || cmLabel.startsWith("CM3") || cmLabel.startsWith("CM4");
     const coolingActive = cmLabel.startsWith("CM5");
     const modeCode = coolingActive ? 1 : (heatingActive ? 2 : 0);
+    const previousMode = state.auxRelayLastMode;
+    const functionUnchanged = auxFunction === state.auxRelayLastFunction;
+    state.auxRelayLastFunction = auxFunction;
     if (modeCode !== state.auxRelayLastMode) {
-      state.auxTempGateOn = false;
+      state.auxTempGateOn = state.auxRunOnActive && functionUnchanged && modeCode === state.auxRunOnMode;
       state.auxRelayLastMode = modeCode;
     }
 
@@ -1880,6 +1939,39 @@
       relayOn = state.auxTempGateOn;
     }
 
+    const runOnMode = String(getEntity("select", "Aux Relay Run-on")?.value || "Disabled");
+    const runOnSeconds = Number(getEntity("number", "Aux Relay Run-on Time")?.value ?? 300);
+    const demandFunction = auxFunction !== "Disabled" && auxFunction !== "External control";
+    if (relayOn || !demandFunction || !functionUnchanged || modeCode !== 0 || runOnMode === "Disabled" || !(runOnSeconds > 0)) {
+      state.auxRunOnActive = false;
+    } else {
+      const now = Date.now();
+      if (!state.auxRunOnActive && state.auxRelayOn && previousMode !== 0) {
+        state.auxRunOnActive = true;
+        state.auxRunOnMode = previousMode;
+        state.auxRunOnStartedMs = now;
+      }
+      if (state.auxRunOnActive) {
+        let finished = now - state.auxRunOnStartedMs >= runOnSeconds * 1000;
+        if (!finished && runOnMode === "Until supply temp") {
+          const hysteresis = Number(getEntity("number", "Aux Relay Temp Hysteresis")?.value ?? 2);
+          if (Number.isNaN(supplyTemp)) {
+            finished = true;
+          } else if (state.auxRunOnMode === 2) {
+            finished = supplyTemp <= Number(getEntity("number", "Aux Relay Heating Start Temp")?.value ?? 30) - hysteresis;
+          } else {
+            finished = supplyTemp >= Number(getEntity("number", "Aux Relay Cooling Start Temp")?.value ?? 18) + hysteresis;
+          }
+        }
+        if (finished) state.auxRunOnActive = false;
+      }
+      if (state.auxRunOnActive) {
+        relayOn = true;
+        status = "Run-on active";
+      }
+    }
+    state.auxRelayOn = relayOn;
+
     setBinary("Aux relay active", relayOn);
     setText("text_sensor", "Aux relay status", status);
   }
@@ -1887,10 +1979,14 @@
   function seedEntities() {
     syncDevMeta();
     seedEntityDefinitions();
+    syncHouseLearningCapability();
     setEntity("text_sensor", "OpenQuatt Installation Topology", { state: state.installation, value: state.installation });
     syncMockOduIdentityEntities(1);
     setEntity("text_sensor", "OpenQuatt Hardware Profile", { state: state.hardware, value: state.hardware });
     setEntity("text_sensor", "OpenQuatt Hardware Revision", { state: "1.0 (batch 42)", value: "1.0 (batch 42)" });
+    if (state.hardware === "heatpump_controller_q") {
+      setEntity("sensor", "OpenQuatt Hardware Serial", { state: 137, value: 137 });
+    }
     const activeConnection = state.connection === "eth" ? "Ethernet" : "WiFi";
     setEntity("text_sensor", "OpenQuatt Connection", { state: activeConnection, value: activeConnection });
     setEntity("select", "Preferred Connection", {
@@ -1938,6 +2034,7 @@
     setEntity("sensor", "Lifetime energiehistorie grootte", { value: state.energyHistoryStoredKiB, uom: "kB" });
     setEntity("sensor", "Lifetime energiehistorie schrijfacties", { value: state.energyHistoryWrites });
     setEntity("update", "Firmware Update", {
+      manifest_revision: 0,
       state: "up_to_date",
       value: "up_to_date",
       current_version: MOCK_DEV_VERSION,
@@ -1958,6 +2055,15 @@
       option: ["Auto", "Force CM0", "Force CM1", "Force CM98"],
     });
     setEntity("switch", "OpenQuatt Enabled", { value: true, state: true });
+    setEntity("switch", "Controlled warmup enabled", { value: false, state: false });
+    setEntity("binary_sensor", "Controlled warmup active", { value: false, state: false });
+    setEntity("sensor", "Controlled warmup intermediate target", { value: null, state: "unknown", uom: "°C" });
+    setEntity("sensor", "Controlled warmup boost", { value: 0, uom: "°C" });
+    setEntity("sensor", "Controlled warmup effective target", { value: 20.5, uom: "°C" });
+    setEntity("sensor", "Controlled warmup status", { value: 0 });
+    setEntity("sensor", "Controlled warmup elapsed", { value: 0, uom: "s" });
+    setEntity("switch", "Power House run extension", { value: false, state: false });
+    setEntity("text_sensor", "Power House run extension status", { value: "inactive", state: "inactive" });
     setEntity("switch", "Boiler assist enabled", { value: true, state: true });
     setEntity("switch", "Boiler fallback on heat-pump fault", { value: false, state: false });
     setEntity("select", "Boiler connection", {
@@ -1973,6 +2079,9 @@
     setEntity("switch", "Status LEDs enabled", { value: true, state: true });
     setEntity("switch", "Usage statistics", { value: false, state: false });
     setEntity("binary_sensor", "Usage statistics choice configured", { value: false, state: false });
+    setEntity("switch", "Performance model validation", { value: false, state: false });
+    setEntity("binary_sensor", "Performance model validation choice configured", { value: false, state: false });
+    setEntity("binary_sensor", "Performance model validation prompt handled", { value: false, state: false });
     setEntity("text_sensor", "Usage statistics installation ID", { value: "7df1c1f8-fc47-4ac8-b0d7-94d8c42d772f", state: "7df1c1f8-fc47-4ac8-b0d7-94d8c42d772f" });
     setEntity("text", "CIC - Feed URL", { value: "http://192.168.2.117:8080/beta/feed/data.json", state: "http://192.168.2.117:8080/beta/feed/data.json" });
     setEntity("switch", "OpenTherm Enabled", { value: false, state: false });
@@ -2129,6 +2238,11 @@
       state: "Disabled",
       option: ["Disabled", "Heating demand", "Cooling demand", "Heating or cooling demand", "External control"],
     });
+    setEntity("select", "Aux Relay Run-on", {
+      value: "Disabled",
+      state: "Disabled",
+      option: ["Disabled", "Fixed time", "Until supply temp"],
+    });
     setEntity("select", "Outdoor Unit Flow Mode", {
       value: "Local aggregate HP1/HP2",
       state: "Local aggregate HP1/HP2",
@@ -2168,6 +2282,11 @@
       value: "Heating curve",
       state: "Heating curve",
       option: ["Heating curve", "OT thermostat", "HA input", "API input", "MQTT"],
+    });
+    setEntity("select", "Heating Curve Modifier Source", {
+      value: "Disabled",
+      state: "Disabled",
+      option: ["Disabled", "HA input", "API input", "MQTT"],
     });
     setEntity("select", "Firmware Update Channel", {
       value: "dev",
@@ -2221,6 +2340,11 @@
       ["Power House comfort above setpoint", 0.3, 0, 2, 0.05, "°C"],
       ["Power House demand rise time", 8, 2, 20, 1, "min"],
       ["Power House demand fall time", 3, 1, 10, 1, "min"],
+      ["Power House run extension stop margin", 0.5, 0.1, 1, 0.1, "°C"],
+      ["Power House run extension restart cooldown", 0.2, 0.1, 3, 0.1, "°C"],
+      ["Controlled warmup trigger", 1.5, 0.5, 5, 0.1, "°C"],
+      ["Controlled warmup step", 0.1, 0.1, 0.5, 0.1, "°C"],
+      ["Controlled warmup step time", 45, 5, 120, 5, "min"],
       ["Cooling Minimum Supply Temp", 18, 5, 24, 0.5, "°C"],
       ["Cooling Demand Max", 4, 1, 10, 1, "step"],
       ["Cooling Restart Delta", 1.0, 0, 5, 0.1, "°C"],
@@ -2231,12 +2355,13 @@
       ["Aux Relay Heating Start Temp", 30, 20, 60, 0.5, "°C"],
       ["Aux Relay Cooling Start Temp", 18, 8, 25, 0.5, "°C"],
       ["Aux Relay Temp Hysteresis", 2, 0.5, 5, 0.5, "°C"],
-      ["Curve Tsupply @ -20°C", 48, 20, 70, 1, "°C"],
-      ["Curve Tsupply @ -10°C", 43, 20, 70, 1, "°C"],
-      ["Curve Tsupply @ 0°C", 38, 20, 70, 1, "°C"],
-      ["Curve Tsupply @ 5°C", 34, 20, 70, 1, "°C"],
-      ["Curve Tsupply @ 10°C", 30, 20, 70, 1, "°C"],
-      ["Curve Tsupply @ 15°C", 27, 20, 70, 1, "°C"],
+      ["Aux Relay Run-on Time", 300, 10, 3600, 10, "s"],
+      ["Curve Tsupply @ -20°C", 48, 20, 70, 0.5, "°C"],
+      ["Curve Tsupply @ -10°C", 43, 20, 70, 0.5, "°C"],
+      ["Curve Tsupply @ 0°C", 38, 20, 70, 0.5, "°C"],
+      ["Curve Tsupply @ 5°C", 34, 20, 70, 0.5, "°C"],
+      ["Curve Tsupply @ 10°C", 30, 20, 70, 0.5, "°C"],
+      ["Curve Tsupply @ 15°C", 27, 20, 70, 0.5, "°C"],
       ["Curve Fallback Tsupply (No Outside Temp)", 40, 25, 70, 0.5, "°C"],
     ].forEach(([name, value, min, max, step, uom]) => {
       setEntity("number", name, {
@@ -2336,6 +2461,10 @@
       ["Water Supply Temp (Selected)", 29.5, "°C"],
       ["Outside Temperature (Selected)", 8.2, "°C"],
       ["Heating Curve Supply Target", 33.0, "°C"],
+      ["Heating Curve Base Target", 33.0, "°C"],
+      ["Heating Curve Modifier", 0.0, "K"],
+      ["Heating Curve Room Trim", 0.0, "K"],
+      ["Heating Supply Target (Effective)", 33.0, "°C"],
       ["Heating Supply Target (Selected)", 33.0, "°C"],
       ["Power House – P_house", 2500, "W"],
       ["Power House – P_req", 2800, "W"],
@@ -3969,6 +4098,7 @@
       const currentVersion = String(getEntity("text_sensor", "OpenQuatt Version")?.value || MOCK_STABLE_VERSION);
       const latestVersion = value === "main" ? MOCK_STABLE_VERSION : MOCK_DEV_VERSION;
       if (updateEntity) {
+        updateEntity.manifest_revision = ((updateEntity.manifest_revision || 0) + 1) >>> 0;
         updateEntity.current_version = currentVersion;
         updateEntity.latest_version = latestVersion;
         updateEntity.release_url = getMockReleaseUrl(value);
@@ -4001,6 +4131,7 @@
         : state.installation;
       const targetLabel = `Heatpump Controller Q ${targetTopology === "duo" ? "Duo" : "Single"} ${targetConnection === "eth" ? "Ethernet" : "Wi-Fi"}`;
       if (updateEntity) {
+        updateEntity.manifest_revision = ((updateEntity.manifest_revision || 0) + 1) >>> 0;
         updateEntity.current_version = currentVersion;
         updateEntity.latest_version = latestVersion;
         updateEntity.release_url = getMockReleaseUrl(channel);
@@ -4091,6 +4222,19 @@
     entity.state = Boolean(enabled);
     if (name === "Usage statistics") {
       setEntity("binary_sensor", "Usage statistics choice configured", { value: true, state: true });
+    }
+    if (name === "Controlled warmup enabled") {
+      setEntity("binary_sensor", "Controlled warmup active", { value: false, state: false });
+      notifyMockUpdated();
+      return;
+    }
+    if (name === "Power House Passive Learning") {
+      notifyMockUpdated();
+      return;
+    }
+    if (name === "Performance model validation") {
+      setEntity("binary_sensor", "Performance model validation prompt handled", { value: true, state: true });
+      setEntity("binary_sensor", "Performance model validation choice configured", { value: true, state: true });
     }
     if (name === "Boiler assist enabled" && !enabled) {
       setSwitch("Boiler fallback on heat-pump fault", false);
@@ -4298,7 +4442,105 @@
     return mockResponse(200, getOduSettingsPayload(hp));
   }
 
+  function getOduDefrostPayload(hp) {
+    const service = state.oduDefrostService[hp];
+    const mode = String(getEntity("text_sensor", `HP${hp} - Working Mode Label`)?.value || "");
+    const compressorHz = Number(getEntity("sensor", `HP${hp} - Compressor frequency`)?.value);
+    const heating = /heating|verwarmen/i.test(mode);
+    const running = Number.isFinite(compressorHz) && compressorHz > 0.5;
+    const guard = !service.loaded ? "READY" : service.active ? "ALREADY_ACTIVE" : !heating ? "NOT_HEATING" : !running ? "COMPRESSOR_NOT_RUNNING" : "READY";
+    return {
+      ok: true, hp, online: true, fresh: true, identity_ready: getMockOduVariant(hp) > 0,
+      variant: getMockOduVariant(hp),
+      loaded: service.loaded, auto_defrost_control_ok: true, busy: service.busy, active: service.active,
+      manual: service.manual, can_trigger: service.loaded && !service.busy && guard === "READY",
+      defrost_mode: service.loaded ? (service.mode ?? 0) : -1, operation_mode: service.active ? 4 : heating ? 2 : 0, state: service.state, guard,
+      elapsed_s: service.active ? 84 : -1, since_last_s: 3600, last_duration_s: 420,
+      ambient_c: 4.2, coil_c: -2.1, evaporation_c: -5.4, compressor_hz: compressorHz,
+      delta_k: 9.6, start_threshold_c: service.loaded ? -3 : null, delta_required_k: null, exit_threshold_c: service.loaded ? 17 : null, alternate_exit_c: service.loaded ? 25 : null,
+      confirmation_s: 0, confirmation_required_s: service.loaded ? 180 : -1, runtime_s: 84, minimum_runtime_s: service.loaded ? 300 : -1,
+      interval_s: -1, max_duration_s: service.loaded ? 480 : -1, exit_confirmation_s: 0, exit_required_s: -1,
+      inferred_end_reason: service.state === "COMPLETE" ? "eindvoorwaarde bereikt" : "",
+      csrf_token: "oq-mock-odu-defrost",
+    };
+  }
+
+  function handleMockOduDefrostRequest(url, method, init) {
+    const match = url.pathname.match(/\/openquatt\/odu-defrost\/hp([12])\/(status|load|trigger|save)$/);
+    if (!match) return null;
+    const hp = Number(match[1]);
+    const action = match[2];
+    if (hp === 2 && state.installation === "single") return mockResponse(404, { ok: false });
+    if (action === "status") return method === "GET" ? mockResponse(200, getOduDefrostPayload(hp)) : mockResponse(405, { ok: false });
+    if (method !== "POST") return mockResponse(405, { ok: false });
+    const params = new URLSearchParams(String(init?.body || ""));
+    if (params.get("csrf_token") !== "oq-mock-odu-defrost") return mockResponse(409, { ok: false, error: "forbidden" });
+    const service = state.oduDefrostService[hp];
+    if (service.busy) return mockResponse(409, { ok: false, error: "busy" });
+    if (action === "save") {
+      const desired = Number(params.get("mode"));
+      const expected = Number(params.get("expected_mode"));
+      const variant = getMockOduVariant(hp);
+      const supported = variant === 1 ? [0, 1, 3] : [0, 1, 3, 4];
+      if (!supported.includes(desired) || ![-1, 0, 1, 2, 3, 4].includes(expected)) return mockResponse(409, { ok: false, error: "invalid_mode" });
+      if (!service.loaded) return mockResponse(409, { ok: false, error: "busy" });
+      if (expected !== (service.mode ?? 0)) return mockResponse(409, { ok: false, error: "stale" });
+      if (desired === (service.mode ?? 0)) {
+        service.state = "SAVED";
+        return mockResponse(200, getOduDefrostPayload(hp));
+      }
+      const compressorHz = Number(getEntity("sensor", `HP${hp} - Compressor frequency`)?.value);
+      if (!Number.isFinite(compressorHz) || compressorHz > 0) {
+        service.state = "COMPRESSOR_RUNNING";
+        service.busy = true;
+        window.setTimeout(() => {
+          service.busy = false;
+          notifyMockUpdated();
+        }, 320);
+        return mockResponse(200, getOduDefrostPayload(hp));
+      }
+      service.busy = true;
+      service.state = "CHECKING";
+      window.setTimeout(() => {
+        service.busy = false;
+        service.mode = desired;
+        service.state = "SAVED";
+        notifyMockUpdated();
+      }, 320);
+      return mockResponse(200, getOduDefrostPayload(hp));
+    }
+    service.busy = true;
+    service.state = action === "load" ? "LOADING" : "CHECKING";
+    window.setTimeout(() => {
+      service.busy = false;
+      if (action === "load") {
+        service.loaded = true;
+        service.state = "LOADED";
+      } else {
+        const payload = getOduDefrostPayload(hp);
+        if (payload.can_trigger) {
+          service.active = true;
+          service.manual = true;
+          service.state = "ACTIVE";
+        } else {
+          service.state = "WAITING";
+        }
+      }
+      notifyMockUpdated();
+    }, 320);
+    return mockResponse(200, getOduDefrostPayload(hp));
+  }
+
   function handleButtonPress(name) {
+    if (name === "Power House Learning Reset") {
+      setSwitch("Power House Passive Learning", false);
+      state.houseLearning.journalStatus = "cleared";
+      state.houseLearning.records = 0;
+      state.houseLearning.rlsSamples = 0;
+      state.houseLearning.resetCount += 1;
+      notifyMockUpdated();
+      return;
+    }
     const generationDetectMatch = /^HP([12]) - Detect ODU generation$/.exec(name);
     if (generationDetectMatch) {
       const hp = Number(generationDetectMatch[1]);
@@ -4917,6 +5159,7 @@
       setText("text_sensor", "Firmware Update Status", "Idle");
       setNumber("Firmware Update Progress", 0, "%");
       if (updateEntity) {
+        updateEntity.manifest_revision = ((updateEntity.manifest_revision || 0) + 1) >>> 0;
         updateEntity.current_version = currentVersion;
         updateEntity.latest_version = latestVersion;
         updateEntity.release_url = getMockReleaseUrl(channel);
@@ -5101,8 +5344,7 @@
     if (!recording.startedAt) {
       return;
     }
-    const rolling = recording.mode === "rolling";
-    const elapsedS = rolling ? getDebugRecordingElapsedS(recording) : Math.min(getDebugRecordingElapsedS(recording), Number(recording.durationS || 0));
+    const elapsedS = getDebugRecordingElapsedS(recording);
     if (!Number.isFinite(Number(recording.nextOffsetS))) {
       recording.nextOffsetS = 0;
     }
@@ -5123,18 +5365,13 @@
         if (recording.samples[0]) recording.samples[0].event_count = 0;
       }
     }
-    if (!rolling && recording.active && elapsedS >= Number(recording.durationS || 0)) {
-      recording.active = false;
-      recording.stoppedAt = recording.startedAt + Number(recording.durationS || 0) * 1000;
-    }
   }
 
   function getDebugRecordingStatusPayload() {
+    ensureMockRecorderAutostart();
     syncDebugRecordingSamples();
     const recording = state.debugRecording;
-    const rolling = recording.mode === "rolling";
-    const elapsedS = rolling ? getDebugRecordingElapsedS(recording) : Math.min(getDebugRecordingElapsedS(recording), Number(recording.durationS || 0));
-    const remainingS = recording.active && !rolling ? Math.max(0, Number(recording.durationS || 0) - elapsedS) : 0;
+    const elapsedS = getDebugRecordingElapsedS(recording);
     const firstSample = recording.samples[0] || null;
     const lastSample = recording.samples[recording.samples.length - 1] || null;
     const retainedDurationS = firstSample && lastSample ? Math.max(0, lastSample.offset_s - firstSample.offset_s) : 0;
@@ -5144,16 +5381,14 @@
     return {
       ok: true,
       available: true,
+      enabled: recording.enabled !== false,
       active: Boolean(recording.active),
-      mode: rolling ? "rolling" : "manual",
-      rolling,
-      frozen: Boolean(recording.frozen),
+      mode: "rolling",
+      rolling: true,
       recording_id: Number(recording.startedAt || 0),
       storage: "psram",
       interval_s: 10,
-      duration_s: Number(recording.durationS || 0),
       elapsed_s: elapsedS,
-      remaining_s: remainingS,
       retained_duration_s: retainedDurationS,
       retention_capacity_s: Math.max(0, sampleCapacity - 1) * 10,
       sample_count: recording.samples.length,
@@ -5173,7 +5408,7 @@
       string_overflow: false,
       event_count: eventCount,
       buffer_size: DEBUG_RECORDING_BUFFER_BYTES,
-      storage_size: DEBUG_RECORDING_BUFFER_BYTES + (2 * DEBUG_RECORDING_FIELD_CAPACITY * 120) + (64 * 1024),
+      storage_size: DEBUG_RECORDING_BUFFER_BYTES + (2 * DEBUG_RECORDING_FIELD_CAPACITY * 120) + (4096 * 16) + (1024 * 2) + (4096 * 2) + (256 * 1024),
       estimated_size: 2048 + recording.samples.length * (16 + recording.fields.length * 3),
       buffer: "psram",
       csrf_token: DEBUG_RECORDING_CSRF_TOKEN,
@@ -5221,19 +5456,22 @@
   }
 
   function handleDebugRecordingStart(url) {
+    if (url.searchParams.get("rolling") !== "1") {
+      return mockResponse(410, { ok: false, error: "timed_recording_removed" });
+    }
     const pending = state.debugRecording;
+    if (pending.enabled === false) {
+      return mockResponse(409, { ok: false, error: "recorder_disabled" });
+    }
     if (!pending.configurationPending || pending.pendingFields.length <= DEBUG_RECORDING_SYSTEM_FIELD_COUNT) {
       return mockResponse(409, { ok: false, error: "configuration_not_ready" });
     }
-    const rolling = url.searchParams.get("rolling") === "1";
-    const durationS = rolling ? 0 : Math.max(60, Math.min(3600, Number(url.searchParams.get("duration_s") || 15 * 60)));
     state.debugRecording = {
+      enabled: pending.enabled !== false,
       active: true,
-      mode: rolling ? "rolling" : "manual",
-      frozen: false,
+      mode: "rolling",
       startedAt: Date.now(),
       stoppedAt: 0,
-      durationS,
       nextOffsetS: 0,
       fields: [...pending.pendingFields],
       samples: [],
@@ -5247,44 +5485,143 @@
     return mockResponse(200, getDebugRecordingStatusPayload());
   }
 
-  function handleDebugRecordingFreeze() {
-    const recording = state.debugRecording;
-    syncDebugRecordingSamples();
-    if (recording.active) {
-      recording.active = false;
-      recording.frozen = recording.mode === "rolling";
-      recording.stoppedAt = Date.now();
-    }
-    return mockResponse(200, getDebugRecordingStatusPayload());
-  }
-
   function handleDebugRecordingStop() {
     const recording = state.debugRecording;
     syncDebugRecordingSamples();
     if (recording.active) {
       recording.active = false;
-      recording.frozen = recording.mode === "rolling";
       recording.stoppedAt = Date.now();
     }
     return mockResponse(200, getDebugRecordingStatusPayload());
   }
 
-  function buildDebugRecordingDownloadPayload() {
+  // Firmware-owned auto-start: without any web app interaction the mock boots
+  // into a rolling recording, mirroring the device behavior.
+  function ensureMockRecorderAutostart() {
+    const recording = state.debugRecording;
+    if (recording.enabled === false || recording.startedAt || recording.fields.length) {
+      return;
+    }
+    const fields = [...getDebugRecordingSystemFields()];
+    for (const [domain, name] of mockEntityDefs) {
+      if (fields.length >= DEBUG_RECORDING_FIELD_CAPACITY) {
+        break;
+      }
+      if (domain !== "sensor" && domain !== "number" && domain !== "binary_sensor"
+        && domain !== "switch" && domain !== "text_sensor" && domain !== "select") {
+        continue;
+      }
+      if (!getEntity(domain, name)) {
+        continue;
+      }
+      fields.push({ key: name, domain, name, unit: "" });
+    }
+    state.debugRecording = {
+      ...recording,
+      enabled: true,
+      active: true,
+      mode: "rolling",
+      startedAt: state.bootedAt,
+      stoppedAt: 0,
+      nextOffsetS: 0,
+      fields,
+      samples: [],
+      missingFieldCount: 0,
+      pendingFields: [],
+      pendingRequestedFieldCount: 0,
+      pendingMissingFieldCount: 0,
+      configurationPending: false,
+    };
+    syncDebugRecordingSamples();
+  }
+
+  function handleDebugRecordingRestart() {
+    if (state.debugRecording.enabled === false) {
+      return mockResponse(409, { ok: false, error: "recorder_not_available" });
+    }
+    ensureMockRecorderAutostart();
+    const recording = state.debugRecording;
+    state.debugRecording = {
+      ...recording,
+      active: true,
+      mode: "rolling",
+      startedAt: Date.now(),
+      stoppedAt: 0,
+      nextOffsetS: 0,
+      samples: [],
+      missingFieldCount: Number(recording.missingFieldCount || 0),
+      pendingFields: [],
+      pendingRequestedFieldCount: 0,
+      pendingMissingFieldCount: 0,
+      configurationPending: false,
+    };
+    syncDebugRecordingSamples();
+    return mockResponse(200, getDebugRecordingStatusPayload());
+  }
+
+  function handleDebugRecordingEnabled(url, init) {
+    const params = new URLSearchParams(String(init?.body || ""));
+    const enabled = params.get("enabled") === "1" || url.searchParams.get("enabled") === "1";
+    const recording = state.debugRecording;
+    if (enabled === (recording.enabled !== false)) {
+      // Idempotent: repeating the current value never wipes the buffer.
+      return mockResponse(200, getDebugRecordingStatusPayload());
+    }
+    if (!enabled) {
+      syncDebugRecordingSamples();
+      recording.enabled = false;
+      if (recording.active) {
+        recording.active = false;
+        recording.stoppedAt = Date.now();
+      }
+      return mockResponse(200, getDebugRecordingStatusPayload());
+    }
+    ensureMockRecorderAutostart();
+    state.debugRecording = {
+      ...state.debugRecording,
+      enabled: true,
+      active: true,
+      mode: "rolling",
+      startedAt: Date.now(),
+      stoppedAt: 0,
+      nextOffsetS: 0,
+      samples: [],
+    };
+    syncDebugRecordingSamples();
+    return mockResponse(200, getDebugRecordingStatusPayload());
+  }
+
+  function buildDebugRecordingDownloadPayload(lastMinutes = 0) {
+    ensureMockRecorderAutostart();
     syncDebugRecordingSamples();
     const recording = state.debugRecording;
-    const startedAtMs = Number(recording.startedAt || Date.now());
+    const rangeS = Math.max(0, Number(lastMinutes) || 0) * 60;
+    let startIndex = 0;
+    if (rangeS > 0 && recording.samples.length) {
+      const lastOffset = recording.samples[recording.samples.length - 1].offset_s;
+      const cutoff = Math.max(0, lastOffset - rangeS);
+      startIndex = recording.samples.findIndex((sample) => sample.offset_s >= cutoff);
+      if (startIndex < 0) {
+        startIndex = 0;
+      }
+    }
+    const windowSamples = recording.samples.slice(startIndex);
+    const firstOffset = windowSamples.length ? windowSamples[0].offset_s : 0;
+    const lastOffset = windowSamples.length ? windowSamples[windowSamples.length - 1].offset_s : 0;
+    const startedAtMs = Number(recording.startedAt || Date.now()) + firstOffset * 1000;
     const endedAtMs = recording.active ? Date.now() : Number(recording.stoppedAt || startedAtMs);
-    const initial = recording.samples[0] || null;
-    const samples = recording.samples.map((sample, index) => {
-      const previous = index > 0 ? recording.samples[index - 1] : initial;
+    const initial = windowSamples[0] || null;
+    const samples = windowSamples.map((sample, index) => {
+      const previous = index > 0 ? windowSamples[index - 1] : null;
       const deltas = [];
       sample.values.forEach((value, valueIndex) => {
         if (previous && !Object.is(value, previous.values[valueIndex])) {
           deltas.push([valueIndex, value]);
         }
       });
-      return [sample.offset_s, deltas];
+      return [sample.offset_s - firstOffset, deltas];
     });
+    const windowEventCount = windowSamples.slice(1).reduce((total, sample) => total + Number(sample.event_count || 0), 0);
     return {
       format: "openquatt-debug-device-v1",
       schema_version: 1,
@@ -5302,18 +5639,16 @@
         active: Boolean(recording.active),
         mode: recording.mode === "rolling" ? "rolling" : "manual",
         rolling: recording.mode === "rolling",
-        frozen: Boolean(recording.frozen),
-        duration_s: Math.max(0, Math.floor((endedAtMs - startedAtMs) / 1000)),
-        retained_duration_s: initial && recording.samples.length
-          ? Math.max(0, recording.samples[recording.samples.length - 1].offset_s - initial.offset_s)
-          : 0,
+        duration_s: Math.max(0, lastOffset - firstOffset),
+        retained_duration_s: Math.max(0, lastOffset - firstOffset),
         retention_capacity_s: Math.max(0, getDebugRecordingSampleCapacity(recording.fields) - 1) * 10,
         interval_s: 10,
-        sample_count: recording.samples.length,
+        sample_count: windowSamples.length,
         sample_capacity: getDebugRecordingSampleCapacity(recording.fields),
         sample_row_bytes: getDebugRecordingSampleBytes(recording.fields),
         buffer_size: DEBUG_RECORDING_BUFFER_BYTES,
         column_count: recording.fields.length,
+        event_count: windowEventCount,
         storage: "psram",
       },
       columns: recording.fields.map((field) => field.key),
@@ -5324,8 +5659,9 @@
     };
   }
 
-  function handleDebugRecordingDownload() {
-    return mockResponse(200, buildDebugRecordingDownloadPayload());
+  function handleDebugRecordingDownload(url) {
+    const lastMinutes = Number(url.searchParams.get("last_minutes") || 0);
+    return mockResponse(200, buildDebugRecordingDownloadPayload(lastMinutes));
   }
 
   function calculateMockCrc(words) {
@@ -5534,6 +5870,64 @@
     return mockResponse(405, { ok: false, error: "method_not_allowed" });
   }
 
+  function getHouseLearningStatusPayload() {
+    const enabled = isSwitchEnabled("Power House Passive Learning");
+    const controlMode = String(getEntity("text_sensor", "Control Mode (Label)")?.value || "");
+    const invalidReasons = [];
+    if (!controlMode.startsWith("CM2")) invalidReasons.push("control_mode");
+    if (state.boiler !== "off") invalidReasons.push("boiler_heat");
+    const legacyCount = Math.min(state.houseLearning.records, 4);
+    const dailyCount = state.houseLearning.records - legacyCount;
+    const ready = invalidReasons.length === 0 && dailyCount >= 24;
+    return {
+      schema: 1, mode: "passive", enabled, storage_ready: true,
+      status: enabled ? "collecting" : "paused",
+      source_status: invalidReasons.length ? "blocked" : "ready",
+      invalid_reasons: invalidReasons, records: state.houseLearning.records,
+      daily_record_count: dailyCount, legacy_record_count: legacyCount, reference_room_c: 20,
+      collection: { batch_active: enabled && state.boiler === "off", batch_elapsed_s: enabled ? 9200 : 0, batch_target_s: 86400,
+        batch_last_rejection: null, thermal_active: enabled && !invalidReasons.length, thermal_elapsed_s: enabled ? 420 : 0, thermal_target_s: 1800, thermal_intervals: state.houseLearning.rlsSamples },
+      batch_status: ready ? "advice_ready" : dailyCount < 9 ? "insufficient_data" : "insufficient_spread", batch_advice_ready: ready,
+      advice_ready: false, auto_apply_allowed: false,
+      h_batch: ready ? 186.4 : null, t0_batch: ready ? 16.8 : null,
+      u_rls: ready ? 179.2 : null, c_rls_wh_per_k: ready ? 7420 : null,
+      rls_samples: state.houseLearning.rlsSamples, rls_ready: ready,
+      rls_readiness_reasons: ready ? [] : ["not_enough_samples"],
+      tick_epoch: Math.floor(Date.now() / 1000),
+      last_sample_epoch: enabled ? Math.floor(Date.now() / 1000) - 42 : null,
+      context_revision: 8, journal_status: state.houseLearning.journalStatus,
+      model_validation_status: ready ? "model_disagreement" : "batch_model_unavailable",
+      blocked_reasons: ready ? ["model_disagreement"] : invalidReasons,
+      sources: {
+        room: { route: "selected_room_temperature", valid: true },
+        setpoint: { route: "selected_room_setpoint", valid: true },
+        outside: { route: "selected_outside_temperature", valid: true },
+        flow: { route: "selected_flow", valid: true },
+      },
+      memory: { status_cache_bytes: 4096, export_cache_bytes: 24576, request_scratch_bytes: 24576 },
+    };
+  }
+
+  function getHouseLearningExportPayload() {
+    const now = Math.floor(Date.now() / 1000);
+    const legacyCount = Math.min(state.houseLearning.records, 4);
+    return {
+      schema: 1, mode: "passive", auto_apply_allowed: false, reference_room_c: 20,
+      record_columns: ["start_epoch_s", "end_epoch_s", "mean_room_c", "mean_setpoint_c", "mean_outside_c", "mean_heat_w", "room_trend_k_per_h", "context_revision", "effective_outside_c", "record_kind"],
+      records: Array.from({ length: state.houseLearning.records }, (_item, index) => {
+        const end = now - ((state.houseLearning.records - index) * 86400);
+        const outside = state.houseLearning.preview === "spread"
+          ? 8.4 + [0, 1, 8, 4, 2, 11, 6, 10, 5, 3, 7, 9][Math.max(0, index - legacyCount)] * 0.35
+          : 2.5 + (index * 0.35);
+        const room = Number((20.3 + index * 0.02).toFixed(2));
+        const effectiveOutside = Number((outside - (room - 20)).toFixed(2));
+        const kind = index < legacyCount ? 0 : 1;
+        return [end - (kind ? 86400 : 14400), end, room, 20.5, Number(outside.toFixed(2)), Math.round(186.4 * (16.8 - effectiveOutside)), 0.01, 8, effectiveOutside, kind];
+      }),
+      diagnostic_columns: [], diagnostics: [],
+    };
+  }
+
   function parseMockRequest(input) {
     const url = new URL(String(typeof input === "string" ? input : input.url), window.location.href);
     const parts = url.pathname.split("/").filter(Boolean);
@@ -5551,6 +5945,7 @@
     return Promise.resolve({
       ok: status >= 200 && status < 300,
       status,
+      blob: async () => new Blob([JSON.stringify(payload)], { type: "application/json" }),
       json: async () => clone(payload),
       text: async () => JSON.stringify(payload),
     });
@@ -5614,16 +6009,33 @@
         if (!hasValidDebugRecordingCsrf(init)) return mockResponse(403, { ok: false, error: "csrf_rejected" });
         return handleDebugRecordingStart(url);
       }
-      if (url.pathname.endsWith("/openquatt/debug-recording/freeze") && method === "POST") {
-        if (!hasValidDebugRecordingCsrf(init)) return mockResponse(403, { ok: false, error: "csrf_rejected" });
-        return handleDebugRecordingFreeze();
-      }
       if (url.pathname.endsWith("/openquatt/debug-recording/stop") && method === "POST") {
         if (!hasValidDebugRecordingCsrf(init)) return mockResponse(403, { ok: false, error: "csrf_rejected" });
         return handleDebugRecordingStop();
       }
+      if (url.pathname.endsWith("/openquatt/debug-recording/restart") && method === "POST") {
+        if (!hasValidDebugRecordingCsrf(init)) return mockResponse(403, { ok: false, error: "csrf_rejected" });
+        return handleDebugRecordingRestart();
+      }
+      if (url.pathname.endsWith("/openquatt/debug-recording/enabled") && method === "POST") {
+        if (!hasValidDebugRecordingCsrf(init)) return mockResponse(403, { ok: false, error: "csrf_rejected" });
+        return handleDebugRecordingEnabled(url, init || {});
+      }
+      if (url.pathname.endsWith("/openquatt/debug-recording/download-range") && method === "GET") {
+        return handleDebugRecordingDownload(url);
+      }
       if (url.pathname.endsWith("/openquatt/debug-recording/download") && method === "GET") {
-        return handleDebugRecordingDownload();
+        return handleDebugRecordingDownload(url);
+      }
+      if (url.pathname.endsWith("/openquatt/learning/status") && method === "GET") {
+        return hasHouseLearningCapability()
+          ? mockResponse(200, getHouseLearningStatusPayload())
+          : mockResponse(404, { ok: false, error: "not_found" });
+      }
+      if (url.pathname.endsWith("/openquatt/learning/export") && method === "GET") {
+        return hasHouseLearningCapability()
+          ? mockResponse(200, getHouseLearningExportPayload())
+          : mockResponse(404, { ok: false, error: "not_found" });
       }
       const oduRuntimeResponse = handleMockOduRuntimeRequest(url, method, init || {});
       if (oduRuntimeResponse) {
@@ -5632,6 +6044,10 @@
       const oduSettingsResponse = handleMockOduSettingsRequest(url, method, init || {});
       if (oduSettingsResponse) {
         return oduSettingsResponse;
+      }
+      const oduDefrostResponse = handleMockOduDefrostRequest(url, method, init || {});
+      if (oduDefrostResponse) {
+        return oduDefrostResponse;
       }
       const oduEepromResponse = handleMockOduEepromRequest(url, method);
       if (oduEepromResponse) {
@@ -5913,6 +6329,7 @@
       hardware.value = state.hardware;
       hardware.onchange = () => {
         state.hardware = hardware.value;
+        syncHouseLearningCapability();
         setEntity("text_sensor", "OpenQuatt Hardware Profile", { state: state.hardware, value: state.hardware });
         const selectedIncident = mockIncidentScenarios.getScenario(state.incidentSimulation.scenario);
         if (selectedIncident.required_hardware && selectedIncident.required_hardware !== state.hardware) {

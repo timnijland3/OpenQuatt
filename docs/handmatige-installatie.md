@@ -36,7 +36,7 @@ openquatt-heatpump-controller-q-duo.firmware.factory.bin
 
 Oudere Wi-Fi-/Ethernet-manifestnamen blijven voor OTA-compatibiliteit bestaan, maar verwijzen naar dezelfde canonieke Single- of Duo-binary. Er worden hiervoor geen aparte Q Wi-Fi- of Ethernet-releasebinaries gepubliceerd.
 
-Voor andere ondersteunde hardwareprofielen kan de verbindingsvariant nog wel onderdeel van de bestandsnaam zijn.
+Waveshare- en Heatpump Listener-modules worden niet meer ondersteund; zie het [projectoverzicht](../README.md#ondersteunde-combinaties) voor de hardwaregrenzen.
 
 Gebruik geen `ota.bin` voor een eerste installatie via USB. Voor de eerste flash heb je een factory-binary nodig.
 
@@ -56,6 +56,8 @@ Als Wi-Fi niet direct via de browserflow lukt, gebruikt een Wi-Fi-capabele build
 
 - SSID: `OpenQuatt`
 - wachtwoord: `openquatt`
+
+Zonder opgeslagen Wi-Fi-gegevens start het access point direct en blijft het beschikbaar totdat nieuwe gegevens werken én opgeslagen zijn, ook met Ethernet aangesloten. Bij eerder ingestelde maar onbereikbare Wi-Fi verschijnt de fallback-AP na 90 seconden. Het Wi-Fi-instelvenster staat los van het Home Assistant-koppelvenster van 10 minuten.
 
 Open daarna de web-app via:
 

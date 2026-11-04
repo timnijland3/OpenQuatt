@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { APP_VIEWS, QUICK_STEPS, SETTINGS_GROUPS } from "../openquatt/web/js/src/core/config.js";
+import nl from "../openquatt/web/js/src/i18n/nl.js";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
@@ -61,15 +62,21 @@ const webAppPath = "docs/web-app.md";
 const qEditionPath = "docs/q-edition.md";
 const webApp = read(webAppPath);
 const qEdition = read(qEditionPath);
+const quickStartPath = "docs/web-app/quick-start.md";
+const settingsPath = "docs/web-app/instellingen.md";
 
-const quickStepLabels = QUICK_STEPS.map((step) => step.title);
-const viewLabels = APP_VIEWS.map((view) => view.label);
-const settingsGroupLabels = SETTINGS_GROUPS.map((group) => group.label);
+function resolveNl(key) {
+  return String(key || "").split(".").reduce((node, part) => (node && typeof node === "object" ? node[part] : undefined), nl) || "";
+}
+
+const quickStepLabels = QUICK_STEPS.map((step) => resolveNl(step.titleKey));
+const viewLabels = APP_VIEWS.map((view) => resolveNl(view.labelKey));
+const settingsGroupLabels = SETTINGS_GROUPS.map((group) => resolveNl(group.labelKey));
 
 assertEqual(
-  webAppPath,
+  quickStartPath,
   "De Quick Start-tabel",
-  backtickTableLabels(section(webApp, "Eerste keer: Quick Start")),
+  backtickTableLabels(section(read(quickStartPath), "Eerste keer: Quick Start")),
   quickStepLabels,
 );
 assertEqual(
@@ -85,16 +92,15 @@ assertEqual(
   viewLabels,
 );
 assertEqual(
-  webAppPath,
+  settingsPath,
   "De instellingengroepen",
-  thirdLevelHeadings(section(webApp, "Instellingen")),
+  thirdLevelHeadings(section(read(settingsPath), "Instellingen")),
   settingsGroupLabels,
 );
 
 const firefoxPolicyFiles = [
   "docs/install/index.html",
   "docs/install/install.js",
-  "docs/installatie-en-ingebruikname.md",
 ];
 for (const relativePath of firefoxPolicyFiles) {
   if (/\bFirefox\b/i.test(read(relativePath))) {

@@ -8,6 +8,9 @@
 #include "oq_heating_supply_target_logic.h"
 #include "oq_input_source_logic.h"
 #include "oq_schedule_runtime.h"
+#include "../sources/oq_resolved_control_input.h"
+#include "../sources/oq_resolved_learning_source.h"
+#include "../sources/oq_source_receipt_runtime.h"
 #include "oq_supply_calibration_logic.h"
 #include "oq_supply_hold_logic.h"
 
@@ -15,6 +18,33 @@ namespace oq_sensor_source {
 
 class Runtime {
  public:
+  oq_sources::ResolvedLearningSource resolved_room_temperature() const { return this->resolved_room_; }
+  oq_sources::ResolvedLearningSource resolved_room_setpoint() const { return this->resolved_setpoint_; }
+  oq_sources::ResolvedLearningSource resolved_outside_temperature() const { return this->resolved_outside_; }
+  oq_sources::ResolvedLearningSource resolved_flow_rate() const { return this->resolved_flow_; }
+
+  // One coherent selected snapshot, with live producer currentness. Transport
+  // details stay here; consumers must not inspect receipts or entity caches.
+  oq_sources::RoomControlSnapshot room_control_snapshot(bool ot_room_fresh, bool ot_setpoint_fresh,
+                                                        uint32_t ha_stale_s) const {
+    return {this->room_control_input_(false, ot_room_fresh, ha_stale_s),
+            this->room_control_input_(true, ot_setpoint_fresh, ha_stale_s)};
+  }
+
+  // Register this on every source-selector and CIC URL on_value callback. It
+  // records even A->B->A changes that occur between periodic sensor updates and
+  // invalidates the old selected-source snapshot until control resolves again.
+  void source_configuration_changed() {
+    this->flow_generation_.observe(flow_configuration_key());
+    this->outside_generation_.observe(outside_configuration_key());
+    this->room_generation_.observe(room_configuration_key(false));
+    this->setpoint_generation_.observe(room_configuration_key(true));
+    this->resolved_flow_ = {};
+    this->resolved_outside_ = {};
+    this->resolved_room_ = {};
+    this->resolved_setpoint_ = {};
+  }
+
   void water_source_changed(const std::string& option) {
     if (!id(oq_water_supply_temp_current_source_ready)) return;
     const int32_t current = id(oq_water_supply_temp_current_source_code);
@@ -122,12 +152,11 @@ class Runtime {
     return active.empty() ? "None" : active;
   }
 
-  float water_supply(uint32_t now_ms, uint32_t local_cic_hold_ms, uint32_t ha_hold_ms, uint32_t fallback_stale_ms,
-                     const char* ha_entity_id) {
+  float water_supply(uint32_t now_ms, uint32_t local_cic_hold_ms, uint32_t ha_hold_ms, uint32_t ha_stale_s,
+                     uint32_t fallback_stale_ms, const char* ha_entity_id) {
     const std::string option =
         id(water_supply_source).has_state() ? id(water_supply_source).current_option() : std::string();
     const auto source = supply_source(option, ha_entity_id);
-    migrate_legacy_calibration();
     if (selected_supply_hold_.has_value() && !selected_supply_hold_.matches_source(source)) clear_supply_hold();
 
     bool calibration_required = false;
@@ -154,7 +183,8 @@ class Runtime {
     float selected_c = NAN;
     if (option == "CIC" && cic_feed_valid() && id(water_supply_temp_cic).has_state())
       selected_c = id(water_supply_temp_cic).state;
-    else if (option == "HA input" && ha_valid(id(water_supply_temp_valid_ha), id(water_supply_temp_ha)))
+    else if (option == "HA input" &&
+             ha_live_valid(id(water_supply_temp_valid_ha), id(water_supply_temp_ha), now_ms, ha_stale_s))
       selected_c = id(water_supply_temp_ha).state;
     else if (option == "Local" && id(water_supply_temp_esp).has_state())
       selected_c = id(water_supply_temp_esp).state;
@@ -193,81 +223,150 @@ class Runtime {
     return NAN;
   }
 
-  float flow() const {
-    if (!id(flow_source).has_state()) return NAN;
+  oq_input_source::FlowSelection flow_selection() const {
+    if (!id(flow_source).has_state()) return {};
     oq_input_source::FlowInputs input;
     input.selected = parse_source(id(flow_source).current_option());
     input.cic = sample(cic_feed_valid(), id(flow_rate_cic));
     input.aggregate = sample(true, id(flow_rate_hp_avg));
+    // A template may publish NaN before its physical sources have ever arrived.
+    // Keep that absence separate from an actually received invalid value.
+    bool primary_flow_invalid = oq_sources::hp1.flow.invalid_value_received();
+    bool primary_flow_present = isfinite(id(hp1_flow).state);
     input.q_hardware = OQ_HARDWARE_HEATPUMP_CONTROLLER_Q;
     input.duo = OQ_TOPOLOGY_DUO;
 #if OQ_HARDWARE_HEATPUMP_CONTROLLER_Q
-    if (id(oq_q_flow_source).has_state()) {
-      const auto option = id(oq_q_flow_source).current_option();
-      input.controller_mode = option == "Local"  ? oq_input_source::ControllerFlowMode::LOCAL
-                              : option == "Auto" ? oq_input_source::ControllerFlowMode::AUTO
-                                                 : oq_input_source::ControllerFlowMode::OTHER;
-    }
-    input.hp_generation_v1 = id(hp_generation).has_state() && id(hp_generation).current_option() == "V1";
+    const bool hp1_uses_controller = id(hp_generation).has_state() && id(hp_generation).current_option() == "V1";
+    input.controller_mode = controller_flow_mode_();
+    input.hp_generation_v1 = hp1_uses_controller;
     input.controller = sample(true, id(flow_rate_controller));
+    input.controller.invalid_received = oq_sources::controller_flow.invalid_value_received();
+    if (hp1_uses_controller) {
+      primary_flow_invalid = oq_sources::controller_flow.invalid_value_received();
+      primary_flow_present = isfinite(id(flow_rate_controller).state);
+    }
 #endif
     const oq_flow::PumpRelayState hp1{id(hp1_is_online) && id(hp1_pump_relay).has_state(), id(hp1_pump_relay).state};
 #if OQ_TOPOLOGY_DUO
     const oq_flow::PumpRelayState hp2{id(hp2_is_online) && id(hp2_pump_relay).has_state(), id(hp2_pump_relay).state};
     input.hp1 = sample(true, id(hp1_flow));
     input.hp2 = sample(true, id(hp2_flow));
-    if (id(oq_duo_outdoor_flow_mode).has_state()) {
-      const auto mode = id(oq_duo_outdoor_flow_mode).current_option();
-      input.outdoor_mode = mode == "Flowmeter HP1"   ? oq_input_source::OutdoorFlowMode::HP1
-                           : mode == "Flowmeter HP2" ? oq_input_source::OutdoorFlowMode::HP2
-                                                     : oq_input_source::OutdoorFlowMode::AGGREGATE;
-    }
+    input.hp1.invalid_received = oq_sources::hp1.flow.invalid_value_received();
+    input.hp2.invalid_received = oq_sources::hp2.flow.invalid_value_received();
+    input.aggregate.invalid_received =
+        ((!input.aggregate.valid || primary_flow_present) && primary_flow_invalid) ||
+        ((!input.aggregate.valid || isfinite(id(hp2_flow).state)) && oq_sources::hp2.flow.invalid_value_received());
+    input.outdoor_mode = outdoor_flow_mode_();
 #else
     const oq_flow::PumpRelayState hp2{};
+    input.aggregate.invalid_received = primary_flow_invalid;
 #endif
     input.all_relevant_pumps_stopped = oq_flow::all_relevant_pumps_stopped(OQ_TOPOLOGY_DUO, hp1, hp2);
-    const auto selected = oq_input_source::select_flow(input);
+    return oq_input_source::select_flow(input);
+  }
+
+  float flow() const {
+    if (!id(flow_source).has_state()) {
+      this->resolved_flow_ = {};
+      return NAN;
+    }
+    const auto selected = flow_selection();
+    const auto configuration = flow_configuration_key();
+    const uint32_t generation = this->flow_generation_.observe(configuration);
+    this->resolved_flow_ = resolve_flow(selected, generation);
+    this->resolved_flow_.configuration = configuration;
+    this->resolved_flow_.configuration_generation = this->flow_generation_.observe_resolution(this->resolved_flow_);
     return selected.valid ? selected.value : NAN;
   }
 
-  float outside(uint32_t now_ms, uint32_t hold_ms) {
-    if (!id(outside_temp_source).has_state()) return NAN;
+  std::string flow_route() const {
+    if (!id(flow_source).has_state()) return "Unavailable";
+    return oq_input_source::flow_route_name(flow_selection().route);
+  }
+
+  float outside(uint32_t now_ms, uint32_t hold_ms, uint32_t ha_stale_s) {
+    if (!id(outside_temp_source).has_state()) {
+      this->resolved_outside_ = {};
+      return NAN;
+    }
     oq_input_source::NumericSources sources;
     sources.outdoor = sample(true, id(outside_temp_hp_avg));
-    sources.ha = sample(ha_valid(id(outside_temp_valid_ha), id(outside_temp_ha)), id(outside_temp_ha));
+#if OQ_TOPOLOGY_DUO
+    sources.outdoor.invalid_received =
+        oq_sources::local_outside_selection.invalid_received(oq_sources::hp1.outside, oq_sources::hp2.outside);
+#else
+    sources.outdoor.invalid_received = oq_sources::local_outside_selection.invalid_received(oq_sources::hp1.outside);
+#endif
+    sources.ha =
+        sample(ha_live_valid(id(outside_temp_valid_ha), id(outside_temp_ha), now_ms, ha_stale_s), id(outside_temp_ha));
     sources.api = sample(api_valid(id(api_input_outside_temperature_valid), id(api_input_outside_temperature)),
                          id(api_input_outside_temperature));
     sources.mqtt = sample(mqtt_valid(id(mqtt_outside_temperature_valid), id(mqtt_outside_temperature)),
                           id(mqtt_outside_temperature));
-    const auto selected = oq_input_source::select_outside(parse_source(id(outside_temp_source).current_option()),
-                                                          sources, now_ms, hold_ms, outside_hold_);
+    const auto configured = parse_source(id(outside_temp_source).current_option());
+    const auto selected = oq_input_source::select_outside(configured, sources, now_ms, hold_ms, outside_hold_);
     id(oq_outside_temp_selected_hold_active) = selected.held;
+    const oq_sources::SourceConfigurationKey configuration{static_cast<uint8_t>(configured), 0U, 0U, 0U};
+    const uint32_t generation = this->outside_generation_.observe(configuration);
+    this->resolved_outside_ = resolve_outside(selected, generation);
+    this->resolved_outside_.configuration = configuration;
+    this->resolved_outside_.configuration_generation =
+        this->outside_generation_.observe_resolution(this->resolved_outside_);
     return selected.valid ? selected.value : NAN;
   }
 
-  float room_temperature(uint32_t now_ms, uint32_t hold_ms, bool opentherm_fresh) {
-    if (!id(room_temp_source).has_state()) return NAN;
-    const auto sources = room_sources(opentherm_fresh, false);
-    const auto selected = oq_input_source::select_direct(parse_source(id(room_temp_source).current_option()), sources,
-                                                         true, now_ms, hold_ms, room_hold_);
+  float room_temperature(uint32_t now_ms, uint32_t hold_ms, uint32_t ha_stale_s, bool opentherm_fresh) {
+    if (!id(room_temp_source).has_state()) {
+      this->resolved_room_ = {};
+      return NAN;
+    }
+    const auto configured = parse_source(id(room_temp_source).current_option());
+    auto sources = room_sources(opentherm_fresh, false);
+    // Live input: a constant room temperature stays usable while the HA
+    // ingress heartbeat arrives, and goes stale when the link drops.
+    sources.ha = sample(ha_live_valid(id(room_temp_valid_ha), id(thermostat_room_temp_ha), now_ms, ha_stale_s),
+                        id(thermostat_room_temp_ha));
+    const auto selected = oq_input_source::select_direct(configured, sources, true, now_ms, hold_ms, room_hold_);
     id(oq_room_temp_selected_hold_active) = selected.held;
+    const oq_sources::SourceConfigurationKey configuration{
+        static_cast<uint8_t>(configured), 0U, 0U,
+        configured == oq_input_source::Source::CIC ? id(cic_component).source_generation() : 0U};
+    const uint32_t generation = this->room_generation_.observe(configuration);
+    this->resolved_room_ = resolve_room(selected, false, generation);
+    this->resolved_room_.configuration = configuration;
+    this->resolved_room_.configuration_generation = this->room_generation_.observe_resolution(this->resolved_room_);
     return selected.valid ? selected.value : NAN;
   }
 
+  // Stateful input: a room setpoint of 20.0 °C may stay unchanged for weeks
+  // without expiring, so only plain entity validity applies (mirrors the
+  // API/MQTT room setpoint stale_s = 0 semantics).
   float room_setpoint(uint32_t now_ms, uint32_t hold_ms, bool opentherm_fresh) {
-    if (!id(room_setpoint_source).has_state()) return NAN;
+    if (!id(room_setpoint_source).has_state()) {
+      this->resolved_setpoint_ = {};
+      return NAN;
+    }
+    const auto configured = parse_source(id(room_setpoint_source).current_option());
     const auto sources = room_sources(opentherm_fresh, true);
-    const auto selected = oq_input_source::select_direct(parse_source(id(room_setpoint_source).current_option()),
-                                                         sources, true, now_ms, hold_ms, setpoint_hold_);
+    const auto selected = oq_input_source::select_direct(configured, sources, true, now_ms, hold_ms, setpoint_hold_);
     id(oq_room_setpoint_selected_hold_active) = selected.held;
+    const oq_sources::SourceConfigurationKey configuration{
+        static_cast<uint8_t>(configured), 0U, 0U,
+        configured == oq_input_source::Source::CIC ? id(cic_component).source_generation() : 0U};
+    const uint32_t generation = this->setpoint_generation_.observe(configuration);
+    this->resolved_setpoint_ = resolve_room(selected, true, generation);
+    this->resolved_setpoint_.configuration = configuration;
+    this->resolved_setpoint_.configuration_generation =
+        this->setpoint_generation_.observe_resolution(this->resolved_setpoint_);
     return selected.valid ? selected.value : NAN;
   }
 
-  float external_heat_demand(uint32_t now_ms, uint32_t hold_ms) {
+  float external_heat_demand(uint32_t now_ms, uint32_t hold_ms, uint32_t ha_stale_s) {
     if (!id(external_heat_demand_source).has_state()) return NAN;
     oq_input_source::NumericSources sources;
     sources.ha =
-        sample(ha_valid(id(external_heat_demand_valid_ha), id(external_heat_demand_ha)), id(external_heat_demand_ha));
+        sample(ha_live_valid(id(external_heat_demand_valid_ha), id(external_heat_demand_ha), now_ms, ha_stale_s),
+               id(external_heat_demand_ha));
     sources.api = sample(api_valid(id(api_input_external_heat_demand_valid), id(api_input_external_heat_demand)),
                          id(api_input_external_heat_demand));
     const auto selected = oq_input_source::select_direct(parse_source(id(external_heat_demand_source).current_option()),
@@ -276,7 +375,37 @@ class Runtime {
     return selected.valid ? selected.value : NAN;
   }
 
-  void observe_heating_supply_target_ha(uint32_t now_ms) { ha_supply_target_state_.observe(now_ms); }
+  // Central HA ingress heartbeat: proves Home Assistant, the
+  // dynamic-sources package and the HA -> ESPHome link are actively
+  // delivering updates. Observed once per heartbeat (about every minute),
+  // shared by all live HA inputs instead of one freshness clock per sensor.
+  void observe_ha_ingress(uint32_t now_ms) { ha_ingress_state_.observe(now_ms); }
+
+  // Heating Supply Target already had per-value freshness before the shared
+  // heartbeat existed. Keep observing that clock during migration so an old
+  // HA package cannot turn a frozen target into an indefinitely valid target.
+  void observe_heating_supply_target_ha(uint32_t now_ms) { ha_supply_target_legacy_state_.observe(now_ms); }
+
+  bool ha_ingress_seen() const { return ha_ingress_state_.has_value; }
+
+  float ha_ingress_age_s(uint32_t now_ms) const {
+    if (!ha_ingress_state_.has_value) return NAN;
+    return static_cast<float>(now_ms - ha_ingress_state_.last_update_ms) / 1000.0f;
+  }
+
+  bool ha_ingress_fresh(uint32_t now_ms, uint32_t stale_s) const {
+    return oq_input_source::evaluate_freshness(ha_ingress_state_, now_ms, stale_s, true).valid;
+  }
+
+  // Live HA inputs are valid while their proxy entities are valid AND the HA
+  // ingress heartbeat is fresh (issue #698). Backward compatibility with
+  // pre-heartbeat HA packages and custom proxies: while this boot never
+  // received a heartbeat, plain entity validity applies, so an OTA never
+  // suddenly rejects existing HA ingress.
+  template <typename B, typename S>
+  bool ha_live_valid(const B& valid, const S& value, uint32_t now_ms, uint32_t stale_s) const {
+    return oq_input_source::ha_live_valid_with_legacy(ha_valid(valid, value), ha_ingress_state_, now_ms, stale_s);
+  }
 
   float heating_supply_target(uint32_t now_ms, uint32_t hold_ms, uint32_t ha_stale_s, bool opentherm_fresh) {
     if (!id(heating_supply_target_source).has_state()) return NAN;
@@ -294,12 +423,12 @@ class Runtime {
       supply_target_hold_.reset();
     }
     oq_input_source::NumericSources sources;
-    // HA freshness is tracked at ingress (on_value): a value frozen by
-    // connection loss goes stale even though ESPHome retains the states.
-    const bool ha_fresh =
-        oq_input_source::evaluate_freshness(ha_supply_target_state_, now_ms, ha_stale_s,
-                                            ha_valid(id(heating_supply_target_valid_ha), id(heating_supply_target_ha)))
-            .valid;
+    // With the new HA package, the shared ingress heartbeat is authoritative.
+    // Before the first heartbeat, preserve the pre-#700 per-target freshness
+    // timer instead of timeless legacy validity.
+    const bool ha_entity_valid = ha_valid(id(heating_supply_target_valid_ha), id(heating_supply_target_ha));
+    const bool ha_fresh = oq_input_source::ha_live_valid_with_legacy_freshness(
+        ha_entity_valid, ha_ingress_state_, ha_supply_target_legacy_state_, now_ms, ha_stale_s);
     sources.ha = sample(ha_fresh && oq_heating_supply::external_target_in_range(id(heating_supply_target_ha).state),
                         id(heating_supply_target_ha));
     sources.api = sample(api_valid(id(api_input_heating_supply_target_valid), id(api_input_heating_supply_target)),
@@ -318,6 +447,25 @@ class Runtime {
     return selected.valid ? selected.value : NAN;
   }
 
+  bool heating_curve_modifier_ha_valid(uint32_t now_ms, uint32_t ha_stale_s) const {
+    return ha_ingress_fresh(now_ms, ha_stale_s) &&
+           ha_valid(id(heating_curve_modifier_valid_ha), id(heating_curve_modifier_ha));
+  }
+
+  float heating_curve_modifier(uint32_t now_ms, uint32_t ha_stale_s) const {
+    if (!id(heating_curve_modifier_source).has_state()) return 0.0f;
+    const auto source = parse_source(id(heating_curve_modifier_source).current_option());
+    if (source == oq_input_source::Source::HA && heating_curve_modifier_ha_valid(now_ms, ha_stale_s))
+      return oq_heating_supply::curve_modifier_or_zero(id(heating_curve_modifier_ha).state, true);
+    if (source == oq_input_source::Source::API &&
+        api_valid(id(api_input_heating_curve_modifier_valid), id(api_input_heating_curve_modifier)))
+      return oq_heating_supply::curve_modifier_or_zero(id(api_input_heating_curve_modifier).state, true);
+    if (source == oq_input_source::Source::MQTT &&
+        mqtt_valid(id(mqtt_heating_curve_modifier_valid), id(mqtt_heating_curve_modifier)))
+      return oq_heating_supply::curve_modifier_or_zero(id(mqtt_heating_curve_modifier).state, true);
+    return 0.0f;
+  }
+
  private:
   struct SupplyFallback {
     bool valid = false;
@@ -330,8 +478,17 @@ class Runtime {
   oq_input_source::HoldState room_hold_;
   oq_input_source::HoldState setpoint_hold_;
   oq_input_source::HoldState demand_hold_;
+  mutable oq_sources::SourceConfigurationGeneration flow_generation_;
+  oq_sources::SourceConfigurationGeneration outside_generation_;
+  oq_sources::SourceConfigurationGeneration room_generation_;
+  oq_sources::SourceConfigurationGeneration setpoint_generation_;
+  mutable oq_sources::ResolvedLearningSource resolved_flow_;
+  oq_sources::ResolvedLearningSource resolved_outside_;
+  oq_sources::ResolvedLearningSource resolved_room_;
+  oq_sources::ResolvedLearningSource resolved_setpoint_;
   oq_input_source::HoldState supply_target_hold_;
-  oq_input_source::TimedState ha_supply_target_state_;
+  oq_input_source::TimedState ha_ingress_state_;
+  oq_input_source::TimedState ha_supply_target_legacy_state_;
 
   template <typename T>
   static oq_input_source::Source parse_source(const T& option) {
@@ -350,9 +507,158 @@ class Runtime {
     return oq_input_source::Source::NONE;
   }
 
+  static oq_input_source::ControllerFlowMode controller_flow_mode_() {
+#if OQ_HARDWARE_HEATPUMP_CONTROLLER_Q
+    if (id(oq_q_flow_source).has_state()) {
+      const auto option = id(oq_q_flow_source).current_option();
+      if (option == "Local") return oq_input_source::ControllerFlowMode::LOCAL;
+      if (option == "Auto") return oq_input_source::ControllerFlowMode::AUTO;
+    }
+#endif
+    return oq_input_source::ControllerFlowMode::OTHER;
+  }
+
+  static oq_input_source::OutdoorFlowMode outdoor_flow_mode_() {
+#if OQ_TOPOLOGY_DUO
+    if (id(oq_duo_outdoor_flow_mode).has_state()) {
+      const auto option = id(oq_duo_outdoor_flow_mode).current_option();
+      if (option == "Flowmeter HP1") return oq_input_source::OutdoorFlowMode::HP1;
+      if (option == "Flowmeter HP2") return oq_input_source::OutdoorFlowMode::HP2;
+    }
+#endif
+    return oq_input_source::OutdoorFlowMode::AGGREGATE;
+  }
+
+  static oq_sources::SourceConfigurationKey room_configuration_key(bool setpoint) {
+    const auto& selector = setpoint ? id(room_setpoint_source) : id(room_temp_source);
+    const auto configured =
+        selector.has_state() ? parse_source(selector.current_option()) : oq_input_source::Source::NONE;
+    return {static_cast<uint8_t>(configured), 0U, 0U,
+            configured == oq_input_source::Source::CIC ? id(cic_component).source_generation() : 0U};
+  }
+
+  static oq_sources::SourceConfigurationKey outside_configuration_key() {
+    const auto configured = id(outside_temp_source).has_state() ? parse_source(id(outside_temp_source).current_option())
+                                                                : oq_input_source::Source::NONE;
+    return {static_cast<uint8_t>(configured), 0U, 0U, 0U};
+  }
+
+  static oq_sources::SourceConfigurationKey flow_configuration_key() {
+    const auto configured =
+        id(flow_source).has_state() ? parse_source(id(flow_source).current_option()) : oq_input_source::Source::NONE;
+    const auto controller_mode = controller_flow_mode_();
+    const auto outdoor_mode = outdoor_flow_mode_();
+    return {static_cast<uint8_t>(configured), static_cast<uint8_t>(controller_mode), static_cast<uint8_t>(outdoor_mode),
+            configured == oq_input_source::Source::CIC ? id(cic_component).source_generation() : 0U};
+  }
+
+  static oq_sources::LearningSourceRoute room_route(oq_input_source::Source source, bool setpoint) {
+    using oq_sources::LearningSourceRoute;
+    switch (source) {
+      case oq_input_source::Source::OPENTHERM:
+        return setpoint ? LearningSourceRoute::OPENTHERM_SETPOINT : LearningSourceRoute::OPENTHERM_ROOM;
+      case oq_input_source::Source::CIC:
+        return setpoint ? LearningSourceRoute::CIC_SETPOINT : LearningSourceRoute::CIC_ROOM;
+      case oq_input_source::Source::HA:
+        return setpoint ? LearningSourceRoute::HA_SETPOINT : LearningSourceRoute::HA_ROOM;
+      case oq_input_source::Source::API:
+        return setpoint ? LearningSourceRoute::API_SETPOINT : LearningSourceRoute::API_ROOM;
+      case oq_input_source::Source::MQTT:
+        return setpoint ? LearningSourceRoute::MQTT_SETPOINT : LearningSourceRoute::MQTT_ROOM;
+      default:
+        return LearningSourceRoute::NONE;
+    }
+  }
+
+  static oq_sources::LearningSourceRoute outside_route(oq_input_source::Source source) {
+    using oq_sources::LearningSourceRoute;
+    switch (source) {
+      case oq_input_source::Source::OUTDOOR:
+      case oq_input_source::Source::AUTO:
+        return LearningSourceRoute::OUTSIDE_AGGREGATE;
+      case oq_input_source::Source::HA:
+        return LearningSourceRoute::HA_OUTSIDE;
+      case oq_input_source::Source::API:
+        return LearningSourceRoute::API_OUTSIDE;
+      case oq_input_source::Source::MQTT:
+        return LearningSourceRoute::MQTT_OUTSIDE;
+      default:
+        return LearningSourceRoute::NONE;
+    }
+  }
+
+  static oq_sources::LearningSourceRoute flow_route(oq_input_source::FlowRoute route) {
+    using oq_sources::LearningSourceRoute;
+    switch (route) {
+      case oq_input_source::FlowRoute::CIC:
+        return LearningSourceRoute::CIC_FLOW;
+      case oq_input_source::FlowRoute::CONTROLLER:
+        return LearningSourceRoute::CONTROLLER_FLOW;
+      case oq_input_source::FlowRoute::HP1:
+        return LearningSourceRoute::HP1_FLOW;
+      case oq_input_source::FlowRoute::HP2:
+        return LearningSourceRoute::HP2_FLOW;
+      case oq_input_source::FlowRoute::AGGREGATE:
+        return LearningSourceRoute::FLOW_AGGREGATE;
+      case oq_input_source::FlowRoute::PUMPS_STOPPED:
+        return LearningSourceRoute::SYNTHESIZED_ZERO_FLOW;
+      default:
+        return LearningSourceRoute::NONE;
+    }
+  }
+
+  oq_sources::ResolvedControlInput room_control_input_(bool setpoint, bool ot_fresh, uint32_t ha_stale_s) const {
+    const auto& resolved = setpoint ? this->resolved_setpoint_ : this->resolved_room_;
+    const bool configured = setpoint ? id(room_setpoint_source).has_state() : id(room_temp_source).has_state();
+    if (!configured) return {};
+    const auto source =
+        parse_source(setpoint ? id(room_setpoint_source).current_option() : id(room_temp_source).current_option());
+    const auto producer = oq_input_source::sample_for(source, room_sources(ot_fresh, setpoint));
+    bool current = producer.valid;
+    if (!setpoint && source == oq_input_source::Source::HA) {
+      current = current && ha_live_valid(id(room_temp_valid_ha), id(thermostat_room_temp_ha),
+                                         static_cast<uint32_t>(millis()), ha_stale_s);
+    }
+    if (source == oq_input_source::Source::CIC) {
+      const auto receipt =
+          setpoint ? id(cic_component).room_setpoint_receipt() : id(cic_component).room_temperature_receipt();
+      current = current && oq_sources::current_receipt_matches(receipt, producer.value);
+    }
+    const float published = setpoint ? id(room_setpoint_selected).state : id(room_temp_selected).state;
+    return oq_sources::control_input(resolved, published, current);
+  }
+
+  static oq_sources::ResolvedLearningSource resolve_room(const oq_input_source::NumericSelection& selected,
+                                                         bool setpoint, uint32_t generation) {
+    return oq_sources::selected_source(selected.value, selected.valid, room_route(selected.route, setpoint), generation,
+                                       selected.held ? oq_sources::LearningSourceProvenance::HELD
+                                                     : oq_sources::LearningSourceProvenance::SELECTED_VALUE,
+                                       {}, selected.invalid_received);
+  }
+
+  static oq_sources::ResolvedLearningSource resolve_outside(const oq_input_source::NumericSelection& selected,
+                                                            uint32_t generation) {
+    return oq_sources::selected_source(selected.value, selected.valid, outside_route(selected.route), generation,
+                                       selected.held ? oq_sources::LearningSourceProvenance::HELD
+                                                     : oq_sources::LearningSourceProvenance::SELECTED_VALUE,
+                                       {}, selected.invalid_received);
+  }
+
+  static oq_sources::ResolvedLearningSource resolve_flow(const oq_input_source::FlowSelection& selected,
+                                                         uint32_t generation) {
+    return oq_sources::selected_source(selected.value, selected.valid, flow_route(selected.route), generation,
+                                       oq_sources::LearningSourceProvenance::SELECTED_VALUE, {},
+                                       selected.invalid_received);
+  }
+
   template <typename T>
   static oq_input_source::NumericSample sample(bool enabled, const T& entity) {
     return oq_input_source::numeric_sample(enabled, entity.has_state(), entity.state);
+  }
+
+  template <typename T>
+  static oq_input_source::NumericSample room_setpoint_sample(bool enabled, const T& entity) {
+    return oq_input_source::room_setpoint_sample(enabled, entity.has_state(), entity.state);
   }
 
   template <typename B, typename S>
@@ -414,12 +720,14 @@ class Runtime {
   static oq_input_source::NumericSources room_sources(bool opentherm_fresh, bool setpoint) {
     oq_input_source::NumericSources sources;
     if (setpoint) {
-      sources.ha = sample(ha_valid(id(room_setpoint_valid_ha), id(thermostat_setpoint_ha)), id(thermostat_setpoint_ha));
-      sources.opentherm = sample(opentherm_fresh, id(ot_thermostat_room_setpoint));
-      sources.cic = sample(cic_feed_valid(), id(cic_room_setpoint));
-      sources.api = sample(api_valid(id(api_input_room_setpoint_valid), id(api_input_room_setpoint)),
-                           id(api_input_room_setpoint));
-      sources.mqtt = sample(mqtt_valid(id(mqtt_room_setpoint_valid), id(mqtt_room_setpoint)), id(mqtt_room_setpoint));
+      sources.ha = room_setpoint_sample(ha_valid(id(room_setpoint_valid_ha), id(thermostat_setpoint_ha)),
+                                        id(thermostat_setpoint_ha));
+      sources.opentherm = room_setpoint_sample(opentherm_fresh, id(ot_thermostat_room_setpoint));
+      sources.cic = room_setpoint_sample(cic_feed_valid(), id(cic_room_setpoint));
+      sources.api = room_setpoint_sample(api_valid(id(api_input_room_setpoint_valid), id(api_input_room_setpoint)),
+                                         id(api_input_room_setpoint));
+      sources.mqtt = room_setpoint_sample(mqtt_valid(id(mqtt_room_setpoint_valid), id(mqtt_room_setpoint)),
+                                          id(mqtt_room_setpoint));
     } else {
       sources.ha = sample(ha_valid(id(room_temp_valid_ha), id(thermostat_room_temp_ha)), id(thermostat_room_temp_ha));
       sources.opentherm = sample(opentherm_fresh, id(ot_thermostat_room_temp));
@@ -449,39 +757,6 @@ class Runtime {
         return oq_supply_calibration::load_record(id(oq_water_supply_temp_calibration_ha_input_record));
       default:
         return {};
-    }
-  }
-
-  static void migrate_legacy_calibration() {
-    if (!id(water_supply_temp_calibration_offset).has_state()) return;
-    const int32_t code = id(oq_water_supply_temp_calibration_source_code);
-    switch (code) {
-      case oq_supply_calibration::SOURCE_LOCAL_PT1000:
-        oq_supply_calibration::migrate_legacy_record(id(oq_water_supply_temp_calibration_pt1000_record), code,
-                                                     id(oq_water_supply_temp_calibration_source_fingerprint),
-                                                     id(oq_water_supply_temp_calibration_checksum),
-                                                     id(water_supply_temp_calibration_offset).state);
-        break;
-      case oq_supply_calibration::SOURCE_LOCAL_DS18B20:
-        oq_supply_calibration::migrate_legacy_record(id(oq_water_supply_temp_calibration_ds18b20_record), code,
-                                                     id(oq_water_supply_temp_calibration_source_fingerprint),
-                                                     id(oq_water_supply_temp_calibration_checksum),
-                                                     id(water_supply_temp_calibration_offset).state);
-        break;
-      case oq_supply_calibration::SOURCE_CIC:
-        oq_supply_calibration::migrate_legacy_record(id(oq_water_supply_temp_calibration_cic_record), code,
-                                                     id(oq_water_supply_temp_calibration_source_fingerprint),
-                                                     id(oq_water_supply_temp_calibration_checksum),
-                                                     id(water_supply_temp_calibration_offset).state);
-        break;
-      case oq_supply_calibration::SOURCE_HA_INPUT:
-        oq_supply_calibration::migrate_legacy_record(id(oq_water_supply_temp_calibration_ha_input_record), code,
-                                                     id(oq_water_supply_temp_calibration_source_fingerprint),
-                                                     id(oq_water_supply_temp_calibration_checksum),
-                                                     id(water_supply_temp_calibration_offset).state);
-        break;
-      default:
-        break;
     }
   }
 

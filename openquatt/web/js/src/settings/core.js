@@ -9,9 +9,11 @@ import { formatDiagnosticsDateTime, formatUptimeFromMeta, getDeviceIpAddress, ge
 import { getUpdateStatus } from "../features/firmware-update.js";
 import { getEspTemperatureLabel } from "../features/header-status.js";
 import { getWebAuthStatusDetail, getWebAuthStatusLabel } from "../features/security-access.js";
-import { getCommissioningStatusValue, patchSettingsChoiceOption, patchSettingsSelectControl, renderSettingsSection } from "./controls.js";
+import { getCommissioningStatusValue, patchSettingsChoiceOption, patchSettingsSelectControl } from "./controls.js";
+import { t } from "../i18n/index.js";
 import { renderSettingsCoolingSection } from "./cooling.js";
-import { renderSettingsFlowSection, renderSettingsHeatingSection } from "./heating.js";
+import { patchControlledWarmupField, patchRunExtensionThresholds, renderSettingsFlowSection, renderSettingsHeatingSection } from "./heating.js";
+import { patchHouseLearningSettingsStatus, renderHouseLearningSettings } from "./house-learning.js";
 import { renderSettingsElectricalCurrentLimitSection } from "./electrical-limit.js";
 import { renderSettingsAuxRelaySection, renderSettingsBoilerCvSection, renderSettingsCompressorSection, renderSettingsDiagnosticsSection, renderSettingsGenerationSection, renderSettingsInstallationMonitoringSection, renderSettingsOduRuntimeFrequencySection, renderSettingsQuickStartSection } from "./installation.js";
 import { renderSettingsMqttSection, renderSettingsOpenThermCicSection, renderSettingsSensorSelectionSection } from "./integrations.js";
@@ -47,7 +49,7 @@ function syncFrequencyRangeControl(control) {
   control.style.setProperty("--oq-range-end", `${((maxValue - scaleMin) / span) * 100}%`);
   const value = control.querySelector("[data-oq-range-value]");
   if (value) {
-    value.textContent = disabled ? "Geen uitsluiting" : invalid ? "Ongeldig bereik" : `${minValue}–${maxValue} Hz`;
+    value.textContent = disabled ? t("settings.noExclusion") : invalid ? t("settings.invalidRange") : `${minValue}–${maxValue} Hz`;
   }
 }
 
@@ -56,7 +58,7 @@ function syncFrequencyRangeControl(control) {
   export function renderSettingsGroupNav() {
     const activeGroup = SETTINGS_GROUP_IDS.has(state.settingsGroup) ? state.settingsGroup : SETTINGS_GROUPS[0].id;
     return `
-      <nav class="oq-settings-group-nav" aria-label="Instellingen groepen">
+      <nav class="oq-settings-group-nav" aria-label="${escapeHtml(t("settingsGroups.navLabel"))}">
         ${SETTINGS_GROUPS.map((group) => `
           <button
             class="oq-settings-group-button${group.id === activeGroup ? " is-active" : ""}"
@@ -66,7 +68,7 @@ function syncFrequencyRangeControl(control) {
             aria-pressed="${group.id === activeGroup ? "true" : "false"}"
           >
             ${renderOqIcon(group.icon, "oq-settings-group-button-icon")}
-            <span class="oq-settings-group-button-label">${escapeHtml(group.label)}</span>
+            <span class="oq-settings-group-button-label">${escapeHtml(t(group.labelKey))}</span>
           </button>
         `).join("")}
       </nav>
@@ -74,6 +76,7 @@ function syncFrequencyRangeControl(control) {
   }
 
   export function renderSettingsGroupContent() {
+    state.warmupSettingsRenderPending = false;
     const activeGroup = SETTINGS_GROUP_IDS.has(state.settingsGroup) ? state.settingsGroup : SETTINGS_GROUPS[0].id;
     const sections = activeGroup === "installation"
       ? [
@@ -94,7 +97,7 @@ function syncFrequencyRangeControl(control) {
             renderSettingsCounterServiceSection(),
           ]
       : activeGroup === "heating"
-        ? [renderSettingsHeatingSection()]
+        ? [renderSettingsHeatingSection(), isCurveMode() ? "" : renderHouseLearningSettings()]
       : activeGroup === "cooling"
         ? [renderSettingsCoolingSection()]
         : activeGroup === "integrations"
@@ -236,8 +239,8 @@ function syncFrequencyRangeControl(control) {
 
     stack.querySelectorAll('[data-oq-action="toggle-overview-control"][data-control-key]').forEach((button) => {
       const key = String(button.dataset.controlKey || "");
-      const onLabel = String(button.dataset.onLabel || "Aan");
-      const offLabel = String(button.dataset.offLabel || "Uit");
+      const onLabel = String(button.dataset.onLabel || t("common.on"));
+      const offLabel = String(button.dataset.offLabel || t("common.off"));
       const title = String(button.dataset.switchTitle || key);
       const model = getSettingsSwitchModel(key, { title, onLabel, offLabel });
       button.dataset.controlState = model.nextState;
@@ -249,8 +252,8 @@ function syncFrequencyRangeControl(control) {
 
     stack.querySelectorAll("[data-oq-switch-pill]").forEach((pill) => {
       const key = String(pill.dataset.oqSwitchPill || "");
-      const onLabel = String(pill.dataset.onLabel || "Aan");
-      const offLabel = String(pill.dataset.offLabel || "Uit");
+      const onLabel = String(pill.dataset.onLabel || t("common.on"));
+      const offLabel = String(pill.dataset.offLabel || t("common.off"));
       const { enabled, label } = getSettingsSwitchModel(key, { onLabel, offLabel });
       pill.classList.toggle("is-on", enabled);
       if (pill.textContent !== label) {
@@ -270,6 +273,10 @@ function syncFrequencyRangeControl(control) {
       }
     });
 
+    patchHouseLearningSettingsStatus();
+    state.warmupSettingsRenderPending = !patchControlledWarmupField(stack);
+    patchRunExtensionThresholds();
+
     const generationStatus = stack.querySelector('button[data-oq-action="open-generation-modal"]')?.closest(".oq-settings-quickstart-status");
     if (generationStatus) {
       const valueNode = generationStatus.querySelector(".oq-settings-quickstart-status-value");
@@ -279,13 +286,13 @@ function syncFrequencyRangeControl(control) {
       const model = selectModel("hpGeneration");
       const canEdit = model.available && model.options.length > 0;
       if (valueNode) {
-        const value = currentLabel || "Onbekend";
+        const value = currentLabel || t("common.unknown");
         if (valueNode.textContent !== value) {
           valueNode.textContent = value;
         }
       }
       if (copyNode) {
-        const copy = "Pas dit aan als je een andere Quatt Hybrid hebt.";
+        const copy = t("settingsCore.generationCopy");
         if (copyNode.textContent !== copy) {
           copyNode.textContent = copy;
         }
@@ -306,8 +313,8 @@ function syncFrequencyRangeControl(control) {
         valueNode.textContent = cm100Status;
       }
       const copy = cm100Active
-        ? "CM100 is actief en klaar voor commissioning."
-        : "Open de modal om CM100 te starten en de taken hieronder te ontgrendelen.";
+        ? t("settings.cm100ActiveCopy")
+        : t("settings.cm100StartCopy");
       if (copyNode && copyNode.textContent !== copy) {
         copyNode.textContent = copy;
       }
@@ -321,12 +328,12 @@ function syncFrequencyRangeControl(control) {
       const valueNode = quickStartStatus.querySelector(".oq-settings-quickstart-status-value");
       const copyNode = quickStartStatus.querySelector(".oq-settings-quickstart-status-copy");
       const button = quickStartStatus.querySelector('button[data-oq-action="reset"]');
-      const statusLabel = state.complete === true ? "Afgerond" : state.complete === false ? "Open" : "Laden...";
+      const statusLabel = state.complete === true ? t("settings.qsDone") : state.complete === false ? t("settings.qsOpen") : t("settings.qsLoading");
       const statusCopy = state.complete === true
-        ? "Quick Start is afgerond. Je kunt de status hier altijd weer openen met een reset."
+        ? t("settings.qsDoneCopy")
         : state.complete === false
-          ? "Quick Start staat nog open. Gebruik de resetknop om opnieuw te beginnen."
-          : "De status van Quick Start wordt nog geladen.";
+          ? t("settings.qsOpenCopy")
+          : t("settings.qsLoadingCopy");
       if (valueNode && valueNode.textContent !== statusLabel) {
         valueNode.textContent = statusLabel;
       }
@@ -380,7 +387,7 @@ function syncFrequencyRangeControl(control) {
         updates: getUpdateStatus(),
         datetime: formatDiagnosticsDateTime(),
         espTemp: getEspTemperatureLabel(),
-        restart: "Opnieuw opstarten",
+        restart: t("settingsCore.restartLabel"),
       };
 
       rows.forEach((row) => {
@@ -405,13 +412,13 @@ function syncFrequencyRangeControl(control) {
       if (restartButton) {
         const busyRestart = state.busyAction === "restartAction";
         restartButton.disabled = busyRestart;
-        restartButton.textContent = busyRestart ? "Herstarten..." : "Herstarten";
+        restartButton.textContent = busyRestart ? t("settingsCore.restartBusy") : t("settingsCore.restart");
       }
       const factoryResetButton = systemSummary.querySelector('button[data-oq-action="open-factory-reset-confirm"]');
       if (factoryResetButton) {
         const busyFactoryReset = state.busyAction === "factoryResetButton";
         factoryResetButton.disabled = busyFactoryReset;
-        factoryResetButton.textContent = busyFactoryReset ? "Resetten..." : "Factory reset";
+        factoryResetButton.textContent = busyFactoryReset ? t("settingsCore.resetBusy") : t("settingsCore.factoryReset");
       }
     }
 

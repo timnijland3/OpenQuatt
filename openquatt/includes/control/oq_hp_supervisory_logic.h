@@ -32,6 +32,32 @@ struct ColdStartDecision {
   float minimum_temperature_c = NAN;
 };
 
+struct ColdStartRequiredSet {
+  bool hp1 = false;
+  bool hp2 = false;
+};
+
+// Cold-start outlet samples are only required from heat pumps that are
+// currently valid start candidates. An unavailable ODU must not block the
+// healthy ODU in a Duo build. With two available ODU's both samples stay
+// required and the coldest outlet decides (see evaluate_cold_start).
+inline ColdStartRequiredSet cold_start_required_set(bool hp1_available_for_start, bool hp2_available_for_start) {
+  ColdStartRequiredSet required;
+  required.hp1 = hp1_available_for_start;
+  required.hp2 = hp2_available_for_start;
+  return required;
+}
+
+// Rising edge in the required set: an HP went from not required to required
+// (recovered after link loss, or newly startable in the post-release,
+// pre-compressor window). The runtime must re-arm sampling and start a new
+// freshness epoch, so only measurements taken after the edge can release
+// the cold start. Dropping out of the required set is not an edge;
+// dispatch already excludes unavailable HP's while they are gone.
+inline bool cold_start_required_added(const ColdStartRequiredSet& previous, const ColdStartRequiredSet& current) {
+  return (current.hp1 && !previous.hp1) || (current.hp2 && !previous.hp2);
+}
+
 inline bool cold_start_sample_is_new(const ColdStartWaterSample& sample, uint32_t sample_after_ms) {
   if (!sample.required) return true;
   if (sample_after_ms == 0 || sample.updated_at_ms == 0 || isnan(sample.temperature_c)) return false;

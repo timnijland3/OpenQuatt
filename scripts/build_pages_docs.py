@@ -47,10 +47,23 @@ class RenderedPage:
 PAGES = [
     Page(PurePosixPath("README.md"), PurePosixPath("index.html"), "OpenQuatt", "Project", "Projectoverzicht, snelle start en hoofdroute."),
     Page(PurePosixPath("docs/q-edition.md"), PurePosixPath("q-edition.html"), "Heatpump Controller Q-edition aansluiten", "Aan de slag", "Doorlopende route voor aansluiten, netwerk instellen en Quick Start."),
-    Page(PurePosixPath("docs/installatie-en-ingebruikname.md"), PurePosixPath("installatie-en-ingebruikname.html"), "Andere modules installeren", "Andere hardware", "Een bestaande Waveshare- of Heatpump Listener-module installeren via de web installer."),
-    Page(PurePosixPath("docs/web-app.md"), PurePosixPath("web-app.html"), "Web-app gebruiken", "Handleiding", "Quick Start, instellingen, updates, backup en beveiliging via openquatt.local."),
+    Page(PurePosixPath("docs/web-app.md"), PurePosixPath("web-app.html"), "Overzicht van de web-app", "Handleiding", "Quick Start, instellingen, updates, backup en beveiliging via openquatt.local."),
+    Page(PurePosixPath("docs/web-app/quick-start.md"), PurePosixPath("web-app/quick-start.html"), "Eerste keer instellen", "Handleiding", "Eerste keer instellen in OpenQuatt."),
+    Page(PurePosixPath("docs/web-app/instellingen.md"), PurePosixPath("web-app/instellingen.html"), "Instellingen aanpassen", "Handleiding", "Instellingen aanpassen in OpenQuatt."),
+    Page(PurePosixPath("docs/web-app/bronnen.md"), PurePosixPath("web-app/bronnen.html"), "Bronnen en integraties", "Handleiding", "Bronnen en integraties in OpenQuatt."),
+    Page(PurePosixPath("docs/web-app/energie.md"), PurePosixPath("web-app/energie.html"), "Energie en resultaten", "Handleiding", "Energie en resultaten in OpenQuatt."),
+    Page(PurePosixPath("docs/web-app/diagnose.md"), PurePosixPath("web-app/diagnose.html"), "Diagnose en logboeken", "Handleiding", "Diagnose en logboeken in OpenQuatt."),
+    Page(PurePosixPath("docs/web-app/onderhoud.md"), PurePosixPath("web-app/onderhoud.html"), "Updates en backups", "Handleiding", "Updates en backups in OpenQuatt."),
+    Page(PurePosixPath("docs/web-app/privacy.md"), PurePosixPath("web-app/privacy.html"), "Gegevens delen en privacy", "Handleiding", "Kiezen welke gegevens je deelt en de keuze controleren."),
+    Page(PurePosixPath("docs/gegevens-delen-technisch.md"), PurePosixPath("gegevens-delen-technisch.html"), "Gegevens delen: technische naslag", "Naslag", "Velden en verzendgedrag van gebruiksstatistieken."),
+    Page(PurePosixPath("docs/koelen-technisch.md"), PurePosixPath("koelen-technisch.html"), "Koelen: technische werking", "Naslag", "Koelvoorwaarden, wachttijden en bronbewaking."),
+    Page(PurePosixPath("docs/web-app/herstel.md"), PurePosixPath("web-app/herstel.html"), "Herstelpagina gebruiken", "Handleiding", "Herstelpagina gebruiken in OpenQuatt."),
+    Page(PurePosixPath("docs/dagelijks/controleren.md"), PurePosixPath("dagelijks/controleren.html"), "Dagelijkse controle", "Handleiding", "Dagelijkse controle in OpenQuatt."),
+    Page(PurePosixPath("docs/dagelijks/verwarmen.md"), PurePosixPath("dagelijks/verwarmen.html"), "Verwarmen en comfort", "Handleiding", "Verwarmen en comfort in OpenQuatt."),
+    Page(PurePosixPath("docs/dagelijks/koelen.md"), PurePosixPath("dagelijks/koelen.html"), "Koelen", "Handleiding", "Koelen in OpenQuatt."),
     Page(PurePosixPath("docs/dashboard/README.md"), PurePosixPath("dashboard/index.html"), "OpenQuatt in Home Assistant", "Home Assistant", "Dashboards, packages en handleidingen voor OpenQuatt in Home Assistant."),
-    Page(PurePosixPath("docs/dashboard/installation.md"), PurePosixPath("dashboard/installeren.html"), "Dashboard installeren", "Home Assistant", "OpenQuatt toevoegen, kaarten installeren en het juiste dashboard importeren.", PurePosixPath("docs/installation.md")),
+    Page(PurePosixPath("docs/dashboard/koppelen.md"), PurePosixPath("dashboard/koppelen.html"), "OpenQuatt koppelen", "Home Assistant", "ESPHome koppelen binnen 10 minuten, automatische API-beveiliging en koppelproblemen oplossen."),
+    Page(PurePosixPath("docs/dashboard/installation.md"), PurePosixPath("dashboard/installeren.html"), "Dashboard installeren", "Home Assistant", "Kaarten installeren en het juiste Single- of Duo-dashboard importeren."),
     Page(PurePosixPath("docs/dashboard/dashboard.md"), PurePosixPath("dashboard/gebruiken.html"), "Dashboard gebruiken", "Home Assistant", "Een rustige dagelijkse route door het OpenQuatt-dashboard.", PurePosixPath("docs/dashboard.md")),
     Page(PurePosixPath("docs/dashboard/dynamic-sources.md"), PurePosixPath("dashboard/dynamische-bronnen.html"), "Dynamische bronnen", "Home Assistant", "Home Assistant-bronnen tijdens runtime koppelen aan OpenQuatt.", PurePosixPath("docs/dynamic-sources.md")),
     Page(PurePosixPath("docs/dashboard/cooling.md"), PurePosixPath("dashboard/koeling.html"), "Dynamische koelbronnen", "Home Assistant", "Dauwpuntbronnen uit Home Assistant gebruiken voor veilige koeling.", PurePosixPath("docs/cooling.md")),
@@ -58,6 +71,8 @@ PAGES = [
     Page(PurePosixPath("docs/homey.md"), PurePosixPath("homey.html"), "OpenQuatt in Homey", "Handleiding", "Homey Pro koppelen, meekijken, automatiseren en OpenQuatt voeden met je eigen sensoren."),
     Page(PurePosixPath("docs/verwarmen-en-koelen.md"), PurePosixPath("verwarmen-en-koelen.html"), "Verwarmen en koelen uitgelegd", "Uitleg", "Heldere uitleg van Power House, stooklijnregeling, koeling, Single en Duo."),
     Page(PurePosixPath("docs/mqtt.md"), PurePosixPath("mqtt.html"), "MQTT inputbronnen", "Docs", "Beperkte MQTT inputbronnen voor externe meetwaarden zoals koelingsdauwpunt."),
+    Page(PurePosixPath("docs/crash-telemetry.md"), PurePosixPath("crash-telemetry.html"), "Crashtelemetrie", "Naslag", "Welke begrensde technische crashinformatie OpenQuatt met toestemming via MQTT verstuurt."),
+    Page(PurePosixPath("docs/bodemplaatverwarming.md"), PurePosixPath("bodemplaatverwarming.html"), "Bodemplaatverwarming", "Naslag", "Regelmethoden, generatieverschillen en opgeslagen profielen per buitenunit."),
     Page(PurePosixPath("docs/api-input.md"), PurePosixPath("api-input.html"), "API inputbronnen", "Docs", "Lokale HTTP-endpoints voor externe bronwaarden en toestemmingssignalen."),
     Page(PurePosixPath("docs/problemen-oplossen.md"), PurePosixPath("problemen-oplossen.html"), "Problemen oplossen", "Handleiding", "Rustige diagnosevolgorde bij installatie- en regelproblemen."),
     Page(PurePosixPath("docs/power-house.md"), PurePosixPath("power-house.html"), "Power House", "Docs", "Uitleg van huismodel, comfortlogica en Single/Duo-gedrag."),
@@ -71,62 +86,13 @@ PAGES = [
 
 PAGE_BY_SOURCE = {page.source: page for page in PAGES}
 SIDEBAR_GROUPS = [
-    (
-        "Aan de slag",
-        "Van projectintro naar eerste werkende installatie.",
-        [
-            PurePosixPath("README.md"),
-            PurePosixPath("docs/q-edition.md"),
-            PurePosixPath("docs/installatie-en-ingebruikname.md"),
-            PurePosixPath("docs/web-app.md"),
-        ],
-    ),
-    (
-        "Dagelijks gebruik",
-        "Begrijpen, volgen en rustig bijsturen.",
-        [
-            PurePosixPath("docs/verwarmen-en-koelen.md"),
-        ],
-    ),
-    (
-        "Optioneel: Home Assistant",
-        "Dashboards toevoegen nadat OpenQuatt lokaal werkt.",
-        [
-            PurePosixPath("docs/dashboard/README.md"),
-            PurePosixPath("docs/dashboard/installation.md"),
-            PurePosixPath("docs/dashboard/dashboard.md"),
-            PurePosixPath("docs/dashboard/dynamic-sources.md"),
-            PurePosixPath("docs/dashboard/cooling.md"),
-        ],
-    ),
-    (
-        "Optioneel: Homey",
-        "Homey Pro koppelen nadat OpenQuatt lokaal werkt.",
-        [
-            PurePosixPath("docs/homey.md"),
-        ],
-    ),
-    (
-        "Afstellen en problemen",
-        "Rustig onderzoeken voordat je instellingen verandert.",
-        [
-            PurePosixPath("docs/problemen-oplossen.md"),
-            PurePosixPath("docs/power-house.md"),
-            PurePosixPath("docs/water-temperature-control.md"),
-            PurePosixPath("docs/regelgedrag-van-openquatt.md"),
-            PurePosixPath("docs/instellingen-en-meetwaarden.md"),
-        ],
-    ),
-    (
-        "Naslag",
-        "Fallbacks en technische routes die je meestal niet dagelijks nodig hebt.",
-        [
-            PurePosixPath("docs/mqtt.md"),
-            PurePosixPath("docs/api-input.md"),
-            PurePosixPath("docs/hcq-io-overzicht.md"),
-            PurePosixPath("docs/handmatige-installatie.md"),
-        ],
-    ),
+    ("Aan de slag", "", [PurePosixPath("README.md"), PurePosixPath("docs/q-edition.md"), PurePosixPath("docs/web-app/quick-start.md")]),
+    ("Dagelijks gebruik", "", [PurePosixPath("docs/dagelijks/controleren.md"), PurePosixPath("docs/dagelijks/verwarmen.md"), PurePosixPath("docs/dagelijks/koelen.md")]),
+    ("Web-app", "", [PurePosixPath("docs/web-app.md"), PurePosixPath("docs/web-app/instellingen.md"), PurePosixPath("docs/web-app/bronnen.md"), PurePosixPath("docs/web-app/energie.md"), PurePosixPath("docs/web-app/privacy.md")]),
+    ("Home Assistant", "", [PurePosixPath("docs/dashboard/README.md"), PurePosixPath("docs/dashboard/koppelen.md"), PurePosixPath("docs/dashboard/installation.md"), PurePosixPath("docs/dashboard/dashboard.md"), PurePosixPath("docs/dashboard/dynamic-sources.md"), PurePosixPath("docs/dashboard/cooling.md")]),
+    ("Homey", "", [PurePosixPath("docs/homey.md")]),
+    ("Onderhoud en problemen", "", [PurePosixPath("docs/problemen-oplossen.md"), PurePosixPath("docs/web-app/diagnose.md"), PurePosixPath("docs/web-app/onderhoud.md"), PurePosixPath("docs/web-app/herstel.md")]),
+    ("Technische naslag", "", [PurePosixPath("docs/power-house.md"), PurePosixPath("docs/water-temperature-control.md"), PurePosixPath("docs/regelgedrag-van-openquatt.md"), PurePosixPath("docs/instellingen-en-meetwaarden.md"), PurePosixPath("docs/mqtt.md"), PurePosixPath("docs/api-input.md"), PurePosixPath("docs/crash-telemetry.md"), PurePosixPath("docs/bodemplaatverwarming.md"), PurePosixPath("docs/hcq-io-overzicht.md"), PurePosixPath("docs/handmatige-installatie.md"), PurePosixPath("docs/koelen-technisch.md"), PurePosixPath("docs/gegevens-delen-technisch.md")]),
 ]
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
@@ -180,6 +146,9 @@ def rewrite_href(source: PurePosixPath, current_output: PurePosixPath, href: str
 
     if normalized in PAGE_BY_SOURCE:
         site_target = PAGE_BY_SOURCE[normalized].output
+    elif normalized.suffix == ".md" and (REPO_ROOT / normalized).is_file():
+        url = f"{GITHUB_REPO_URL}/blob/main/{normalized.as_posix()}"
+        return f"{url}#{hash_part}" if hash_part else url
     elif normalized.parts and normalized.parts[0] == "docs":
         site_target = PurePosixPath(*normalized.parts[1:])
     else:
@@ -469,11 +438,17 @@ def build_sidebar(current_page: Page) -> str:
             linked_page = PAGE_BY_SOURCE[source]
             href = rel_url(current_page.output, linked_page.output)
             current = " current" if current_page.source == source else ""
+            sidebar_label = {
+                "docs/q-edition.md": "Q-edition aansluiten",
+                "docs/dashboard/README.md": "Overzicht",
+                "docs/dashboard/dynamic-sources.md": "Eigen sensoren gebruiken",
+                "docs/dashboard/cooling.md": "Koelbronnen gebruiken",
+            }.get(source.as_posix(), linked_page.label)
             current_attr = ' aria-current="page"' if current else ""
             items.append(
                 f"""
                 <li>
-                  <a class="sidebar-link{current}" href="{href}" data-sidebar-link{current_attr}>{escape(linked_page.label)}</a>
+                  <a class="sidebar-link{current}" href="{href}" data-sidebar-link{current_attr}>{escape(sidebar_label)}</a>
                 </li>
                 """
             )
@@ -522,7 +497,7 @@ def build_toc(toc: list[tuple[int, str, str]]) -> str:
 
 def render_template(rendered_page: RenderedPage, rendered_pages: list[RenderedPage]) -> str:
     page = rendered_page.page
-    asset_prefix = "./" if page.output.parent == PurePosixPath(".") else "../"
+    asset_prefix = "./" if page.output.parent == PurePosixPath(".") else "../" * len(page.output.parent.parts)
     install_href = rel_url(page.output, PurePosixPath("install/index.html"))
     q_edition_href = rel_url(page.output, PurePosixPath("q-edition.html"))
     route_href = f"{rel_url(page.output, PurePosixPath('index.html'))}#kies-je-route"
@@ -530,6 +505,13 @@ def render_template(rendered_page: RenderedPage, rendered_pages: list[RenderedPa
     version_href = rel_url(page.output, PurePosixPath("firmware/main/version.json"))
     body_class = f"page-{slugify(page.output.stem, {})}"
 
+    legacy_links = '<a id="herstelpagina-gebruiken" hidden></a>' if page.source == PurePosixPath("docs/web-app/herstel.md") else ""
+    if page.source == PurePosixPath("docs/web-app.md"):
+        aliases = json.loads((REPO_ROOT / "docs/web-app-legacy-links.json").read_text(encoding="utf-8"))
+        legacy_links = '<a id="herstelpagina-gebruiken" hidden></a>' if page.source == PurePosixPath("docs/web-app/herstel.md") else "".join(
+            f'<a id="{escape(anchor)}" data-legacy-target="{escape(target)}" href="{escape(target)}" hidden></a>'
+            for anchor, target in aliases.items() if anchor not in {entry[2] for entry in rendered_page.toc}
+        )
     lead_html = f'<p class="doc-lead">{rendered_page.lead}</p>' if rendered_page.lead else ""
     doc_actions = ""
     if page.source == PurePosixPath("README.md"):
@@ -542,7 +524,7 @@ def render_template(rendered_page: RenderedPage, rendered_pages: list[RenderedPa
     elif page.source == PurePosixPath("docs/dashboard/README.md"):
         doc_actions = f"""
           <div class="doc-actions" aria-label="Home Assistant starten">
-            <a class="doc-action doc-action-primary" href="{rel_url(page.output, PurePosixPath('dashboard/installeren.html'))}">Dashboard installeren</a>
+            <a class="doc-action doc-action-primary" href="{rel_url(page.output, PurePosixPath('dashboard/koppelen.html'))}">OpenQuatt koppelen</a>
             <a class="doc-action" href="{rel_url(page.output, PurePosixPath('dashboard/gebruiken.html'))}">Dashboard gebruiken</a>
           </div>
         """
@@ -554,6 +536,13 @@ def render_template(rendered_page: RenderedPage, rendered_pages: list[RenderedPa
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{escape(page.label)} | OpenQuatt</title>
     <meta name="description" content="{escape(page.summary)}" />
+    <meta name="theme-color" content="#0F1724" />
+    <link rel="icon" type="image/svg+xml" href="{asset_prefix}assets/brand/favicon.svg" />
+    <link rel="apple-touch-icon" href="{asset_prefix}assets/brand/apple-touch-icon.png" />
+    <meta property="og:title" content="{escape(page.label)} | OpenQuatt" />
+    <meta property="og:description" content="{escape(page.summary)}" />
+    <meta property="og:image" content="https://openquatt.github.io/OpenQuatt/assets/brand/openquatt-social-card-1280x640.png" />
+    <meta name="twitter:card" content="summary_large_image" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -573,7 +562,7 @@ def render_template(rendered_page: RenderedPage, rendered_pages: list[RenderedPa
           </button>
 
           <a class="site-brand" href="{rel_url(page.output, PurePosixPath('index.html'))}">
-            <img class="site-brand-logo" src="{asset_prefix}assets/openquatt_logo.svg" alt="OpenQuatt" width="118" height="40" />
+            <img class="site-brand-logo" src="{asset_prefix}assets/brand/openquatt-logo-compact-dark.svg" alt="OpenQuatt" width="200" height="44" />
           </a>
         </div>
 
@@ -613,7 +602,7 @@ def render_template(rendered_page: RenderedPage, rendered_pages: list[RenderedPa
         </section>
 
         <article class="doc-content prose">
-          {rendered_page.body_html}
+          {legacy_links}{rendered_page.body_html}
         </article>
 
 

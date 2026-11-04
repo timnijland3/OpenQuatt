@@ -9,6 +9,7 @@
 
 substitutions:
   oq_connection: "auto"
+  oq_connection_text_internal: "false"
 
 network:
   priority: [ethernet, wifi]
@@ -38,10 +39,17 @@ improv_serial:
   next_url: "http://{{ip_address}}/"
 
 external_components:
+  # ESPHome 2026.10.0-compatible lifecycle backport; see openquatt_network/README.md.
+  - source:
+      type: git
+      url: https://github.com/jeroen85/esphome.git
+      ref: 6d8b057caec23d8c5216460554b921e3aed420ba
+    components: [ethernet]
+    refresh: never
   - source:
       type: local
       path: ${external_components_path}
-    components: [openquatt_network, openquatt_captive_portal_router]
+    components: [wifi, captive_portal, openquatt_network, openquatt_captive_portal_router]
 
 openquatt_network:
   id: oq_network_manager

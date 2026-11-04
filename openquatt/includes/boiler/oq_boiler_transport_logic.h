@@ -63,6 +63,19 @@ inline CommandAdapterDecision evaluate_command_adapter(const CommandAdapterInput
   return out;
 }
 
+// A thermostat may suppress DHW only while its STATUS frame is current. All
+// unavailable and non-OTB paths preserve normal tap-water availability.
+inline constexpr bool compute_otb_dhw_permission(bool opentherm_selected, bool thermostat_status_valid,
+                                                 bool thermostat_dhw_enabled) {
+  return !opentherm_selected || !thermostat_status_valid || thermostat_dhw_enabled;
+}
+
+static_assert(!compute_otb_dhw_permission(true, true, false),
+              "A current thermostat DHW-off request must reach the OTB");
+static_assert(compute_otb_dhw_permission(true, true, true), "A current thermostat DHW-on request must reach the OTB");
+static_assert(compute_otb_dhw_permission(true, false, false), "A missing or stale thermostat STATUS must fail open");
+static_assert(compute_otb_dhw_permission(false, true, false), "R1 selection must not disable DHW through the OTB");
+
 }  // namespace oq_boiler_transport
 
 #endif  // OPENQUATT_OQ_BOILER_TRANSPORT_LOGIC_H_

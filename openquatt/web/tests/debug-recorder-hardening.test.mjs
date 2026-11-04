@@ -13,21 +13,20 @@ const [header, source, psramBuffer] = await Promise.all([
 
 test("packed rows vergroten de retentie van de volledige dev-debugset", () => {
   const widths = { binary_sensor: 1, switch: 1, text_sensor: 2, select: 2, sensor: 4, number: 4 };
-  const rowBytes = 8 + (5 * 4) + DEBUG_RECORDING_KEYS.reduce(
+  const rowBytes = 8 + (5 * 4) + 2 + (8 * 4) + DEBUG_RECORDING_KEYS.reduce(
     (total, key) => total + widths[ENTITY_DEFS[key].domain],
     0,
   );
-  const capacity = Math.floor((1024 * 1024) / rowBytes);
+  const capacity = Math.floor((2 * 1024 * 1024) / rowBytes);
 
-  assert.equal(rowBytes, 714);
-  assert.equal(capacity, 1468);
-  // Issue #649 voegt drie velden toe (ingestelde bron, geselecteerde waarde,
-  // actieve tak) en issue #642 twee diagnosevelden (gepubliceerde
-  // startblokkade + resterende tijd). De V2 Power Input-keten voegt per HP
-  // acht compacte kolommen toe
-  // (4x sensor, 3x binary, 1x text = +21 B/rij). De retentie blijft ruim
-  // boven de maximaal instelbare opnameduur van 1 uur.
-  assert.ok((capacity - 1) * 10 >= 4.0 * 60 * 60);
+  assert.equal(rowBytes, 943);
+  assert.equal(capacity, 2223);
+  // Full default schema: 6 h 10 min 20 s. Optional missing fields can only
+  // increase this capacity; custom schemas still report their actual capacity.
+  assert.equal((capacity - 1) * 10, 22220);
+  assert.ok((capacity - 1) * 10 > 6 * 60 * 60);
+  assert.match(header, /BUFFER_BYTES = 2U \* 1024U \* 1024U/);
+  assert.doesNotMatch(header, /MAX_DURATION_S|MIN_DURATION_S|DEFAULT_DURATION_S/);
   assert.match(header, /PsramBuffer<uint8_t> samples_/);
   assert.match(source, /value_size_for_type_/);
   assert.match(source, /sample_row_bytes/);
@@ -48,7 +47,7 @@ test("exports zijn immutable, gesynchroniseerd en falen zonder interne-heapfallb
   assert.match(source, /"snapshot_unavailable"/);
   assert.match(header, /mutable bool export_in_progress_/);
   assert.match(source, /const bool can_start = this->available_\(\) && !this->export_in_progress_/);
-  assert.match(source, /this->write_recording_export_\(req\)/);
+  assert.match(source, /this->write_recording_export_\(req, last_minutes\)/);
   assert.doesNotMatch(source, /allocate_fallback|heap_caps_malloc\([^\n]*MALLOC_CAP_8BIT/);
 });
 

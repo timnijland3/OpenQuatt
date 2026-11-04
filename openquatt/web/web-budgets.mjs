@@ -1,61 +1,42 @@
 // Fail when gzip growth exceeds the smaller of these two limits.
-export const WEB_BUNDLE_GZIP_GROWTH_LIMIT = { bytes: 4_608, ratio: 0.03 };
+export const WEB_BUNDLE_GZIP_GROWTH_LIMIT = { bytes: 7_680, ratio: 0.03 };
 
 export const WEB_BUNDLE_BUDGETS = [
   {
     file: "js/openquatt-app.js",
-    // Includes HCQ R2 settings, bounded usage-telemetry confirmation polling,
-    // source-bound supply-temperature calibration status and results,
-    // its read-only sensor-correction summary, calibration backup/restore,
-    // the read-only ODU EEPROM service export, API ingress source controls,
-    // concise CM100 boiler test phase copy (FLOW_SETTLING/BOILER_SETTLING/MEASURING/COOLDOWN),
-    // advisory per-ODU generation detection with single bulk-detect button for onboarding and installation settings,
-    // the explicitly confirmed dev-to-main firmware downgrade flow,
-    // selectable cooling restart by water temperature or minimum off-time,
-    // instelbare elektrische ingangsgrens met topologie- en ODU-afhankelijk maximum,
-    // issue-615 verduidelijking met standaardreferentie, inline waarschuwing,
-    // expliciete bevestiging boven de standaard en standaard-herstelactie,
-    // ODU-detectie-gating voor verhoogde limieten, reset-naar-automatisch,
-    // restore-waarschuwing en live inline-feedback tijdens typen,
-    // toelichting lokale historie in Quick Start, plus fase-2 flash-I/O observability,
-    // bounded OTA app-shell cache refresh before reloading into newly installed firmware,
-    // strategie-afhankelijke warmtetoestemming-advies (Power House vs stooklijn, OT-voorkeur, centrale modal, auto-set in Quick Start),
-    // plus hervatbare, fail-closed Quick Start-OTA met main-/doelcontrole en duurzaam post-bootbewijs,
-    // afzonderlijke rollen voor een aangesloten aanvullende warmtebron, hybride verwarmen en overname,
-    // the issue-516 boiler/OpenTherm debug-recording fields,
-    // the issue-536 boiler-result quality and confirmed empirical Apply flow,
-    // the compact per-ODU compressor profile for safe manual F-levels,
-    // the generation-bound bottom-plate profile editor and backup/restore,
-    // the unified Q-firmware network preference and active-connection controls,
-    // the issue-471 grouped source focus panel with configured/effective paths,
-    // relevant-source diagnostics, warnings and stable keyboard focus,
-    // frequency-based day/silent limits and exclusion ranges per ODU,
-    // and the grouped issue-541 cooling-window settings block.
-    // plus the issue-642 published cooling start block (reason + M:SS
-    // countdown on the existing Ready location, preflow/active distinction).
-    // plus bounded webserver-log history polling (single scheduler, retry
-    // back-off and authoritative refresh without a second /events stream).
-    // plus twaalf compacte V2/Power-House debug-recordingvelden (gevraagd/
-    // toegepast niveau, tabel-Hz, intentcode, latch, Pmin/off/on, snapshot).
-    // Includes stable native time editing and confirmed, stale-poll-safe saves.
-    // Compact pipeline plus the bottom-plate editor/backup: ~914 kB.
-    // the issue-649 heating supply target source card with OT/HA/API/MQTT rows:
-    // measured +3.668 kB over its compact baseline.
-    // Keep a narrow margin for the merged issue-642, V2 and issue-649 set;
-    // do not restore the pre-compaction 1 MB ceiling.
-    raw: 930_000,
-    // One-time migration ceiling for structured incident monitoring, replay,
-    // the CSRF-protected deferred recovery actions, and their compact editor.
-    // Once this bundle is the base, the normal gzip growth limit applies again.
-    gzipBaselineCeiling: 238_000,
+    // Includes passive learning, trend goals, the curve editor and air-purge status.
+    // With daily-learning UI and legacy compatibility, plus the performance invitation.
+    // dev baseline: 1,308,178 B; invitation adds ~7.5 kB raw / ~2.6 kB gzip on Node 24.14.1.
+    // Includes topology-aware Single rendering from dev.
+    // Historical heating-stop reasons and both locale catalogues add ~10.6 kB raw.
+    // Aux relay (R2) run-on settings, copy in both locales and legacy-backup migration add ~2.2 kB raw / ~0.7 kB gzip.
+    // Explicit recorder retries preserve the pending choice and reject stale responses (+1 KiB raw).
+    // Hiding CV energy and decision-log views without an auxiliary heat source adds ~0.8 kB raw / ~0.3 kB gzip.
+    // An automatic theme that follows the device light/dark setting adds ~1.3 kB raw / ~0.3 kB gzip.
+    // The existing relative gzip growth limit remains unchanged.
+    // Complete heating/cooling inputs: +314 B raw versus dev (Node 24.19.0).
+    // Grouped start sequences, truthful historical evidence and confirmed compressor history:
+    // Includes stop sequences, observed operating periods, concise details and recorded restart waits.
+    // +23,809 B raw / +7,071 B gzip versus #882 on Node 24.19.0; relative gzip limits unchanged.
+    // Usage telemetry water-supply source adds 238 B raw / 125 B gzip on Node 24.14.1.
+    // Plus the unchanged 13,452 B allowance for warmup controls and diagnostics.
+    // dev 9b8dfa57 raw budget 1,363,500 B; relative gzip limits stay unchanged.
+    // Measured raw: dev 1,363,238 B, PR 1,375,748 B (Node 24.14.1); gzip +3,779 B (+0.99%).
+    // Passive-learning progress, readiness and both locales: +10,701 B raw / ~3.1 kB gzip
+    // versus dev 388f6f9d on Node 24.14.1; preserves the existing 1,204 B raw headroom.
+    // Delta T flow control settings, status and copy in both locales:
+    // measured raw dev 1,375,784 B, PR 1,379,267 B (+3,483 B; gzip +1,275 B, Node 24.19.0).
+    // Shared allowance for recorder copy preparation (+2,000 B) and DHW-only diagnostics (+1,161 B).
+    // Keep PRs #897 and #899 compatible in either merge order; relative gzip limits stay unchanged.
+    // Daily recovery reasons and conditional gap-budget copy in both locales:
+    // +2,378 B raw / +702 B gzip versus dev 5ae3951f (Node 24.14.1).
+    // Preserve the existing 411 B raw headroom and unchanged relative gzip limits.
+    raw: 1_396_675,
+    gzipBaselineCeiling: 362_000,
   },
-  // Includes the compact, dark-safe ODU generation picker with unified header action and distinct badge/button,
-  // the warmtetoestemming-advies modal (3 summary cards, comparison, matrix, sticky footer),
-  // the issue-615 electrical-limit slider with red above-standard zone,
-  // matching estimate/entry boxes, label icons and aligned vertical rhythm,
-  // the responsive issue-471 master/detail source focus panel,
-  // the per-ODU bottom-plate settings modal,
-  // and the grouped issue-541 cooling-window settings block.
-  // Preserve the source-level symbol compaction and dead-CSS reduction.
-  { file: "css/openquatt-app.css", raw: 200_000 },
+  // Includes passive-learning cards and the curve editor: ~207.9 kB raw.
+  // Dark-theme contrast fixes (accent tokens, heating advice, tooltips, badges and inputs) add ~4.5 kB raw / ~0.8 kB gzip.
+  // Passive-learning layout: +2,969 B raw / +493 B gzip versus dev 388f6f9d
+  // on Node 24.14.1; preserves the existing 1,581 B raw headroom.
+  { file: "css/openquatt-app.css", raw: 216_484 },
 ];

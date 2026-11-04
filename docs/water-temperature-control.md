@@ -2,7 +2,7 @@
 
 Deze pagina is bedoeld voor gebruikers die de stooklijnregeling van OpenQuatt beter willen begrijpen, zonder meteen in technische details te verdwijnen.
 
-> Zoek je vooral de korte uitleg? Begin dan bij [Verwarmen en koelen uitgelegd](verwarmen-en-koelen.md).
+> Zoek je vooral de korte uitleg? Begin dan bij [Verwarmen en comfort](dagelijks/verwarmen.md).
 
 ## Wat is Water Temperature Control?
 
@@ -112,6 +112,31 @@ Tijdens Quick Start zet een strategieswitch naar `Water Temperature Control` de 
 
 Buiten Quick Start toont `Instellingen → Verwarmen` bij een afwijkende keuze alleen een advies (`Aanbevolen instelling` / `Controleer configuratie`) en wordt de instelling niet stil overschreven. Voor de volledige matrix zie [Instellingen en meetwaarden](instellingen-en-meetwaarden.md#5-bronselectie).
 
+## Stooklijn instellen en tijdelijk verschuiven
+
+De web-app biedt onder `Instellingen → Verwarmen` een Simple-editor met helling
+(K per 10 °C kouder weer) en niveau (aanvoerdoel bij 0 °C buiten). De preview
+toont vooraf de zes punten die `Toepassen` naar de bestaande stooklijn schrijft.
+Onder Advanced kun je alle zes punten rechtstreeks blijven wijzigen. Simple
+opnieuw toepassen vervangt een handmatig gevormde Advanced-curve.
+
+Met **Stooklijn-offset** (`Heating Curve Modifier Source`) kun je de lokale stooklijn tijdelijk
+verschuiven via `HA input`, `API input` of `MQTT`. De aanvoercorrectie wordt
+begrensd op −5…+5 °C en vóór de bestaande kamertrim en waterlimiet verwerkt.
+Bij een ongeldige of verouderde bron geldt 0 °C correctie; de lokale stooklijn
+blijft actief. Een temperatuurverschil van 1 °C is numeriek gelijk aan 1 K;
+de firmware-entiteiten kunnen daarom nog `K` als eenheid tonen.
+Gebruik voor HA `sensor.openquatt_ext_heating_curve_modifier` en
+`binary_sensor.openquatt_ext_heating_curve_modifier_valid` uit het
+`dynamic-sources`-pakket. De HA-heartbeat moet vers zijn; er is voor deze
+nieuwe bron geen tijdloze legacy-fallback. Een geldig absoluut extern
+aanvoertarget vervangt nog steeds het hele lokale resultaat en krijgt de
+offset niet nogmaals toegepast.
+
+De sensoren `Heating Curve Base Target`, `Heating Curve Modifier`,
+`Heating Curve Room Trim` en `Heating Supply Target (Effective)` tonen de
+opbouw en het uiteindelijk gekozen doel afzonderlijk.
+
 ## Extern aanvoertarget (optioneel)
 
 Standaard bepaalt de stooklijn het aanvoerdoel uit de buitentemperatuur, met een kleine kamertrim erbovenop. Laat je dat doel liever door een externe regelaar bepalen — bijvoorbeeld een OpenTherm-thermostaat die zelf al kamerafwijking in `TSet` verwerkt, een buffervatregeling in Home Assistant of een MPC-optimalisatie — dan kun je dat target rechtstreeks doorgeven.
@@ -125,7 +150,7 @@ Voor `HA input` luistert OpenQuatt naar twee vaste entiteiten in Home Assistant:
 
 Die tweede entiteit is jouw eigen geldigheidsschakelaar: zet hem `off` zodra je berekening verouderd of onbetrouwbaar is. Uitzetten werkt direct: een eerder vastgehouden waarde wordt meteen ingetrokken en de stooklijn neemt het weer over, zonder overbruggingsvenster. Alleen waarden binnen 20…70 °C tellen mee.
 
-Publiceer de waarde periodiek opnieuw (bijvoorbeeld elke minuut), ook als hij niet verandert. Na 15 minuten zonder nieuwe Home Assistant-publicatie wordt de waarde ongeldig. Bij een korte Home Assistant-herlaadactie kan OpenQuatt de laatst geldige waarde daarna nog maximaal 5 minuten overbruggen; zet de geldigheidsentiteit expliciet `off` om die overbrugging direct te beëindigen. Zo valt een bevroren waarde uiterlijk na 20 minuten terug op de stooklijn. Na een herstart is de ingang ongeldig tot de eerste publicatie binnen is. Voor `API input` en `MQTT` stuur je de waarde naar een lokaal endpoint of topic; zie [API inputbronnen](api-input.md) en [MQTT inputbronnen](mqtt.md). Die wegen hebben geen aparte geldigheidsentiteit en vervallen zonder extra overbrugging na 15 minuten. Voor `OT thermostat` gebruikt OpenQuatt de al ontvangen `OT - Control Setpoint` (`TSet`), met een eigen versheidsbewaking: zonder recent `TSet`-bericht valt de regeling terug op de stooklijn. Ook hier telt alleen een `TSet` binnen 20…70 °C mee: `TSet=0` (thermostaat zonder warmtevraag) of een andere waarde buiten bereik valt terug op de stooklijn in plaats van als extern minimumtarget te gelden.
+Publiceer de waarde als hij verandert; periodiek opnieuw publiceren van een ongewijzigde waarde is niet nodig. Het `dynamic-sources`-pakket in Home Assistant levert namelijk een centrale heartbeat (`sensor.openquatt_ha_ingress_heartbeat`), waarvan de state zelf ongeveer elke minuut verandert. Zolang die heartbeat binnenkomt, blijft ook een constante waarde (bijvoorbeeld 40,0 °C) gewoon bruikbaar. Blijft de heartbeat langer dan 15 minuten uit — bijvoorbeeld bij een verbroken Home Assistant-verbinding — dan wordt de waarde ongeldig. Bij een korte Home Assistant-herlaadactie kan OpenQuatt de laatst geldige waarde daarna nog maximaal 5 minuten overbruggen; zet de geldigheidsentiteit expliciet `off` om die overbrugging direct te beëindigen. Zo valt een bevroren waarde uiterlijk na 20 minuten terug op de stooklijn. Met het actuele `dynamic-sources`-pakket is de ingang na een herstart ongeldig tot de eerste heartbeat én een geldige waarde binnen zijn. Zonder heartbeat blijft voor dit aanvoertarget bewust de oude publicatiegebonden freshness-regel gelden, zodat een bevroren target ook na een firmware-update blijft verlopen. Voor `API input` en `MQTT` stuur je de waarde naar een lokaal endpoint of topic; zie [API inputbronnen](api-input.md) en [MQTT inputbronnen](mqtt.md). Die wegen hebben geen aparte geldigheidsentiteit en vervallen zonder extra overbrugging na 15 minuten. Voor `OT thermostat` gebruikt OpenQuatt de al ontvangen `OT - Control Setpoint` (`TSet`), met een eigen versheidsbewaking: zonder recent `TSet`-bericht valt de regeling terug op de stooklijn. Ook hier telt alleen een `TSet` binnen 20…70 °C mee: `TSet=0` (thermostaat zonder warmtevraag) of een andere waarde buiten bereik valt terug op de stooklijn in plaats van als extern minimumtarget te gelden.
 
 Wat die externe waarde wel en niet doet:
 
@@ -172,6 +197,7 @@ Praktisch:
 
 - OpenQuatt begint normaal met één warmtepomp;
 - de tweede unit komt pas bij als de vraag hoog genoeg en lang genoeg aanwezig blijft;
+- loopt de draaiende warmtepomp nog op, dan komt de tweede unit pas bij zodra die warmtepomp volgens het prestatiemodel minstens zoveel levert als de kleinste Duo-combinatie; zo springt de tweede unit niet bij om kort daarna weer te stoppen. Kan de draaiende warmtepomp niet verder oplopen, bijvoorbeeld door `Silent max frequency`, een actieve storing of ontdooien, dan geldt deze wachttijd niet;
 - er zit dus bewust wachttijd en hysterese in.
 
 Dat voorkomt onrustig schakelen tussen één en twee warmtepompen.
@@ -217,8 +243,9 @@ Controleer daarna pas of de PID of `Duo`-grenzen te scherp staan.
 
 ## Verder lezen
 
-- [Verwarmen en koelen uitgelegd](verwarmen-en-koelen.md)
+- [Verwarmen en comfort](dagelijks/verwarmen.md)
 - [Power House](power-house.md)
 - [Regelgedrag van OpenQuatt](regelgedrag-van-openquatt.md)
 - [Instellingen en meetwaarden](instellingen-en-meetwaarden.md)
 - [Problemen oplossen](problemen-oplossen.md)
+- [Verwarmingsregeling voor ontwikkelaars](development/verwarmingsregeling.md)

@@ -17,7 +17,48 @@ esphome:
     priority: -100
     then:
       - lambda: |-
+          esphome::openquatt_incident_manager::set_power_house_resume_reader([]() {
+            return oq_power_house_runtime::runtime().restart_state();
+          });
+          oq_boot_resume_runtime::ota_hold_reader = esphome::openquatt_incident_manager::ota_cycle_hold;
+          esphome::openquatt_incident_manager::set_ota_resume_guard_reader([]() {
+            const uint32_t now = millis();
+            uint8_t mask = 0U;
+            if (id(oq_incident_manager).ota_resume_candidate(1U, now) && oq_boot_resume_runtime::capture(true).ready)
+              mask |= 1U;
+            #if OQ_TOPOLOGY_DUO
+            if (id(oq_incident_manager).ota_resume_candidate(2U, now) && oq_boot_resume_runtime::capture(false).ready)
+              mask |= 2U;
+            #endif
+            return mask;
+          });
+          oq_boot_resume_runtime::minimum_flow_lph = (float) ${oq_cm_min_flow_lph};
+          oq_boot_resume_runtime::read_sources = [](uint64_t now) {
+            const auto& sources = oq_sensor_source::runtime();
+            const auto flow = sources.flow_selection();
+            #if OQ_TOPOLOGY_DUO
+            const auto& hp2_flow = oq_sources::hp2.flow;
+            #else
+            const oq_sources::RawFloatReceipt hp2_flow{};
+            #endif
+            #if OQ_HARDWARE_HEATPUMP_CONTROLLER_Q
+            const auto& controller_flow = oq_sources::controller_flow;
+            const bool primary_is_controller = id(hp_generation).has_state() &&
+                id(hp_generation).current_option() == "V1";
+            #else
+            const oq_sources::RawFloatReceipt controller_flow{};
+            const bool primary_is_controller = false;
+            #endif
+            const bool fresh = oq_boot_resume::flow_fresh(
+                flow, {oq_sources::hp1.flow, hp2_flow, controller_flow, primary_is_controller, OQ_TOPOLOGY_DUO != 0},
+                now, oq_boot_resume::TELEMETRY_FRESH_MS);
+            return oq_boot_resume_runtime::Sources{sources.heating_enable_valid(), sources.heating_enable_value(),
+                                                   fresh, flow.value};
+          };
+          // Keep technical-stop and defrost gates live for queued control writes/retries.
+          id(mod_bus).set_command_guard(oq_command_runtime::queued_address);
           oq_nvs_cleanup::log_stats("boot");
+          oq_nvs_cleanup::retire_openquatt_preferences(id(oq_air_purge_return_to_auto));
           // Always start from a clean paused state after reboot or OTA.
           id(oq_runtime_polling_paused).publish_state(false);
           id(oq_http_ota_begin_observed) = false;
@@ -38,43 +79,31 @@ esphome:
           #endif
           id(oq_fw_select_callbacks_runtime_ready) = true;
           id(oq_firmware_update).add_on_state_callback([]() {
+            // A successful manifest fetch publishes even when the version is unchanged.
+            // OTA progress and terminal errors publish too; successful manifests clear the error first.
+            if (id(oq_firmware_update).state != esphome::update::UPDATE_STATE_INSTALLING
+                && !id(oq_firmware_target_install_active)
+                && !id(oq_firmware_update).status_has_error()) {
+              esphome::web_server::WebServer::record_firmware_manifest_publication();
+            }
             const uint32_t request_generation = id(oq_fw_check_request_generation);
             if (request_generation == 0 || id(oq_fw_check_completed_generation) == request_generation) {
               return;
             }
 
-            std::string hardware_slug;
-            const std::string hardware = "${oq_hardware_profile}";
-            if (hardware == "waveshare") {
-              hardware_slug = "waveshare";
-            } else if (hardware == "heatpump_listener") {
-              hardware_slug = "heatpump-listener";
-            } else if (hardware == "heatpump_controller_q") {
-              hardware_slug = "heatpump-controller-q";
-            }
+            const std::string hardware_slug = "heatpump-controller-q";
             #if OQ_TOPOLOGY_DUO
             std::string topology = "duo";
             #else
             std::string topology = "single";
             #endif
-            std::string connection = "${oq_connection}";
             const std::string target = id(oq_firmware_update_target).current_option();
-            if (target == "alternate connection" && std::string("${alternate_connection}") != "") {
-              connection = "${alternate_connection}";
-            } else if (target == "alternate topology" && std::string("${alternate_topology}") != "") {
+            if (target == "alternate topology" && std::string("${alternate_topology}") != "") {
               topology = "${alternate_topology}";
-            } else if (target == "alternate topology and connection"
-                       && std::string("${alternate_topology}") != "") {
-              topology = "${alternate_topology}";
-              if (std::string("${alternate_connection}") != "") {
-                connection = "${alternate_connection}";
-              }
             }
 
-            const std::string connection_suffix =
-                std::string("${oq_artifact_connection_suffix}").empty() ? "" : "-" + connection;
             const std::string expected_file =
-                "openquatt-" + hardware_slug + "-" + topology + connection_suffix + ".firmware.ota.bin";
+                "openquatt-" + hardware_slug + "-" + topology + ".firmware.ota.bin";
             const std::string firmware_url = id(oq_firmware_update).update_info.firmware_url;
             id(oq_fw_check_target_ready) = !hardware_slug.empty()
                 && firmware_url.size() >= expected_file.size()
@@ -119,6 +148,9 @@ ota:
     on_begin:
       then:
         - lambda: |-
+            #if defined(OQ_POWER_HOUSE_LEARNING_TARGET) && OQ_POWER_HOUSE_LEARNING_TARGET == 1
+            oq_ph_learning::runtime().prepare_restart();
+            #endif
             id(oq_runtime_polling_paused).publish_state(true);
             ESP_LOGI("oq_fw", "Runtime polling paused for OTA.");
             id(oq_ota_phase_code) = 1;
@@ -164,6 +196,9 @@ ota:
       then:
         - lambda: |-
             id(oq_http_ota_begin_observed) = true;
+            #if defined(OQ_POWER_HOUSE_LEARNING_TARGET) && OQ_POWER_HOUSE_LEARNING_TARGET == 1
+            oq_ph_learning::runtime().prepare_restart();
+            #endif
             id(oq_runtime_polling_paused).publish_state(true);
             ESP_LOGI("oq_fw", "Runtime polling paused for OTA.");
             id(oq_ota_phase_code) = 1;
@@ -248,6 +283,12 @@ http_request:
 # ==============================================================================
 # MODBUS (RS485)
 # ==============================================================================
+external_components:
+  - source:
+      type: local
+      path: ${external_components_path}
+    components: [openquatt_modbus]
+
 uart:
   - id: uart_bus
     tx_pin: ${uart_tx_pin}
@@ -257,14 +298,19 @@ uart:
     data_bits: 8
     stop_bits: 1
     parity: EVEN
-    rx_full_threshold: 1
+    # Keep complete 7-byte single-register responses together with a possible
+    # trailing noise byte, while draining earlier than ESPHome's native ~16.
+    rx_full_threshold: 8
     rx_timeout: 1
 
-modbus:
+openquatt_modbus:
   - uart_id: uart_bus
     id: mod_bus
     send_wait_time: 100ms
-    # ESPHome 2026.8 moved command spacing from modbus_controller to the shared hub.
+    # Shared-hub pacing (ESPHome 2026.8+; controller command_throttle is gone).
+    # 100 ms restores the long-stable pre-2026.8 pacing: the 500 ms was PR #129
+    # controller-throttle heritage, not an ODU requirement. Re-raise only on
+    # wire-measured evidence. The substitution keeps its historic name.
     turnaround_time: ${oq_modbus_command_throttle_ms}ms
 
 # ==============================================================================
@@ -342,29 +388,19 @@ script:
       - lambda: |-
           // Re-apply the manifest URL immediately before check/install so the selected target wins.
           const std::string channel = id(oq_firmware_update_channel).current_option();
-          const std::string target = id(oq_firmware_update_target).current_option();
-          const bool alternate_connection_update_target = target == "alternate connection";
-          const bool alternate_topology_update_target = target == "alternate topology";
-          const bool alternate_build_update_target = target == "alternate topology and connection";
+          const bool alternate_topology_update_target =
+            id(oq_firmware_update_target).current_option() == "alternate topology";
           const bool dev_channel = channel == "dev";
 
           const char *source_url = dev_channel ? "${dev_release_manifest_url}" : "${main_release_manifest_url}";
-          const char *alternate_connection_url =
-            dev_channel ? "${alternate_dev_release_manifest_url}" : "${alternate_main_release_manifest_url}";
           const char *alternate_topology_url =
             dev_channel ? "${alternate_topology_dev_release_manifest_url}" : "${alternate_topology_main_release_manifest_url}";
-          const char *alternate_build_url =
-            dev_channel ? "${alternate_build_dev_release_manifest_url}" : "${alternate_build_main_release_manifest_url}";
-          if (alternate_build_update_target && alternate_build_url[0] != '\0') {
-            source_url = alternate_build_url;
-          } else if (alternate_connection_update_target && alternate_connection_url[0] != '\0') {
-            source_url = alternate_connection_url;
-          } else if (alternate_topology_update_target && alternate_topology_url[0] != '\0') {
+          if (alternate_topology_update_target && alternate_topology_url[0] != '\0') {
             source_url = alternate_topology_url;
           }
 
           ESP_LOGI("oq_fw", "Firmware update target '%s' on channel '%s' uses manifest: %s",
-                   target.c_str(), channel.c_str(), source_url);
+                   id(oq_firmware_update_target).current_option().c_str(), channel.c_str(), source_url);
           id(oq_firmware_update).set_source_url(source_url);
 
   - id: oq_initial_firmware_update_check
@@ -535,6 +571,9 @@ script:
                 id(oq_firmware_target_install_active) = true;
                 id(oq_firmware_target_install_attempt) = 1;
                 id(oq_http_ota_begin_observed) = false;
+                #if defined(OQ_POWER_HOUSE_LEARNING_TARGET) && OQ_POWER_HOUSE_LEARNING_TARGET == 1
+                oq_ph_learning::runtime().prepare_restart();
+                #endif
                 id(oq_runtime_polling_paused).publish_state(true);
                 ESP_LOGI("oq_fw", "Runtime polling paused before deferred OTA.");
                 id(oq_firmware_update_status).publish_state("Starting");
@@ -573,34 +612,18 @@ script:
       - lambda: |-
           // Fail-closed validatie van de PR-manifest-URL. Alleen exact
           // OpenQuatt/OpenQuatt/releases/download/pr-<nr>/<manifest> voor
-          // dit hardware/topology-target wordt geaccepteerd. Voor uniforme
-          // HCQ is dat de canonieke naam zonder verbindingssuffix.
+          // dit Q-edition/topology-target wordt geaccepteerd.
           const std::string url = id(oq_firmware_test_manifest_url).state;
           const std::string prefix =
               "https://github.com/OpenQuatt/OpenQuatt/releases/download/pr-";
-          std::string hardware_slug;
-          const std::string hardware = "${oq_hardware_profile}";
-          if (hardware == "waveshare") {
-            hardware_slug = "waveshare";
-          } else if (hardware == "heatpump_listener") {
-            hardware_slug = "heatpump-listener";
-          } else if (hardware == "heatpump_controller_q") {
-            hardware_slug = "heatpump-controller-q";
-          } else {
-            ESP_LOGW("oq_fw", "Test firmware rejected: unsupported hardware profile.");
-            id(oq_firmware_target_install_active) = false;
-            id(oq_ota_phase_code) = 5;
-            id(oq_firmware_update_status).publish_state("Error");
-            return;
-          }
+          const std::string hardware_slug = "heatpump-controller-q";
           #if OQ_TOPOLOGY_DUO
           const std::string topology = "duo";
           #else
           const std::string topology = "single";
           #endif
           const std::string artifact_base = "openquatt-" + hardware_slug + "-" + topology;
-          const std::string expected_manifest =
-              artifact_base + "${oq_artifact_connection_suffix}-ota.manifest.json";
+          const std::string expected_manifest = artifact_base + "-ota.manifest.json";
           bool valid = url.rfind(prefix, 0) == 0;
           if (valid) {
             std::string rest = url.substr(prefix.size());
@@ -729,6 +752,8 @@ script:
                     return id(oq_fw_check_completed_generation) == id(oq_fw_check_request_generation);
                 timeout: 20s
             - lambda: |-
+                // Controleer opnieuw dat de bevestigde manifest-URL nog steeds
+                // de exact geaccepteerde PR-release en targetnaam gebruikt.
                 if (id(oq_fw_check_completed_generation) != id(oq_fw_check_request_generation)) {
                   return;
                 }
@@ -785,6 +810,9 @@ script:
                 id(oq_firmware_update).set_source_url(url.c_str());
                 id(oq_firmware_target_install_attempt) = 1;
                 id(oq_http_ota_begin_observed) = false;
+                #if defined(OQ_POWER_HOUSE_LEARNING_TARGET) && OQ_POWER_HOUSE_LEARNING_TARGET == 1
+                oq_ph_learning::runtime().prepare_restart();
+                #endif
                 id(oq_runtime_polling_paused).publish_state(true);
                 ESP_LOGI("oq_fw", "Runtime polling paused before deferred PR test OTA.");
                 id(oq_firmware_update_status).publish_state("Starting");
@@ -846,6 +874,7 @@ script:
                       id(oq_firmware_target_install_active) = false;
           else:
             - lambda: |-
+                // Een mislukte check mag geen installatiestatus achterlaten.
                 if (id(oq_ota_phase_code) == 5) {
                   id(oq_firmware_target_install_active) = false;
                   return;
@@ -878,6 +907,9 @@ script:
           const float supply_c = id(water_supply_temp_selected).has_state() ? id(water_supply_temp_selected).state : NAN;
           const float flow_lph = id(flow_rate_selected).has_state() ? id(flow_rate_selected).state : NAN;
           const float input_w = id(oq_total_power_input).has_state() ? id(oq_total_power_input).state : NAN;
+          const float supply_target_c = id(oq_strategy_active_code) == 2 ? id(oq_strategy_supply_target_temp) : NAN;
+          const float phouse_request_w = id(oq_strategy_active_code) == 3 && id(oq_strategy_output_source_code) == 3
+                                             ? id(oq_phouse_req_w) : NAN;
 
           float output_w = NAN;
           bool cooling_mode = false;
@@ -894,11 +926,13 @@ script:
             output_w = id(oq_total_heat_power).has_state() ? id(oq_total_heat_power).state : NAN;
           }
 
-          if (isnan(outside_c) && isnan(room_c) && isnan(room_sp_c) && isnan(supply_c) && isnan(flow_lph) && isnan(input_w) && isnan(output_w)) {
+          if (isnan(outside_c) && isnan(room_c) && isnan(room_sp_c) && isnan(supply_c) && isnan(flow_lph) && isnan(input_w) && isnan(output_w) &&
+              isnan(supply_target_c) && isnan(phouse_request_w)) {
             return;
           }
 
-          id(oq_trends_endpoint).capture_sample(outside_c, supply_c, room_c, room_sp_c, flow_lph, input_w, output_w, force_sample);
+          id(oq_trends_endpoint).capture_sample(outside_c, supply_c, room_c, room_sp_c, flow_lph, input_w, output_w,
+                                               supply_target_c, phouse_request_w, force_sample);
 
   - id: oq_capture_energy_history_sample
     mode: single
@@ -974,35 +1008,19 @@ select:
               ESP_LOGW("oq_fw", "Firmware source change ignored during active install.");
               return;
             }
-            const bool alternate_connection_update_target =
-              id(oq_firmware_update_target).current_option() == "alternate connection";
             const bool alternate_topology_update_target =
               id(oq_firmware_update_target).current_option() == "alternate topology";
-            const bool alternate_build_update_target =
-              id(oq_firmware_update_target).current_option() == "alternate topology and connection";
             if (x == "dev") {
               const char *source_url = "${dev_release_manifest_url}";
-              const char *alternate_connection_url = "${alternate_dev_release_manifest_url}";
               const char *alternate_topology_url = "${alternate_topology_dev_release_manifest_url}";
-              const char *alternate_build_url = "${alternate_build_dev_release_manifest_url}";
-              if (alternate_build_update_target && alternate_build_url[0] != '\0') {
-                source_url = alternate_build_url;
-              } else if (alternate_connection_update_target && alternate_connection_url[0] != '\0') {
-                source_url = alternate_connection_url;
-              } else if (alternate_topology_update_target && alternate_topology_url[0] != '\0') {
+              if (alternate_topology_update_target && alternate_topology_url[0] != '\0') {
                 source_url = alternate_topology_url;
               }
               id(oq_firmware_update).set_source_url(source_url);
             } else {
               const char *source_url = "${main_release_manifest_url}";
-              const char *alternate_connection_url = "${alternate_main_release_manifest_url}";
               const char *alternate_topology_url = "${alternate_topology_main_release_manifest_url}";
-              const char *alternate_build_url = "${alternate_build_main_release_manifest_url}";
-              if (alternate_build_update_target && alternate_build_url[0] != '\0') {
-                source_url = alternate_build_url;
-              } else if (alternate_connection_update_target && alternate_connection_url[0] != '\0') {
-                source_url = alternate_connection_url;
-              } else if (alternate_topology_update_target && alternate_topology_url[0] != '\0') {
+              if (alternate_topology_update_target && alternate_topology_url[0] != '\0') {
                 source_url = alternate_topology_url;
               }
               id(oq_firmware_update).set_source_url(source_url);
@@ -1040,43 +1058,29 @@ select:
     internal: true
     optimistic: true
     restore_value: false
-    options: ["current build", "alternate connection", "alternate topology", "alternate topology and connection"]
+    options: ["current build", "alternate topology"]
     initial_option: "current build"
     on_value:
       then:
         - lambda: |-
-            // Switch between the current-build manifest and alternate target manifests.
+            // Switch between the current-build manifest and alternate topology manifest.
             // No source changes while a firmware install owns the update slot.
             if (id(oq_firmware_target_install_active)) {
               ESP_LOGW("oq_fw", "Firmware source change ignored during active install.");
               return;
             }
-            const bool alternate_connection_update_target = x == "alternate connection";
             const bool alternate_topology_update_target = x == "alternate topology";
-            const bool alternate_build_update_target = x == "alternate topology and connection";
             if (id(oq_firmware_update_channel).current_option() == "dev") {
               const char *source_url = "${dev_release_manifest_url}";
-              const char *alternate_connection_url = "${alternate_dev_release_manifest_url}";
               const char *alternate_topology_url = "${alternate_topology_dev_release_manifest_url}";
-              const char *alternate_build_url = "${alternate_build_dev_release_manifest_url}";
-              if (alternate_build_update_target && alternate_build_url[0] != '\0') {
-                source_url = alternate_build_url;
-              } else if (alternate_connection_update_target && alternate_connection_url[0] != '\0') {
-                source_url = alternate_connection_url;
-              } else if (alternate_topology_update_target && alternate_topology_url[0] != '\0') {
+              if (alternate_topology_update_target && alternate_topology_url[0] != '\0') {
                 source_url = alternate_topology_url;
               }
               id(oq_firmware_update).set_source_url(source_url);
             } else {
               const char *source_url = "${main_release_manifest_url}";
-              const char *alternate_connection_url = "${alternate_main_release_manifest_url}";
               const char *alternate_topology_url = "${alternate_topology_main_release_manifest_url}";
-              const char *alternate_build_url = "${alternate_build_main_release_manifest_url}";
-              if (alternate_build_update_target && alternate_build_url[0] != '\0') {
-                source_url = alternate_build_url;
-              } else if (alternate_connection_update_target && alternate_connection_url[0] != '\0') {
-                source_url = alternate_connection_url;
-              } else if (alternate_topology_update_target && alternate_topology_url[0] != '\0') {
+              if (alternate_topology_update_target && alternate_topology_url[0] != '\0') {
                 source_url = alternate_topology_url;
               }
               id(oq_firmware_update).set_source_url(source_url);
@@ -1166,24 +1170,11 @@ button:
             condition:
               lambda: |-
                 // Fail-closed: alleen exact OpenQuatt/OpenQuatt/releases/download/pr-<nr>/
-                // met exact de manifestnaam voor hardware en topologie. Voor
-                // uniforme HCQ de canonieke naam zonder verbindingssuffix.
+                // met exact de manifestnaam voor Q-edition en topologie.
                 const std::string url = id(oq_firmware_test_manifest_url).state;
                 const std::string prefix =
                     "https://github.com/OpenQuatt/OpenQuatt/releases/download/pr-";
-                std::string hardware_slug;
-                const std::string hardware = "${oq_hardware_profile}";
-                if (hardware == "waveshare") {
-                  hardware_slug = "waveshare";
-                } else if (hardware == "heatpump_listener") {
-                  hardware_slug = "heatpump-listener";
-                } else if (hardware == "heatpump_controller_q") {
-                  hardware_slug = "heatpump-controller-q";
-                } else {
-                  ESP_LOGW("oq_fw", "Test firmware rejected: unsupported hardware profile.");
-                  id(oq_firmware_update_status).publish_state("Error");
-                  return false;
-                }
+                const std::string hardware_slug = "heatpump-controller-q";
                 #if OQ_TOPOLOGY_DUO
                 const std::string topology = "duo";
                 #else
@@ -1191,8 +1182,7 @@ button:
                 #endif
                 const std::string artifact_base =
                     "openquatt-" + hardware_slug + "-" + topology;
-                const std::string expected_manifest =
-                    artifact_base + "${oq_artifact_connection_suffix}-ota.manifest.json";
+                const std::string expected_manifest = artifact_base + "-ota.manifest.json";
                 if (url.rfind(prefix, 0) != 0) {
                   ESP_LOGW("oq_fw", "Test firmware rejected: invalid PR manifest prefix.");
                   id(oq_firmware_update_status).publish_state("Error");

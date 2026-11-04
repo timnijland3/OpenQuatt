@@ -1,40 +1,44 @@
-import { APP_VIEWS, renderOqIcon } from "./config.js";
+import { APP_VIEWS, HP_PANEL_CONFIGS, renderOqIcon } from "./config.js";
 import { isCurveMode } from "./domain-helpers.js";
+import { getInstallationTopology } from "../features/device-context.js";
 import { formatValue, getEntityValue, hasEntity } from "./entity-store.js";
 import { formatNumericState } from "./formatting.js";
 import { escapeHtml } from "./html.js";
+import { t } from "../i18n/index.js";
 import { state } from "./state.js";
 
 export { hasEntity } from "./entity-store.js";
 
   export function renderAppSummary() {
     const parts = [];
-    parts.push(isCurveMode() ? "Stooklijn" : "Power House");
+    parts.push(isCurveMode() ? t("overview.strategyCurve") : "Power House");
     const profile = String(getEntityValue(isCurveMode() ? "curveControlProfile" : "phResponseProfile") || "").trim();
     if (profile) {
-      parts.push(`profiel ${profile}`);
+      parts.push(t("summary.profile", { profile }));
     }
     const flowMode = String(getEntityValue("flowControlMode") || "").trim();
-    if (flowMode) {
-      parts.push(`flow ${flowMode === "Manual PWM" ? "handmatig" : "setpoint"}`);
+    if (flowMode && flowMode !== "Delta T") {
+      parts.push(flowMode === "Manual PWM" ? t("summary.flowManual", { manual: t("summary.manualPwm") }) : t("summary.flowSetpoint", { value: "setpoint" }));
     }
     if (flowMode === "Manual PWM" && hasEntity("manualIpwm")) {
       parts.push(`iPWM ${formatValue("manualIpwm")}`);
+    } else if (flowMode === "Delta T" && hasEntity("flowDeltaTTarget")) {
+      parts.push(t("summary.flowDeltaT", { value: formatValue("flowDeltaTTarget") }));
     } else if (hasEntity("flowSetpoint")) {
-      parts.push(`flow ${formatValue("flowSetpoint")}`);
+      parts.push(t("summary.flowSetpoint", { value: formatValue("flowSetpoint") }));
     }
 
     if (hasEntity("dayMaxHz")) {
-      parts.push(`dag ${formatValue("dayMaxHz")}`);
+      parts.push(t("summary.day", { value: formatValue("dayMaxHz") }));
     }
     if (hasEntity("silentMaxHz")) {
-      parts.push(`stil ${formatValue("silentMaxHz")}`);
+      parts.push(t("summary.silent", { value: formatValue("silentMaxHz") }));
     }
     if (hasEntity("maxWater")) {
-      parts.push(`max water ${formatValue("maxWater")}`);
+      parts.push(t("summary.maxWater", { value: formatValue("maxWater") }));
     }
 
-    return parts.filter(Boolean).join(", ") || "Instellingen beschikbaar";
+    return parts.filter(Boolean).join(", ") || t("summary.settingsAvailable");
   }
 
   export function getEntityStateText(key, fallback = "—") {
@@ -50,7 +54,7 @@ export { hasEntity } from "./entity-store.js";
       return fallback;
     }
     if (typeof value === "boolean") {
-      return value ? "Aan" : "Uit";
+      return value ? t("common.on") : t("common.off");
     }
     if (typeof value === "number" && !Number.isNaN(value)) {
       return entity.uom ? `${value} ${entity.uom}` : String(value);
@@ -68,6 +72,41 @@ export { hasEntity } from "./entity-store.js";
     return normalized.includes("cop") || normalized.includes("eer");
   }
 
+  export function getLiveHeatingCopValue(key) {
+    if (/^CM1(?:\s|$)/.test(String(getEntityValue("controlModeLabel") || "").trim())) return Number.NaN;
+    const total = key === "totalCop";
+    const panels = total
+      ? HP_PANEL_CONFIGS.slice(0, getInstallationTopology() === "duo" ? 2 : 1)
+      : HP_PANEL_CONFIGS.filter((panel) => panel.keys.cop === key);
+    if (!panels.length || (total && !getInstallationTopology())) return Number.NaN;
+    let heating = false;
+    for (const { keys } of panels) {
+      const mode = String(getEntityValue(keys.mode) || "");
+      const rawFrequency = getEntityValue(keys.freq);
+      const frequency = rawFrequency !== "" && rawFrequency != null ? getEntityNumericValue(keys.freq) : Number.NaN;
+      const defrost = getBinaryEntityState(keys.defrost);
+      if (!["Standby", "Cooling", "Heating", "Defrost"].includes(mode) || !Number.isFinite(frequency) || frequency < 0 || frequency > 120 || defrost === null) return Number.NaN;
+      if (mode === "Defrost" || defrost) return Number.NaN;
+      if (mode === "Heating") {
+        heating ||= frequency > 0;
+      }
+    }
+    if (!heating) return Number.NaN;
+    if (hasEntity(key)) {
+      // Firmware unavailability is authoritative; never reconstruct a COP that
+      // its start/defrost/telemetry gates deliberately suppressed.
+      const value = getEntityNumericValue(key);
+      return Number.isFinite(value) && value > 0 ? value : Number.NaN;
+    }
+    if (!total) return Number.NaN;
+    const output = getEntityNumericValue("totalHeat");
+    const inputKey = hasEntity("heatingPowerInput") ? "heatingPowerInput" : "totalPower";
+    const input = hasEntity(inputKey) ? getEntityNumericValue(inputKey) : Number.NaN;
+    return Number.isFinite(output) && output > 0 && Number.isFinite(input) && input >= 10.0
+      ? output / input
+      : Number.NaN;
+  }
+
   export function getDerivedEfficiencyValue(key) {
     const normalized = String(key || "");
     if (normalized === "totalEer") {
@@ -79,12 +118,7 @@ export { hasEntity } from "./entity-store.js";
         : NaN;
     }
     if (normalized === "totalCop") {
-      const output = getEntityNumericValue("totalHeat");
-      const input = getEntityNumericValue("heatingPowerInput");
-      const fallbackInput = Number.isNaN(input) ? getEntityNumericValue("totalPower") : input;
-      return (!Number.isNaN(output) && !Number.isNaN(fallbackInput) && fallbackInput >= 5.0)
-        ? output / fallbackInput
-        : NaN;
+      return getLiveHeatingCopValue(normalized);
     }
     return NaN;
   }
@@ -137,6 +171,9 @@ export { hasEntity } from "./entity-store.js";
   }
 
   export function formatOverviewStatValue(key) {
+    if (key === "totalCop") {
+      return formatNumericState(getLiveHeatingCopValue(key), 1);
+    }
     const entity = state.entities[key];
     const derived = getDerivedEfficiencyValue(key);
     if (!entity) {
@@ -154,6 +191,25 @@ export { hasEntity } from "./entity-store.js";
     return formatNumericState(value, decimals, getEntityDisplayUnit(key));
   }
 
+  // Strict binary state for controls that must distinguish unknown from inactive.
+  export function getBinaryEntityState(key) {
+    const entity = state.entities[key];
+    if (!entity) {
+      return null;
+    }
+    if (typeof entity.value === "boolean") {
+      return entity.value;
+    }
+    const raw = String(entity.state ?? entity.value ?? "").trim().toLowerCase();
+    if (raw === "on" || raw === "true" || raw === "1") {
+      return true;
+    }
+    if (raw === "off" || raw === "false" || raw === "0") {
+      return false;
+    }
+    return null;
+  }
+
   export function isEntityActive(key) {
     const entity = state.entities[key];
     if (!entity) {
@@ -164,6 +220,12 @@ export { hasEntity } from "./entity-store.js";
     }
     const raw = String(entity.state ?? entity.value ?? "").toLowerCase();
     return raw === "on" || raw === "true" || raw === "1";
+  }
+
+  export function isAuxHeatSourcePresent() {
+    return hasEntity("auxHeatSourcePresent")
+      ? isEntityActive("auxHeatSourcePresent")
+      : isEntityActive("boilerCvAssistEnabled");
   }
 
   export function isTrendHistoryEnabled() {
@@ -200,7 +262,7 @@ export { hasEntity } from "./entity-store.js";
             data-view-id="${escapeHtml(view.id)}"
           >
             ${renderOqIcon(view.icon, "oq-helper-app-tab-icon")}
-            <span>${escapeHtml(view.label)}</span>
+            <span>${escapeHtml(t(view.labelKey))}</span>
             ${view.badge ? `<span class="oq-helper-app-tab-badge">${escapeHtml(view.badge)}</span>` : ""}
           </button>
         `).join("")}
@@ -209,7 +271,8 @@ export { hasEntity } from "./entity-store.js";
   }
 
   export function getAppViewLabel(view = state.appView) {
-    return APP_VIEWS.find((item) => item.id === view)?.label || "OpenQuatt";
+    const found = APP_VIEWS.find((item) => item.id === view);
+    return found ? t(found.labelKey) : t("navigation.appName");
   }
 
   export function syncDocumentTitle() {
@@ -246,6 +309,17 @@ export { hasEntity } from "./entity-store.js";
     }
 
     const isDark = state.overviewTheme === "dark";
+    // Preserve active controls, native pickers and scroll during automatic theme changes.
+    for (const shell of state.root?.querySelectorAll(".oq-helper-shell") || []) {
+      shell.classList.toggle("oq-helper-shell--dark", isDark);
+    }
+    for (const board of state.root?.querySelectorAll(".oq-overview-board") || []) {
+      board.classList.toggle("oq-overview-board--dark", isDark);
+      board.classList.toggle("oq-overview-board--light", !isDark);
+    }
+    for (const backdrop of state.root?.querySelectorAll(".oq-helper-modal-backdrop") || []) {
+      backdrop.classList.toggle("oq-helper-modal-backdrop--dark", isDark);
+    }
     document.documentElement.classList.toggle("oq-page-dark", isDark);
     document.documentElement.classList.toggle("oq-page-light", !isDark);
     if (document.body) {

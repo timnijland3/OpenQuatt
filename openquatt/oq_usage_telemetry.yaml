@@ -11,11 +11,18 @@ substitutions:
   build_source_commit: "unknown"
   build_target: "unknown"
 
+esphome:
+  on_boot:
+    - priority: -100
+      then:
+        - lambda: |-
+            oq_nvs_cleanup::retire_openquatt_preferences(id(oq_air_purge_return_to_auto));
+
 external_components:
   - source:
       type: local
       path: ${external_components_path}
-    components: [openquatt_usage_telemetry, openquatt_crash_telemetry]
+    components: [openquatt_usage_telemetry, openquatt_performance_telemetry, openquatt_crash_telemetry]
 
 openquatt_usage_telemetry:
   id: oq_usage_telemetry
@@ -43,6 +50,7 @@ openquatt_usage_telemetry:
   topology: "${oq_topology}"
   connection: "${oq_connection}"
   quatt_hybrid_generation_select: hp_generation
+  water_supply_source_select: water_supply_source
   flow_source_select: flow_source
   heating_strategy_select: oq_heat_control_mode
   room_temperature_source_select: room_temp_source
@@ -62,6 +70,7 @@ openquatt_usage_telemetry:
   trend_flash_switch: oq_trend_history_flash_switch
   decision_log_flash_switch: oq_decision_log_flash_switch
   energy_history_flash_switch: oq_lifetime_energy_history_switch
+  modbus_hub: mod_bus
 
 openquatt_crash_telemetry:
   id: oq_crash_telemetry

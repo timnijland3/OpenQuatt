@@ -75,6 +75,22 @@ inline bool availability_baseline_ready(oq_incidents::LinkState link_state, bool
   return link_state == oq_incidents::LinkState::HEALTHY || link_state == oq_incidents::LinkState::LOST;
 }
 
+// Telemetry only: identify a restart guard without attributing another safety
+// gate or a blocking incident to minimum off-time. Non-blocking ODU statuses
+// may still be primary while the engine itself permits a start.
+inline int16_t restart_wait_log_seconds(const oq_incidents::DerivedOutputs& engine_outputs,
+                                        const oq_incidents::DerivedOutputs& published_outputs, uint32_t remaining_ms) {
+  if (remaining_ms == 0U || remaining_ms == UINT32_MAX || !engine_outputs.available_for_start ||
+      published_outputs.available_for_start || published_outputs.must_stop ||
+      oq_incidents::has_effect(published_outputs.active_effects, oq_incidents::IncidentEffect::BLOCK_START) ||
+      published_outputs.link_state != oq_incidents::LinkState::HEALTHY ||
+      published_outputs.run_state != oq_incidents::RunState::STOPPED) {
+    return 0;
+  }
+  const uint32_t seconds = remaining_ms / 1000U + (remaining_ms % 1000U != 0U ? 1U : 0U);
+  return static_cast<int16_t>(seconds > 32767U ? 32767U : seconds);
+}
+
 inline oq_incidents::StartFailureResetResult perform_start_failure_retry(oq_incidents::HpIncidentEngine* engine,
                                                                          uint32_t now_ms) {
   if (engine == nullptr) {
@@ -107,6 +123,44 @@ inline bool all_hp_outputs_safe_for_fallback(const oq_incidents::DerivedOutputs*
   }
   for (size_t index = 0U; index < configured_count; ++index) {
     if (!outputs[index].stop_confirmed || outputs[index].stop_unconfirmed) {
+      return false;
+    }
+  }
+  return true;
+}
+
+inline bool hp_fallback_output_gate_clear(const oq_incidents::DerivedOutputs& output) {
+  // An explicit hard boiler veto always dominates, including the degraded
+  // link-loss route below.
+  if (oq_incidents::has_effect(output.active_effects, oq_incidents::IncidentEffect::BLOCK_BOILER)) {
+    return false;
+  }
+
+  // Normal route: a freshly confirmed stop with no pending unconfirmed state.
+  if (output.stop_confirmed && !output.stop_unconfirmed) {
+    return true;
+  }
+
+  // Degraded route for confirmed link loss only: the current STOP_UNCONFIRMED
+  // was itself produced by this link-loss revalidation (never a stop failure
+  // predating the loss), the regular stop-confirmation timeout has elapsed,
+  // telemetry cannot confirm the stop because the HP is unreachable, and
+  // link loss itself is a valid fallback cause. Fresh proof of a running
+  // compressor clears the engine provenance and closes this route again.
+  // All other supervisory guards (flow, temperature, boiler, topology)
+  // still apply.
+  const bool degraded_link_loss = output.stop_unconfirmed_due_to_link_loss && !output.available_for_start &&
+                                  output.fallback_cause_present && output.stop_unconfirmed &&
+                                  !output.stop_confirmation_pending;
+  return degraded_link_loss;
+}
+
+inline bool all_hp_fallback_output_gates_clear(const oq_incidents::DerivedOutputs* outputs, size_t configured_count) {
+  if (outputs == nullptr || configured_count == 0U) {
+    return false;
+  }
+  for (size_t index = 0U; index < configured_count; ++index) {
+    if (!hp_fallback_output_gate_clear(outputs[index])) {
       return false;
     }
   }

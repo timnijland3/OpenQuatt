@@ -13,39 +13,32 @@
 device_name: "openquatt"                              # Internal ESPHome device ID / hostname base.
 friendly_name: OpenQuatt                              # Display name in Home Assistant / UI.
 project_name: "openquatt.openquatt"                   # ESPHome project identifier shown in firmware metadata.
-project_version: "v0.50.0"                            # ESPHome project version shown in firmware metadata.
+project_version: "v0.57.0"                            # ESPHome project version shown in firmware metadata.
 release_channel: "main"                               # Firmware release channel shown in diagnostics (`main` or `dev`).
 oq_firmware_initial_check_delay_s: "300"              # Stable-network delay before the first automatic manifest check [s].
 oq_firmware_periodic_check_interval: "4h"              # Automatic manifest-check cadence after the initial boot window.
 oq_hardware_profile: "unknown"                        # Compile-time hardware profile id.
 oq_hardware_build_flag: "-DOQ_HARDWARE_HEATPUMP_CONTROLLER_Q=0" # Hardware capability flag for C++ lambdas.
 oq_boiler_transport_shutdown_extra: ""                 # Optional profile-specific synchronous actuator shutdown statements.
+oq_aux_heat_source_presence_extra: "(void)0;"           # Optional profile-specific lifecycle hook after auxiliary-source presence changes.
 oq_local_supply_temp_sensor_id: "water_supply_temp_ds18b20" # Profile-safe local supply-temperature sensor used by shared lambdas.
 oq_local_supply_temp_selector_id: "water_supply_source"     # Validation-safe placeholder outside Q profiles.
-oq_controller_flow_sensor_id: "hp1_flow"              # Profile-safe controller-flow source used by shared lambdas.
-oq_q_flow_source_selector_id: "flow_source"           # Validation-safe placeholder outside Q profiles.
 oq_connection: "unknown"                              # Compile-time connection profile id (`wifi` or `eth`).
 oq_connection_text_internal: "true"                   # Hide the static connection diagnostic unless a runtime manager owns it.
-oq_artifact_connection_suffix: "-${oq_connection}"    # Artifact filename suffix; empty for combined-connection firmware.
-alternate_connection: ""                              # Optional connection target used for controlled Wi-Fi/Ethernet switching.
-alternate_main_release_manifest_url: ""               # Optional main-channel OTA manifest for the alternate connection target.
-alternate_dev_release_manifest_url: ""                # Optional dev-channel OTA manifest for the alternate connection target.
 alternate_topology: ""                                # Optional topology target used for controlled single/duo switching.
 alternate_topology_main_release_manifest_url: ""       # Optional main-channel OTA manifest for the alternate topology target.
 alternate_topology_dev_release_manifest_url: ""        # Optional dev-channel OTA manifest for the alternate topology target.
-alternate_build_main_release_manifest_url: ""          # Optional main-channel OTA manifest when both connection and topology change.
-alternate_build_dev_release_manifest_url: ""           # Optional dev-channel OTA manifest when both connection and topology change.
 openquatt_root: "../../openquatt"                    # OpenQuatt package root relative to the active config file.
 components_root: "../../components"                  # Custom component root relative to the active config file.
-scripts_root: "../../../scripts"                     # Build script root relative to the active config file.
 oq_cpp_headers_dir: "${openquatt_root}/includes"     # Copy and include the grouped OpenQuatt C++ runtime headers.
 oq_component_psram_buffer_header: "${components_root}/openquatt_common/PsramBuffer.h" # Shared PSRAM-backed buffer helper for custom components.
+oq_component_external_telemetry_transport_header: "${components_root}/openquatt_common/OpenQuattExternalTelemetryTransport.h" # Shared outbound-only telemetry transport interface.
 oq_component_flash_layout_header: "${components_root}/openquatt_common/OpenQuattFlashLayout.h" # Shared openquatt_data archive layout.
+oq_component_http_status_header: "${components_root}/openquatt_common/OpenQuattHttpStatus.h" # Shared IDF response-status compatibility helper.
 external_components_path: "${components_root}"      # Local custom component directory.
 oq_timezone: "Europe/Amsterdam"                         # SNTP timezone used by runtime timestamps.
 oq_webserver_css_include: "${openquatt_root}/web/css/openquatt-app.css" # Bundled OpenQuatt web UI stylesheet.
 oq_webserver_js_include: "${openquatt_root}/web/js/openquatt-app.js" # Bundled OpenQuatt web UI script.
-oq_webserver_css_url: ""                            # Optional external CSS for the ESPHome web UI.
 oq_webserver_js_url: ""                               # Custom OpenQuatt app is primary; load ESPHome fallback lazily on demand.
 web_auth_bootstrap_username: "admin"                  # Bootstrap username used to keep web auth support compiled in.
 web_auth_bootstrap_password: "openquatt"              # Bootstrap password used to keep web auth support compiled in.
@@ -69,6 +62,8 @@ mqtt_cooling_enable_topic: "openquatt/${device_name}/input/thermostat/cooling_en
 mqtt_cooling_enable_stale_s: "0"                      # Maximum age for MQTT cooling-enable [s]; 0 keeps state until a new payload, disable, or restart.
 mqtt_heating_supply_target_topic: "openquatt/${device_name}/input/heating/supply_target" # Fixed MQTT input topic for external heating supply target [degC].
 mqtt_heating_supply_target_stale_s: "900"             # Maximum age for the last valid MQTT heating supply target before it becomes invalid [s].
+mqtt_heating_curve_modifier_topic: "openquatt/${device_name}/input/heating/curve_modifier" # External heating-curve delta [K].
+mqtt_heating_curve_modifier_stale_s: "900"
 api_input_cooling_dew_point_stale_s: "900"            # Maximum age for API-input cooling dew point before it becomes invalid [s].
 api_input_outside_temperature_stale_s: "1800"         # Maximum age for API-input outside temperature before it becomes invalid [s].
 api_input_room_temperature_stale_s: "600"             # Maximum age for API-input room temperature before it becomes invalid [s].
@@ -77,7 +72,17 @@ api_input_heating_enable_stale_s: "0"                 # Maximum age for API-inpu
 api_input_cooling_enable_stale_s: "0"                 # Maximum age for API-input cooling-enable [s]; 0 keeps state until restart or a new payload.
 api_input_external_heat_demand_stale_s: "900"         # Maximum age for API-input external heat demand before it becomes invalid [s].
 api_input_heating_supply_target_stale_s: "900"        # Maximum age for API-input heating supply target before it becomes invalid [s].
-ha_heating_supply_target_stale_s: "900"               # Maximum age for the last HA heating supply target publish before it becomes invalid [s]; publish periodically.
+api_input_heating_curve_modifier_stale_s: "900"
+ha_outside_temperature_stale_s: "1800"                # Maximum age for live HA outside temperature without a fresh HA ingress heartbeat before it becomes invalid [s].
+ha_water_supply_temperature_stale_s: "600"            # Maximum age for live HA water supply temperature without a fresh HA ingress heartbeat before it becomes invalid [s]; 10-minute window tolerates normal HA restarts while HP fallback remains available.
+ha_room_temperature_stale_s: "600"                    # Maximum age for live HA room temperature without a fresh HA ingress heartbeat before it becomes invalid [s].
+ha_cooling_dew_point_stale_s: "900"                   # Maximum age for live HA cooling dew point without a fresh HA ingress heartbeat before it becomes invalid [s].
+ha_external_heat_demand_stale_s: "900"                # Maximum age for live HA external heat demand without a fresh HA ingress heartbeat before it becomes invalid [s].
+ha_heating_supply_target_stale_s: "900"               # Maximum age for live HA heating supply target without a fresh HA ingress heartbeat before it becomes invalid [s].
+ha_heating_curve_modifier_stale_s: "900"
+ha_ingress_fresh_s: "300"                             # Diagnostic threshold for the HA ingress heartbeat itself [s]; about 5 missed beats.
+# Stateful HA inputs (room setpoint, heating/cooling enable) intentionally have
+# no stale timeout: they keep plain entity validity, like API/MQTT stale_s = 0.
 usage_telemetry_broker: "mqtt.openquatt.nl"           # Central usage-statistics MQTT broker.
 usage_telemetry_port: "1883"                          # Plain MQTT port for the current central broker.
 usage_telemetry_tls: "false"                          # Temporary until the central broker exposes MQTT/TLS.
@@ -89,8 +94,6 @@ usage_telemetry_topic: "openquatt/devices"            # Base topic for openquatt
 # HARDWARE
 # ----------------------------
 # Hardware-specific substitutions are provided by per-profile files:
-# - openquatt/profiles/waveshare.yaml
-# - openquatt/profiles/heatpump_listener.yaml
 # - openquatt/profiles/heatpump_controller_q.yaml
 
 # ----------------------------
@@ -142,7 +145,7 @@ oq_electrical_current_limit_min_a: "6.0"              # Lowest configurable inst
 oq_power_measurement_stale_s: "60"                    # Maximum age of voltage/current measurements used by the limiter [s].
 oq_mains_voltage_v: "230.0"                           # Nominal mains voltage used to convert current limits to power thresholds [V].
 oq_cm_prepost_s: "30"                                 # Duration of CM1 pre/postflow window [s].
-oq_cm_min_flow_lph: "250.0"                           # Minimum valid flow for compressor operation [L/h].
+oq_cm_min_flow_lph: "400.0"                           # Minimum valid flow for compressor operation [L/h].
 oq_cm_flow_fault_s: "60"                              # Low-flow duration before fault becomes active [s].
 oq_cm_flow_recover_s: "30"                            # Flow recovery duration before fault is cleared [s].
 oq_cm2_idle_exit_s: "90"                              # Exit CM2 if both HPs are idle for this duration while demand remains > 0 [s].
@@ -180,6 +183,7 @@ oq_water_supply_temp_local_cic_hold_s: "15"            # Hold Local/CIC supply t
 oq_hp_water_temp_stale_s: "60"                        # Maximum age for a heat-pump water temperature used as supply fallback [s].
 oq_temp_guard_delta_c: "0.5"                          # Minimum valid margin between T0 and Tc in the house model [°C].
 oq_outside_temp_stale_s: "1200"                       # Ignore a local outdoor reading when it stays frozen while the same HP still shows fresh activity [s].
+oq_ph_run_extension_restart_hysteresis_c: "0.2"       # Initial cooldown for the persistent run-extension restart setting [K].
 
 # ----------------------------
 # HEAT CONTROL
@@ -228,7 +232,7 @@ oq_flow_pwm_max: "850"                                # Upper pump iPWM bound du
 oq_flow_autotune_min_step: "5"                        # Minimum iPWM step size for the step test.
 oq_flow_autotune_ss_window: "3"                       # Rolling-window size for steady-state estimation [samples].
 oq_flow_autotune_settle_s: "30"                       # Minimum settle time on baseline PWM before applying the step [s].
-oq_flow_autotune_stable_band_lph: "12.0"              # Max flow spread in baseline window to qualify as stable [L/h].
+oq_flow_autotune_stable_band_lph: "30.0"              # Max flow spread in baseline window to qualify as stable [L/h].
 oq_flow_autotune_tau_fallback_s: "30.0"               # Fallback time constant when t63 is invalid [s].
 oq_flow_autotune_lambda_min_s: "10.0"                 # Minimum IMC lambda for conservative PI tuning [s].
 
@@ -245,11 +249,14 @@ oq_boiler_command_max_age_s: "75"                     # Fail-safe command age; c
 oq_boiler_transport_settle_s: "2"                     # Break-before-make hold after changing R1/OpenTherm transport [s].
 oq_boiler_relay_min_on_s: "0"                         # R1 minimum on-time [s]; zero preserves existing relay behavior in foundation phase.
 oq_boiler_relay_min_off_s: "0"                        # R1 minimum off-time [s]; zero preserves existing relay behavior in foundation phase.
+oq_boiler_relay_target_start_delta_c: "2.0"           # R1 energises once supply is this far below the requested boiler target [K]; deliberately not tied to the Heating Curve CM margins.
+oq_boiler_relay_target_stop_delta_c: "0.5"            # R1 releases once supply recovered to within this of the requested boiler target [K]; must stay below the start delta.
 oq_boiler_otb_min_on_s: "30"                          # OpenTherm minimum requested on-time [s]; safety trips override it.
 oq_boiler_otb_min_off_s: "120"                        # OpenTherm minimum requested off-time [s].
 oq_otb_supported: "false"                             # Compile-time availability of the boiler OpenTherm master transport.
 oq_otb_command_apply_s: "1"                           # Apply validated CH/TSet state to the OpenTherm master [s].
 oq_otb_startup_probe_timeout_s: "8"                   # R1 boot verification window for detecting a physically connected OpenTherm boiler [s].
+oq_otb_connection_verify_timeout_s: "8"                # Selected OpenTherm route must receive a correlated boiler response within this window [s].
 oq_boiler_transport_selection_extra: ""               # Hardware-specific start/stop hook after changing the boiler transport.
 
 # ----------------------------
@@ -297,15 +304,15 @@ ha_external_heat_demand_entity_id: "sensor.openquatt_ext_heat_demand"       # HA
 ha_external_heat_demand_valid_entity_id: "binary_sensor.openquatt_ext_heat_demand_valid"  # HA validity flag for external heat demand.
 ha_heating_supply_target_entity_id: "sensor.openquatt_ext_heating_supply_target" # HA proxy entity for external heating supply target [degC].
 ha_heating_supply_target_valid_entity_id: "binary_sensor.openquatt_ext_heating_supply_target_valid" # HA validity flag for external heating supply target.
+ha_heating_curve_modifier_entity_id: "sensor.openquatt_ext_heating_curve_modifier"
+ha_heating_curve_modifier_valid_entity_id: "binary_sensor.openquatt_ext_heating_curve_modifier_valid"
+ha_ingress_heartbeat_entity_id: "sensor.openquatt_ha_ingress_heartbeat" # HA ingress heartbeat: single freshness signal for all live HA inputs, published by the dynamic-sources package about once per minute.
 
 # ----------------------------
 # HP IO (MODBUS POLLING)
 # ----------------------------
-oq_modbus_update_interval_s: "5"                    # Base Modbus controller polling interval [s].
+oq_modbus_update_interval_s: "10"                   # Base Modbus controller polling interval [s]; regular online reads every 10s (ESPHome 2026.9, no skip_updates).
 oq_modbus_offline_probe_interval_s: "30"             # Sparse single-register probe while an HP is offline [s].
-oq_modbus_command_throttle_ms: "500"                 # Minimum spacing between Modbus commands [ms].
+oq_modbus_command_throttle_ms: "100"                 # Shared-hub turnaround_time [ms]; historic name kept (was controller command_throttle, 500ms). 100ms matches the long-stable pre-2026.8 pacing; re-raise only on wire-measured evidence.
 oq_modbus_max_cmd_retries: "1"                       # Retries per Modbus command; keep low to avoid long blocking on bad links.
 oq_modbus_startup_delay_ms: "0"                      # Default startup offset for staged Modbus polling [ms].
-oq_modbus_telemetry_skip: "1"                        # 2099-2138: 1 skipped base update, effective polling every 10s.
-oq_modbus_target_readback_skip: "1"                  # 3999 safety-relevant target readback every 10s.
-oq_modbus_control_readback_skip: "5"                 # 1999/2006/2010/2015 readback every 30s.

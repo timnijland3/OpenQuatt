@@ -1,10 +1,17 @@
 import { invokeActionMap } from "./action-router.js";
+import { CURVE_POINTS } from "./config.js";
 import { hasEntity } from "./app-shared.js";
 import { verifyEntityBackupSelectState } from "./entity-backup.js";
 import { getCurveFallbackSuggestion, getEntityValue } from "./entity-store.js";
 import { commitNumber, commitSelect, commitSwitch, triggerButton } from "./entity-write-actions.js";
+import { refreshEntities } from "./entity-sync.js";
+import { fetchWithTimeout } from "./browser-utils.js";
+import { getBasePath } from "./url-path.js";
 import { getHeatingEnableRecommendation } from "./heating-strategy-matrix.js";
+import { t } from "../i18n/index.js";
 import { state } from "./state.js";
+import { applySimpleCurveBatch, applySimpleCurvePoints, getCurvePointDraft } from "./simple-curve.js";
+import { render } from "./render-scheduler.js";
 
 async function commitConfirmedSelection(key, value, commit, confirm) {
   const writeAccepted = await commit(key, value);
@@ -16,13 +23,13 @@ async function commitConfirmedSelection(key, value, commit, confirm) {
     return {
       ok: confirmed,
       writeAccepted: true,
-      error: confirmed ? "" : `${key === "strategy" ? "Verwarmingsstrategie" : "Warmtetoestemming"} is niet door de controller bevestigd.`,
+      error: confirmed ? "" : t("controlActions.notConfirmed", { field: t(key === "strategy" ? "controlActions.strategy" : "controlActions.heatingEnable") }),
     };
   } catch (error) {
     return {
       ok: false,
       writeAccepted: true,
-      error: `${key === "strategy" ? "Verwarmingsstrategie" : "Warmtetoestemming"} kon niet worden bevestigd. ${error.message}`,
+      error: t("controlActions.confirmFailed", { field: t(key === "strategy" ? "controlActions.strategy" : "controlActions.heatingEnable"), error: error.message }),
     };
   }
 }
@@ -38,8 +45,8 @@ export async function commitQuickStartStrategySelection(option, commit = commitS
     }
     state.controlNotice = "";
     state.controlError = rolledBack
-      ? `${strategyResult.error} De warmtetoestemming is niet aangepast.`
-      : `${strategyResult.error} De vorige strategie kon niet worden hersteld; controleer beide instellingen.`;
+      ? t("controlActions.heatingEnableUnchanged", { error: strategyResult.error })
+      : t("controlActions.strategyRestoreFailed", { error: strategyResult.error });
     return false;
   }
   if (!state.quickStartModalOpen || !hasEntity("heatingEnableSource")) {
@@ -69,12 +76,70 @@ export async function commitQuickStartStrategySelection(option, commit = commitS
       : false;
   state.controlNotice = "";
   state.controlError = heatingEnableRolledBack && strategyRolledBack
-    ? `${heatingEnableResult.error} De strategieswitch is daarom teruggezet.`
-    : `${heatingEnableResult.error} De vorige combinatie kon niet volledig worden hersteld; controleer beide instellingen.`;
+    ? t("controlActions.strategyReverted", { error: heatingEnableResult.error })
+    : t("controlActions.combinationRestoreFailed", { error: heatingEnableResult.error });
   return false;
 }
 
+export async function submitSimpleCurveBatch(points) {
+  if (__OQ_PREVIEW__) return "unsupported";
+  const statusResponse = await fetchWithTimeout(`${getBasePath()}/auth/status`, { cache: "no-store" }, 8000);
+  if (!statusResponse.ok) return "rejected";
+  const csrfToken = String((await statusResponse.json()).csrf_token || "");
+  if (!csrfToken) return "rejected";
+  const body = new URLSearchParams({ csrf_token: csrfToken });
+  for (const point of points) body.set(point.key, point.value.toFixed(1));
+  const response = await fetchWithTimeout(`${getBasePath()}/openquatt/curve/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  }, 8000);
+  if (response.status === 404) return "unsupported";
+  if (response.status !== 202) return "rejected";
+  const result = await response.json();
+  return result.ok === true && result.queued === true ? "accepted" : "rejected";
+}
+
 const controlActionHandlers = {
+  "apply-simple-curve": async () => {
+    if (state.simpleCurveApplying) return false;
+    const points = getCurvePointDraft();
+    const originals = CURVE_POINTS.map((point) => {
+      const value = getEntityValue(point.key);
+      return value == null || value === "" ? NaN : Number(value);
+    });
+    if (!points || points.some((point) => !Number.isFinite(point.value)) || originals.some((value) => !Number.isFinite(value))) return false;
+    const simpleDraft = state.simpleCurveDraft;
+    const pointDraft = state.curvePointDraft;
+    state.draggingCurveKey = "";
+    state.simpleCurveApplying = true;
+    try {
+      render();
+      const batch = await applySimpleCurveBatch(points, submitSimpleCurveBatch,
+        () => refreshEntities(CURVE_POINTS.map((point) => point.key), "state"), getEntityValue);
+      const result = batch.unsupported
+        ? await applySimpleCurvePoints(points, originals,
+          (key, value) => commitNumber(key, value),
+          getEntityValue)
+        : batch;
+      if (!result.applied) {
+        state.controlError = batch.unsupported
+          ? t(result.restored ? "settingsHeating.simpleApplyFailed" : "settingsHeating.simpleRestoreFailed")
+          : t("settingsHeating.simpleApplyUnconfirmed");
+      } else {
+        // Draft helpers replace their objects; only clear the submitted revision.
+        if (state.simpleCurveDraft === simpleDraft && state.curvePointDraft === pointDraft) {
+          state.simpleCurveDraft = null;
+          state.curvePointDraft = null;
+        }
+        state.controlNotice = t("settingsHeating.simpleApplied");
+      }
+      return result.applied;
+    } finally {
+      state.simpleCurveApplying = false;
+      render();
+    }
+  },
   "select-settings-option": async (button) => {
     const key = button.dataset.selectKey || "";
     const option = button.dataset.selectOption || "";
@@ -103,7 +168,7 @@ const controlActionHandlers = {
   "suggest-curve-fallback": () => {
     const suggestion = getCurveFallbackSuggestion();
     if (suggestion) {
-      commitNumber("curveFallbackSupply", suggestion.value, "Fallback-aanvoertemperatuur uit de stooklijn overgenomen.");
+      commitNumber("curveFallbackSupply", suggestion.value, t("controlActions.curveFallbackApplied"));
     }
   },
   apply: () => triggerButton("apply"),

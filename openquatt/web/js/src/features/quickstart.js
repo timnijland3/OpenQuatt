@@ -1,21 +1,23 @@
 import { getEntityNumericValue, getEntityStateText, hasEntity, isEntityActive } from "../core/app-shared.js";
-import { QUICK_STEPS } from "../core/config.js";
+import { QUICK_STEPS, STRATEGY_OPTION_CURVE, STRATEGY_OPTION_POWER_HOUSE } from "../core/config.js";
 import { isCurveMode } from "../core/domain-helpers.js";
 import { formatValue, getEntityValue, toTimeInputValue } from "../core/entity-store.js";
 import { createScrollKeeper } from "../core/scroll-keeper.js";
 import { renderModalShell } from "../core/modal-shell.js";
 import { state } from "../core/state.js";
+import { formatNumber, optionLabel, t } from "../i18n/index.js";
 import { getDeviceMeta, getFirmwareBuildConnection, getInstallationTopology } from "./device-context.js";
 import { getFirmwareBuildSwitchModel, getFirmwareChannelLabel, getFirmwareCurrentVersion, getFirmwareLatestVersion, getFirmwareProgressModel, getFirmwareUpdateEntity, isFirmwareEntityAlignedWithChannel, isFirmwareUpdateEntityForBuild, isQuickStartSetupFirmwareCurrent, reconcileStoredQuickStartSetupInstall } from "./firmware-update.js";
 import { getOduGenerationDetectionModel } from "./odu-generation-ui.js";
 import { formatSettingsOptionLabel, renderSettingsFieldCard, renderSettingsInfoToggle } from "../settings/controls.js";
-import { renderCurveGraph, renderFlowSettingsFields, renderHeatingCurveProfileField, renderHeatingStrategyExplainCards, renderPowerHouseAdvancedField, renderPowerHouseBaseFields, renderSettingsCurveInputs, renderStrategySelectionFields } from "../settings/heating.js";
-import { getHeatingEnableAdvice, getHeatingEnableCurrent, getHeatingEnableRecommendation } from "../core/heating-strategy-matrix.js";
+import { renderFlowSettingsFields, renderHeatingCurveProfileField, renderHeatingStrategyExplainCards, renderPowerHouseAdvancedField, renderPowerHouseBaseFields, renderSettingsCurveInputs, renderStrategySelectionFields } from "../settings/heating.js";
+import { getHeatingEnableAdvice } from "../core/heating-strategy-matrix.js";
 import { renderBoilerCvFields, renderHpGenerationField } from "../settings/installation.js";
 import { renderSilentSettingsGrid } from "../settings/silent.js";
 import { renderWaterSettingsFields } from "../settings/water.js";
 import { escapeHtml } from "../core/html.js";
 import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./usage-telemetry.js";
+import { renderPerformanceTelemetryConsent, renderPerformanceTelemetryDisclosure } from "./performance-telemetry.js";
 
   export function getQuickStartSetupModel() {
     const currentTopology = getInstallationTopology();
@@ -43,31 +45,35 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     const mainManifestReady = getFirmwareChannelLabel().toLowerCase() === "main"
       && isFirmwareEntityAlignedWithChannel(firmwareEntity, "main")
       && isFirmwareUpdateEntityForBuild(model.targetBuildLabel, firmwareEntity);
-    const currentVersion = getFirmwareCurrentVersion(firmwareEntity) || "Onbekend";
-    const mainVersion = mainManifestReady ? getFirmwareLatestVersion(firmwareEntity) || "Onbekend" : "Wordt na bevestigen gecontroleerd";
+    const currentVersion = getFirmwareCurrentVersion(firmwareEntity) || t("common.unknown");
+    const mainVersion = mainManifestReady ? getFirmwareLatestVersion(firmwareEntity) || t("common.unknown") : t("quickStart.setupPendingCheck");
     const firmwareCurrent = mainManifestReady && isQuickStartSetupFirmwareCurrent(model);
+    const canKeepCurrentSoftware = model.available
+      && model.currentTopology === model.targetTopology
+      && model.currentConnection === model.targetConnection
+      && !firmwareCurrent;
     const unifiedNetworkBuild = hasEntity("preferredConnection");
     const options = [
-        ["single:wifi", "Single · Wi-Fi", "Eén warmtepomp via het draadloze netwerk."],
-        ["single:eth", "Single · Ethernet", "Eén warmtepomp via een vaste netwerkkabel."],
-        ["duo:wifi", "Duo · Wi-Fi", "Twee warmtepompen via het draadloze netwerk."],
-        ["duo:eth", "Duo · Ethernet", "Twee warmtepompen via een vaste netwerkkabel."],
+        ["single:wifi", "Single · Wi-Fi", t("quickStart.setupOptSingleWifiCopy")],
+        ["single:eth", "Single · Ethernet", t("quickStart.setupOptSingleEthCopy")],
+        ["duo:wifi", "Duo · Wi-Fi", t("quickStart.setupOptDuoWifiCopy")],
+        ["duo:eth", "Duo · Ethernet", t("quickStart.setupOptDuoEthCopy")],
       ].filter(([key]) => !unifiedNetworkBuild || key.endsWith(`:${model.currentConnection}`));
     const requirements = [
-      model.targetIsDuo ? "De tweede warmtepomp is aangesloten en hoort bij deze controller." : "Deze controller wordt voor één warmtepomp gebruikt.",
-      model.targetIsEthernet ? "De netwerkkabel is aangesloten." : "De Wi-Fi-gegevens zijn beschikbaar op de controller.",
+      model.targetIsDuo ? t("quickStart.setupReqDuo") : t("quickStart.setupReqSingle"),
+      model.targetIsEthernet ? t("quickStart.setupReqEth") : t("quickStart.setupReqWifi"),
       firmwareCurrent
-        ? "Configuratie en main-release zijn actueel; er is geen OTA nodig."
-        : "Zo nodig wordt de stabiele main-release geïnstalleerd en vervangt deze een dev- of testbuild.",
+        ? t("quickStart.setupReqCurrent")
+        : t("quickStart.setupReqOta"),
     ];
 
     return `
       <section class="oq-helper-panel">
         <p class="oq-helper-label">${escapeHtml(getQuickStepKicker("setup"))}</p>
-        <h2 class="oq-helper-section-title">Configuratie en software-update</h2>
+        <h2 class="oq-helper-section-title">${escapeHtml(getQuickStepTitleById("setup"))}</h2>
         <p class="oq-helper-section-copy">${escapeHtml(unifiedNetworkBuild
-          ? "Kies de opstelling. De verbindingsmodus wijzig je via Connectiviteit."
-          : "Kies de configuratie van je Q-edition. OpenQuatt controleert daarna de nieuwste stabiele main-release en installeert deze alleen als de versie of configuratie afwijkt.")}</p>
+          ? t("quickStart.setupUnifiedCopy")
+          : t("quickStart.setupQEditionCopy"))}</p>
         <div class="oq-helper-fields">
           ${options.map(([key, title, copy]) => {
             const selected = model.selectedKey === key;
@@ -83,7 +89,7 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
               >
                 <div class="oq-helper-field-step-head">
                   <h3>${escapeHtml(title)}</h3>
-                  ${current ? '<span class="oq-helper-field-step-state">Actief</span>' : ""}
+                  ${current ? `<span class="oq-helper-field-step-state">${escapeHtml(t("quickStart.statusActive"))}</span>` : ""}
                 </div>
                 <p>${escapeHtml(copy)}</p>
               </button>
@@ -104,27 +110,40 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
               </div>
             ` : ""}
             <div class="oq-helper-modal-grid">
-              <div class="oq-helper-modal-row"><span class="oq-helper-modal-label">Huidige build</span><strong class="oq-helper-modal-value">${escapeHtml(model.currentBuildLabel)}</strong></div>
-              <div class="oq-helper-modal-row"><span class="oq-helper-modal-label">Gekozen build</span><strong class="oq-helper-modal-value">${escapeHtml(model.targetBuildLabel)}</strong></div>
-              <div class="oq-helper-modal-row"><span class="oq-helper-modal-label">Huidige versie</span><strong class="oq-helper-modal-value">${escapeHtml(currentVersion)}</strong></div>
-              <div class="oq-helper-modal-row"><span class="oq-helper-modal-label">Nieuwste main-versie</span><strong class="oq-helper-modal-value">${escapeHtml(mainVersion)}</strong></div>
+              <div class="oq-helper-modal-row"><span class="oq-helper-modal-label">${escapeHtml(t("quickStart.setupCurrentBuild"))}</span><strong class="oq-helper-modal-value">${escapeHtml(model.currentBuildLabel)}</strong></div>
+              <div class="oq-helper-modal-row"><span class="oq-helper-modal-label">${escapeHtml(t("quickStart.setupChosenBuild"))}</span><strong class="oq-helper-modal-value">${escapeHtml(model.targetBuildLabel)}</strong></div>
+              <div class="oq-helper-modal-row"><span class="oq-helper-modal-label">${escapeHtml(t("quickStart.setupCurrentVersion"))}</span><strong class="oq-helper-modal-value">${escapeHtml(currentVersion)}</strong></div>
+              <div class="oq-helper-modal-row"><span class="oq-helper-modal-label">${escapeHtml(t("quickStart.setupLatestMain"))}</span><strong class="oq-helper-modal-value">${escapeHtml(mainVersion)}</strong></div>
             </div>
-            <p class="oq-helper-modal-note">${firmwareCurrent
-              ? "Softwareversie en configuratie kloppen. Na bevestigen gaat Quick Start zonder OTA verder."
-              : "OpenQuatt controleert de stabiele softwareversie en gekozen configuratie. Alleen bij een afwijking volgt OTA en herstart. Instellingen blijven behouden."}</p>
+            <p class="oq-helper-modal-note">${escapeHtml(firmwareCurrent
+              ? t("quickStart.setupFirmwareOk")
+              : canKeepCurrentSoftware
+                ? t("quickStart.setupKeepCurrent")
+                : t("quickStart.setupFirmwareCheck"))}</p>
             <label class="oq-helper-modal-check">
               <input type="checkbox" data-oq-quickstart-setup-confirm="true" ${state.quickStartSetupConfirmed ? "checked" : ""} ${busy ? "disabled" : ""}>
               <span>${escapeHtml(requirements.join(" "))}</span>
             </label>
             <div class="oq-firmware-advanced-footer">
               <button class="oq-helper-button oq-helper-button--primary" type="button" data-oq-action="install-quickstart-setup" ${busy || !state.quickStartSetupConfirmed || !model.canInstall ? "disabled" : ""}>
-                ${busy ? "Configuratie en software controleren..." : firmwareCurrent ? "Configuratie bevestigen" : "Configuratie bevestigen en software controleren"}
+                ${escapeHtml(busy
+                  ? t("quickStart.setupChecking")
+                  : firmwareCurrent
+                    ? t("quickStart.setupConfirmCurrent")
+                    : canKeepCurrentSoftware
+                      ? t("quickStart.setupCheckInstall")
+                      : t("quickStart.setupConfirmCheck"))}
               </button>
+              ${canKeepCurrentSoftware ? `
+                <button class="oq-helper-button oq-helper-button--ghost" type="button" data-oq-action="keep-current-quickstart-setup" ${busy || !state.quickStartSetupConfirmed ? "disabled" : ""}>
+                  ${escapeHtml(t("quickStart.setupKeepSoftware"))}
+                </button>
+              ` : ""}
             </div>
-            ${!model.canInstall && !busy ? `<p class="oq-helper-modal-note oq-helper-modal-note--muted">${escapeHtml(
+            ${!model.canInstall && !busy && !canKeepCurrentSoftware ? `<p class="oq-helper-modal-note oq-helper-modal-note--muted">${escapeHtml(
               !model.targetEntityAvailable || !model.installActionAvailable || !model.mainChannelAvailable
-                ? "De firmwarebediening wordt nog geladen. Wacht een moment en probeer opnieuw."
-                : "Deze firmware mist nog het vereiste OTA-target voor de gekozen configuratie.",
+                ? t("quickStart.setupLoadingFirmware")
+                : t("quickStart.setupMissingTarget"),
             )}</p>` : ""}
         </div>
         ${state.controlNotice ? `<p class="oq-helper-notice">${escapeHtml(state.controlNotice)}</p>` : ""}
@@ -140,7 +159,7 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
         <section class="oq-helper-panel oq-helper-panel--flush">
           ${renderHpGenerationField()}
           <div class="oq-helper-actions oq-settings-generation-actions">
-            <button class="oq-helper-button oq-helper-button--primary" type="button" data-oq-action="close-quickstart-modal">Gereed</button>
+            <button class="oq-helper-button oq-helper-button--primary" type="button" data-oq-action="close-quickstart-modal">${escapeHtml(t("common.done"))}</button>
           </div>
         </section>
       `;
@@ -149,8 +168,8 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     return `
       <section class="oq-helper-panel">
         <p class="oq-helper-label">${escapeHtml(getQuickStepKicker("generation"))}</p>
-        <h2 class="oq-helper-section-title">Kies je Quatt Hybrid</h2>
-        <p class="oq-helper-section-copy">Geef hier aan welke Quatt Hybrid je hebt. Dan zet OpenQuatt de juiste regeling klaar.</p>
+        <h2 class="oq-helper-section-title">${escapeHtml(getQuickStepTitleById("generation"))}</h2>
+        <p class="oq-helper-section-copy">${escapeHtml(getQuickStepCopyById("generation"))}</p>
         ${renderHpGenerationField()}
         ${renderQuickStartStepNav()}
       </section>
@@ -196,8 +215,8 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     return `
       <article class="oq-helper-surface oq-settings-field oq-settings-field--span-2" data-oq-settings-field="quickStartCicFeedUrl">
         <div class="oq-settings-field-head">
-          <h3>CiC JSON-feed</h3>
-          ${renderSettingsInfoToggle("quickStartCicFeedUrl", "CiC JSON-feed", "Vul een IP-adres, hostname of volledige URL in. Bij alleen een adres gebruikt OpenQuatt automatisch poort 8080 en /beta/feed/data.json.")}
+          <h3>${escapeHtml(t("quickStart.cicTitle"))}</h3>
+          ${renderSettingsInfoToggle("quickStartCicFeedUrl", t("quickStart.cicTitle"), t("quickStart.cicCopy"))}
         </div>
         <div class="oq-settings-field-control">
           <label class="oq-settings-control oq-settings-control--text">
@@ -212,8 +231,8 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
               ${busy ? "disabled" : ""}
             >
           </label>
-          ${model.draftUrl && !model.normalizedDraftUrl ? `<p class="oq-settings-source-warning">Vul een geldig IP-adres, hostname of een geldige HTTP(S)-URL in.</p>` : ""}
-          ${model.normalizedDraftUrl ? `<p class="oq-settings-action-note">Wordt ingesteld als ${escapeHtml(model.normalizedDraftUrl)}</p>` : ""}
+          ${model.draftUrl && !model.normalizedDraftUrl ? `<p class="oq-settings-source-warning">${escapeHtml(t("quickStart.cicInvalid"))}</p>` : ""}
+          ${model.normalizedDraftUrl ? `<p class="oq-settings-action-note">${escapeHtml(t("quickStart.cicWillSet", { url: model.normalizedDraftUrl }))}</p>` : ""}
         </div>
       </article>
     `;
@@ -223,12 +242,6 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     const normalized = String(value || "").trim().toLowerCase();
     if (normalized === "heatpump_controller_q" || normalized.includes("q-edition") || normalized.includes("controller q")) {
       return "heatpump_controller_q";
-    }
-    if (normalized === "heatpump_listener" || normalized.includes("listener")) {
-      return "heatpump_listener";
-    }
-    if (normalized === "waveshare" || normalized.includes("waveshare")) {
-      return "waveshare";
     }
     return "";
   }
@@ -242,26 +255,16 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     if (!profile && hasEntity("qFlowSource")) {
       profile = "heatpump_controller_q";
       inferred = true;
-    } else if (!profile && hasEntity("flowSource") && hasEntity("cicPollingEnabled")) {
-      profile = "remote";
-      inferred = true;
     }
 
     return {
       profile,
       inferred,
       isQEdition: profile === "heatpump_controller_q",
-      isRemoteProfile: profile === "heatpump_listener" || profile === "waveshare" || profile === "remote",
       hardwareKnown: Boolean(profile),
       hardwareLabel: profile === "heatpump_controller_q"
         ? "Heatpump Controller Q-edition"
-        : profile === "heatpump_listener"
-          ? "Heatpump Listener"
-          : profile === "waveshare"
-            ? "Waveshare"
-            : profile === "remote"
-              ? "Heatpump Listener / Waveshare"
-              : "Onbekend hardwareprofiel",
+        : t("quickStart.unknownHardware"),
     };
   }
 
@@ -269,10 +272,10 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     const generation = String(getEntityValue("hpGeneration") || "").trim();
     const hardware = getQuickStartHardwareProfileModel();
     const isV1 = generation === "V1";
-    const { isQEdition, isRemoteProfile, hardwareKnown } = hardware;
-    const requiresCic = isV1 && isRemoteProfile;
+    const { isQEdition, hardwareKnown } = hardware;
+    const requiresCic = false;
     const qFlowTarget = isQEdition ? (isV1 ? "Local" : "Outdoor unit") : "";
-    const flowSourceTarget = requiresCic ? "CIC" : "Outdoor unit";
+    const flowSourceTarget = "Outdoor unit";
     const currentFlowSource = String(getEntityValue("flowSource") || "").trim();
     const currentQFlowSource = String(getEntityValue("qFlowSource") || "").trim();
     const cicEnabled = isEntityActive("cicPollingEnabled");
@@ -295,31 +298,31 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     const flowAvailable = Number.isFinite(flowValue);
     const flowTestActive = isEntityActive("quickFlowTest");
 
-    let status = hardwareKnown ? requiresCic ? "Nog configureren" : "Nog activeren" : "Hardwareprofiel niet herkend";
+    let status = hardwareKnown ? requiresCic ? t("quickStart.flowSourceStatusConfigure") : t("quickStart.flowSourceStatusActivate") : t("quickStart.flowSourceStatusUnknownHardware");
     if (requiresCic && configurationApplied) {
       status = cicFeedOk && flowAvailable
-        ? flowValue > 0 ? "Geldig" : "Bron actief, geen circulatie"
+        ? flowValue > 0 ? t("quickStart.flowSourceStatusValid") : t("quickStart.flowSourceStatusNoCirculation")
         : cicStale
-          ? "Geen actuele CiC-data"
+          ? t("quickStart.flowSourceStatusNoCicData")
           : cicFeedOk
-            ? "Verbonden, wacht op flow"
-            : "Verbinding controleren";
+            ? t("quickStart.flowSourceStatusConnectedWait")
+            : t("quickStart.flowSourceStatusCheckConnection");
     } else if (!requiresCic && configurationApplied) {
       status = flowAvailable
-        ? flowValue > 0 ? "Geldig" : "Bron actief, geen circulatie"
-        : "Wacht op actuele flow";
+        ? flowValue > 0 ? t("quickStart.flowSourceStatusValid") : t("quickStart.flowSourceStatusNoCirculation")
+        : t("quickStart.flowSourceStatusWaitFlow");
     }
 
     const sourceLabel = requiresCic
-      ? "CiC JSON-feed"
+      ? t("quickStart.cicTitle")
       : isQEdition && isV1
-        ? "Lokale flowmeter op de controller"
-        : "Flowmeter in de buitenunit via Modbus";
+        ? t("quickStart.flowSourceLabelLocal")
+        : t("quickStart.flowSourceLabelOdu");
     const explanation = requiresCic
-      ? "Een Quatt V1 heeft op dit hardwareprofiel geen lokaal aangesloten flowmeter. Configureer daarom de lokale CiC JSON-feed."
+      ? t("quickStart.flowSourceExplainCic")
       : isQEdition && isV1
-        ? "Bij Quatt V1 is de centrale flowmeter lokaal aangesloten op de Q-edition controller."
-        : `Bij Quatt ${generation || "V1.5/V2"} zit de flowmeter in de buitenunit en leest OpenQuatt deze via Modbus.`;
+        ? t("quickStart.flowSourceExplainLocalV1")
+        : t("quickStart.flowSourceExplainOdu", { generation: generation || "V1.5/V2" });
 
     return {
       generation,
@@ -345,7 +348,7 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
 
   export function getQuickStartThermostatSourceModel() {
     const hardware = getQuickStartHardwareProfileModel();
-    const { isQEdition, isRemoteProfile } = hardware;
+    const { isQEdition } = hardware;
     const currentRoomTempSource = String(getEntityValue("roomTempSource") || "").trim();
     const currentRoomSetpointSource = String(getEntityValue("roomSetpointSource") || "").trim();
     const pairedCurrentSource = currentRoomTempSource === currentRoomSetpointSource
@@ -367,37 +370,39 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
         : ["roomTempHa", "roomSetpointHa"];
     const roomTempValue = getEntityNumericValue(sourceValueKeys[0]);
     const roomSetpointValue = getEntityNumericValue(sourceValueKeys[1]);
-    const valuesAvailable = Number.isFinite(roomTempValue) && Number.isFinite(roomSetpointValue);
+    const roomSetpointUsable = Number.isFinite(roomSetpointValue)
+      && roomSetpointValue >= 5
+      && roomSetpointValue <= 35;
+    const valuesAvailable = Number.isFinite(roomTempValue) && roomSetpointUsable;
     const sourceHealthy = selectedSource === "OT thermostat"
       ? isEntityActive("otEnabled") && !isEntityActive("otLinkProblem") && valuesAvailable
       : selectedSource === "CIC"
         ? isEntityActive("cicJsonFeedOk") && !isEntityActive("cicDataStale") && valuesAvailable
         : isEntityActive("roomTempHaValid") && isEntityActive("roomSetpointHaValid") && valuesAvailable;
 
-    let status = isQEdition || isRemoteProfile ? "Nog activeren" : "Hardwareprofiel niet herkend";
+    let status = isQEdition ? t("quickStart.thermostatStatusActivate") : t("quickStart.thermostatStatusUnknown");
     if (configurationApplied) {
-      status = sourceHealthy ? "Geldig" : selectedSource === "OT thermostat"
-        ? "OpenTherm-verbinding controleren"
+      status = sourceHealthy ? t("quickStart.thermostatStatusValid") : selectedSource === "OT thermostat"
+        ? t("quickStart.thermostatStatusCheckOt")
         : selectedSource === "CIC"
-          ? "CiC-feed controleren"
-          : "HA-proxy's controleren";
+          ? t("quickStart.thermostatStatusCheckCic")
+          : t("quickStart.thermostatStatusCheckHa");
     }
 
     const sourceLabel = selectedSource === "OT thermostat"
-      ? "OpenTherm-thermostaat"
+      ? t("quickStart.thermostatLabelOt")
       : selectedSource === "CIC"
-        ? "CiC JSON-feed"
-        : "Home Assistant-proxy's";
+        ? t("quickStart.cicTitle")
+        : t("quickStart.thermostatLabelHa");
     const explanation = isQEdition
-      ? "De Q-edition leest kamertemperatuur en kamer-setpoint rechtstreeks uit via OpenTherm."
+      ? t("quickStart.thermostatExplainQ")
       : selectedSource === "CIC"
-        ? "OpenQuatt leest beide thermostaatwaarden samen uit de lokale CiC JSON-feed."
-        : "OpenQuatt gebruikt de vaste HA-proxy's voor kamertemperatuur en kamer-setpoint.";
+        ? t("quickStart.thermostatExplainCic")
+        : t("quickStart.thermostatExplainHa");
 
     return {
       hardwareLabel: hardware.hardwareLabel,
       isQEdition,
-      isRemoteProfile,
       selectedSource,
       sourceLabel,
       explanation,
@@ -407,7 +412,7 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
       roomSetpointValue,
       valuesAvailable,
       ...cicUrl,
-      canApply: (isQEdition || isRemoteProfile)
+      canApply: isQEdition
         && hasEntity("roomTempSource")
         && hasEntity("roomSetpointSource")
         && (selectedSource !== "OT thermostat" || hasEntity("otEnabled"))
@@ -420,32 +425,32 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     const busy = state.busyAction === "quickstart-flow-source" || state.busyAction === "quickstart-flow-refresh";
     const flowTestBusy = state.busyAction === "quickstart-flow-test-start" || state.busyAction === "quickstart-flow-test-abort";
     const controlsBusy = busy || flowTestBusy || model.flowTestActive;
-    const statusClass = model.status === "Geldig" || model.status === "Bron actief, geen circulatie" ? " is-active" : "";
-    const flowLabel = model.flowAvailable ? `${Math.round(model.flowValue)} L/h` : "Nog geen actuele waarde";
+    const statusClass = model.status === t("quickStart.flowSourceStatusValid") || model.status === t("quickStart.flowSourceStatusNoCirculation") ? " is-active" : "";
+    const flowLabel = model.flowAvailable ? `${formatNumber(Math.round(model.flowValue), { maximumFractionDigits: 0 })} L/h` : t("quickStart.flowNoValue");
     const cicField = model.requiresCic ? renderQuickStartCicFeedUrlField(model, controlsBusy) : "";
 
     return `
       <section class="oq-helper-panel">
         <p class="oq-helper-label">${escapeHtml(getQuickStepKicker("flow-source"))}</p>
-        <h2 class="oq-helper-section-title">Flowmeting configureren</h2>
-        <p class="oq-helper-section-copy">Je Quatt-versie en het hardwareprofiel bepalen automatisch welke flowbron nodig is. Controleer de uitkomst en activeer de configuratie.</p>
+        <h2 class="oq-helper-section-title">${escapeHtml(getQuickStepTitleById("flow-source"))}</h2>
+        <p class="oq-helper-section-copy">${escapeHtml(t("quickStart.flowCopy"))}</p>
         <div class="oq-settings-grid oq-settings-grid--quickstart">
           ${renderSettingsFieldCard(
             "quickStartFlowSource",
-            "Vastgestelde flowbron",
+            t("quickStart.flowFieldTitle"),
             model.explanation,
             `
               <div class="oq-settings-quickstart-status">
                 <div class="oq-settings-quickstart-status-row">
                   <div>
-                    <p class="oq-settings-quickstart-status-label">${escapeHtml(model.hardwareLabel)} · Quatt ${escapeHtml(model.generation || "onbekend")}</p>
+                    <p class="oq-settings-quickstart-status-label">${escapeHtml(model.hardwareLabel)} · Quatt ${escapeHtml(model.generation || t("quickStart.unknownGeneration"))}</p>
                     <strong class="oq-settings-quickstart-status-value">${escapeHtml(model.sourceLabel)}</strong>
                     <p class="oq-settings-quickstart-status-copy">${escapeHtml(model.explanation)}</p>
                   </div>
                 </div>
                 <div class="oq-settings-source-rows">
-                  <div class="oq-settings-source-row${statusClass}"><span>Status</span><strong>${escapeHtml(model.status)}</strong></div>
-                  <div class="oq-settings-source-row"><span>Actuele flow</span><strong>${escapeHtml(flowLabel)}</strong></div>
+                  <div class="oq-settings-source-row${statusClass}"><span>${escapeHtml(t("quickStart.flowStatusLabel"))}</span><strong>${escapeHtml(model.status)}</strong></div>
+                  <div class="oq-settings-source-row"><span>${escapeHtml(t("quickStart.flowCurrentFlow"))}</span><strong>${escapeHtml(flowLabel)}</strong></div>
                 </div>
               </div>
             `,
@@ -460,7 +465,7 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
             data-oq-action="apply-quickstart-flow-source"
             ${controlsBusy || !model.canApply ? "disabled" : ""}
           >
-            ${state.busyAction === "quickstart-flow-source" ? "Flowconfiguratie opslaan..." : model.configurationApplied ? "Flowconfiguratie opnieuw opslaan" : model.requiresCic ? "CiC-flowconfiguratie opslaan" : "Flowconfiguratie activeren"}
+            ${escapeHtml(state.busyAction === "quickstart-flow-source" ? t("quickStart.flowSaveBusy") : model.configurationApplied ? t("quickStart.flowSaveAgain") : model.requiresCic ? t("quickStart.flowSaveCic") : t("quickStart.flowActivate"))}
           </button>
           <button
             class="oq-helper-button oq-helper-button--ghost"
@@ -468,7 +473,7 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
             data-oq-action="refresh-quickstart-flow-signal"
             ${controlsBusy || !model.configurationApplied ? "disabled" : ""}
           >
-            ${state.busyAction === "quickstart-flow-refresh" ? "Signaal controleren..." : "Signaal opnieuw controleren"}
+            ${escapeHtml(state.busyAction === "quickstart-flow-refresh" ? t("quickStart.flowCheckBusy") : t("quickStart.flowCheckAgain"))}
           </button>
           ${model.canRunFlowTest ? `
             <button
@@ -477,24 +482,24 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
               data-oq-action="${model.flowTestActive ? "abort-quickstart-flow-test" : "start-quickstart-flow-test"}"
               ${busy || flowTestBusy ? "disabled" : ""}
             >
-              ${flowTestBusy
-                ? model.flowTestActive ? "Waterpomptest stoppen..." : "Waterpomptest starten..."
+              ${escapeHtml(flowTestBusy
+                ? model.flowTestActive ? t("quickStart.flowTestStopBusy") : t("quickStart.flowTestStartBusy")
                 : model.flowTestActive
-                  ? "Waterpomptest stoppen"
-                  : "Waterpomptest starten (30 sec)"}
+                  ? t("quickStart.flowTestStop")
+                  : t("quickStart.flowTestStart"))}
             </button>
           ` : ""}
         </div>
-        <p class="oq-settings-action-note">${model.flowTestActive
-          ? "Alleen de waterpomp draait op 400 iPWM. Het kan enkele seconden duren voordat de circulatie op gang komt en de flowmeter een waarde toont. De firmware stopt de test automatisch na maximaal 30 seconden."
-          : "0 L/h kan normaal zijn als de circulatiepomp stilstaat. De waterpomptest gebruikt 400 iPWM, start geen compressor en stopt automatisch na 30 seconden."}</p>
+        <p class="oq-settings-action-note">${escapeHtml(model.flowTestActive
+          ? t("quickStart.flowNoteActive")
+          : t("quickStart.flowNoteIdle"))}</p>
         ${renderQuickStartStepNav({
           nextDisabled: !model.configurationApplied || model.flowTestActive || flowTestBusy,
           nextDisabledLabel: flowTestBusy
-            ? "Even wachten"
+            ? t("quickStart.flowWait")
             : model.flowTestActive
-              ? "Test loopt"
-              : model.requiresCic ? "Sla eerst op" : "Activeer eerst",
+              ? t("quickStart.flowTestRunning")
+              : model.requiresCic ? t("quickStart.flowSaveFirst") : t("quickStart.flowActivateFirst"),
         })}
       </section>
     `;
@@ -503,31 +508,18 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
   export function renderThermostatSourceWorkspace() {
     const model = getQuickStartThermostatSourceModel();
     const busy = state.busyAction === "quickstart-thermostat-source";
-    const statusClass = model.status === "Geldig" ? " is-active" : "";
-    const sourceSelector = model.isRemoteProfile ? `
-      <article class="oq-helper-surface oq-settings-field oq-settings-field--span-2" data-oq-settings-field="quickStartThermostatSource">
-        <div class="oq-settings-field-head">
-          <h3>Gegevensbron</h3>
-          ${renderSettingsInfoToggle("quickStartThermostatSource", "Gegevensbron", "Kamertemperatuur en kamer-setpoint worden bewust als gekoppeld paar ingesteld.")}
-        </div>
-        <div class="oq-settings-field-control">
-          <label class="oq-settings-control oq-settings-control--select">
-            <select data-oq-quickstart-thermostat-source ${busy ? "disabled" : ""}>
-              <option value="CIC" ${model.selectedSource === "CIC" ? "selected" : ""}>CiC JSON-feed</option>
-              <option value="HA input" ${model.selectedSource === "HA input" ? "selected" : ""}>Home Assistant</option>
-            </select>
-          </label>
-          <p class="oq-settings-action-note">Deze keuze geldt altijd voor zowel kamertemperatuur als kamer-setpoint.</p>
-        </div>
-      </article>
-    ` : "";
+    const statusClass = model.status === t("quickStart.thermostatStatusValid") ? " is-active" : "";
     const cicField = model.selectedSource === "CIC" ? renderQuickStartCicFeedUrlField(model, busy) : "";
     const haNote = model.selectedSource === "HA input" ? `
       <article class="oq-helper-surface oq-settings-field oq-settings-field--span-2">
-        <div class="oq-settings-field-head"><h3>Home Assistant-contract</h3></div>
+        <div class="oq-settings-field-head"><h3>${escapeHtml(t("quickStart.haContractTitle"))}</h3></div>
         <div class="oq-settings-field-control">
-          <p class="oq-settings-action-note">Verwacht <strong>sensor.openquatt_ext_room_temperature</strong> en <strong>sensor.openquatt_ext_room_setpoint</strong>, plus de bijbehorende <strong>_valid</strong> binary sensors.</p>
-          <p class="oq-settings-action-note"><a href="https://github.com/OpenQuatt/OpenQuatt/tree/main/docs/dashboard#optioneel-dynamische-bronselectie-via-home-assistant" target="_blank" rel="noreferrer">Bekijk de Home Assistant-configuratie en het dynamische bronnenpakket</a>.</p>
+          <p class="oq-settings-action-note">${t("quickStart.haContractCopy", {
+            temperature: "<strong>sensor.openquatt_ext_room_temperature</strong>",
+            setpoint: "<strong>sensor.openquatt_ext_room_setpoint</strong>",
+            valid: "<strong>_valid</strong>",
+          })}</p>
+          <p class="oq-settings-action-note"><a href="https://github.com/OpenQuatt/OpenQuatt/tree/main/docs/dashboard#optioneel-dynamische-bronselectie-via-home-assistant" target="_blank" rel="noreferrer">${escapeHtml(t("quickStart.haContractLink"))}</a>.</p>
         </div>
       </article>
     ` : "";
@@ -535,12 +527,12 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     return `
       <section class="oq-helper-panel">
         <p class="oq-helper-label">${escapeHtml(getQuickStepKicker("thermostat-source"))}</p>
-        <h2 class="oq-helper-section-title">Thermostaatgegevens configureren</h2>
-        <p class="oq-helper-section-copy">Kamertemperatuur en kamer-setpoint horen bij dezelfde thermostaatbron en worden daarom samen ingesteld.</p>
+        <h2 class="oq-helper-section-title">${escapeHtml(getQuickStepTitleById("thermostat-source"))}</h2>
+        <p class="oq-helper-section-copy">${escapeHtml(t("quickStart.thermostatCopy"))}</p>
         <div class="oq-settings-grid oq-settings-grid--quickstart">
           ${renderSettingsFieldCard(
             "quickStartThermostatSourceStatus",
-            model.isQEdition ? "Vastgestelde thermostaatbron" : "Gekozen thermostaatbron",
+            model.isQEdition ? t("quickStart.thermostatFixedTitle") : t("quickStart.thermostatChosenTitle"),
             model.explanation,
             `
               <div class="oq-settings-quickstart-status">
@@ -552,26 +544,25 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
                   </div>
                 </div>
                 <div class="oq-settings-source-rows">
-                  <div class="oq-settings-source-row${statusClass}"><span>Status</span><strong>${escapeHtml(model.status)}</strong></div>
-                  <div class="oq-settings-source-row"><span>Kamertemperatuur</span><strong>${Number.isFinite(model.roomTempValue) ? `${model.roomTempValue.toFixed(1)} °C` : "Nog geen actuele waarde"}</strong></div>
-                  <div class="oq-settings-source-row"><span>Kamer-setpoint</span><strong>${Number.isFinite(model.roomSetpointValue) ? `${model.roomSetpointValue.toFixed(1)} °C` : "Nog geen actuele waarde"}</strong></div>
+                  <div class="oq-settings-source-row${statusClass}"><span>${escapeHtml(t("quickStart.flowStatusLabel"))}</span><strong>${escapeHtml(model.status)}</strong></div>
+                  <div class="oq-settings-source-row"><span>${escapeHtml(t("quickStart.reviewRoomTemp"))}</span><strong>${escapeHtml(Number.isFinite(model.roomTempValue) ? `${formatNumber(model.roomTempValue, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} °C` : t("quickStart.flowNoValue"))}</strong></div>
+                  <div class="oq-settings-source-row"><span>${escapeHtml(t("quickStart.reviewRoomSetpoint"))}</span><strong>${escapeHtml(Number.isFinite(model.roomSetpointValue) ? `${formatNumber(model.roomSetpointValue, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} °C` : t("quickStart.flowNoValue"))}</strong></div>
                 </div>
               </div>
             `,
             "oq-settings-field--span-2",
           )}
-          ${sourceSelector}
           ${cicField}
           ${haNote}
         </div>
         <div class="oq-helper-actions">
           <button class="oq-helper-button oq-helper-button--primary" type="button" data-oq-action="apply-quickstart-thermostat-source" ${busy || !model.canApply ? "disabled" : ""}>
-            ${busy ? "Thermostaatconfiguratie opslaan..." : model.configurationApplied ? "Thermostaatconfiguratie opnieuw opslaan" : model.selectedSource === "OT thermostat" ? "OpenTherm-configuratie activeren" : "Thermostaatconfiguratie opslaan"}
+            ${escapeHtml(busy ? t("quickStart.thermostatSaveBusy") : model.configurationApplied ? t("quickStart.thermostatSaveAgain") : model.selectedSource === "OT thermostat" ? t("quickStart.thermostatActivateOt") : t("quickStart.thermostatSave"))}
           </button>
         </div>
         ${renderQuickStartStepNav({
           nextDisabled: !model.configurationApplied,
-          nextDisabledLabel: model.isQEdition ? "Activeer eerst" : "Sla eerst op",
+          nextDisabledLabel: model.isQEdition ? t("quickStart.flowActivateFirst") : t("quickStart.flowSaveFirst"),
         })}
       </section>
     `;
@@ -586,15 +577,15 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
       return renderModalShell({
         id: "quickstart-forced",
         titleId: "oq-generation-modal-title",
-        kicker: "Installatie",
-        title: "Quatt Hybrid-versie aanpassen",
-        copy: "Kies de versie die bij jouw Quatt hoort. Deze keuze bepaalt de basis van de regeling.",
+        kicker: t("quickStart.modalGenKicker"),
+        title: t("quickStart.modalGenTitle"),
+        copy: t("quickStart.modalGenCopy"),
         copyInHeader: true,
         backdropClass: "oq-helper-modal-backdrop--quickstart",
         className: "oq-helper-modal--wide oq-helper-modal--scrollable",
         sectionAttributes: 'data-oq-quickstart-scroller data-oq-quickstart-step="generation"',
         closeAction: "close-quickstart-modal",
-        closeLabel: "Sluit versie-popup",
+        closeLabel: t("quickStart.modalGenClose"),
         body: renderGenerationWorkspace("picker"),
       });
     }
@@ -602,15 +593,15 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     return renderModalShell({
       id: "quickstart-forced",
       titleId: "oq-quickstart-modal-title",
-      kicker: "Quick Start",
-      title: "Rond eerst de Quick Start af",
-      copy: "Bevestig eerst je configuratie en laat de stabiele main-release controleren en zo nodig installeren. Loop daarna stap voor stap door de basisinstellingen.",
+      kicker: t("quickStart.modalKicker"),
+      title: t("quickStart.modalTitle"),
+      copy: t("quickStart.modalCopy"),
       copyInHeader: true,
       backdropClass: "oq-helper-modal-backdrop--quickstart",
       className: "oq-helper-modal--wide oq-helper-modal--quickstart",
       sectionAttributes: `data-oq-quickstart-scroller data-oq-quickstart-step="${escapeHtml(getCurrentQuickStep().id)}"`,
       closeAction: "close-quickstart-modal",
-      closeLabel: "Sluit Quick Start-popup",
+      closeLabel: t("quickStart.modalClose"),
       body: `<div class="oq-helper-grid oq-helper-grid--quickstart oq-helper-grid--quickstart-modal">${renderActiveStep()}${renderQuickStartSidebar()}</div>`,
     });
   }
@@ -644,11 +635,11 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     return `
       <div class="oq-helper-surface oq-settings-field oq-settings-field--span-2${deviant ? " is-warning" : ""}">
         <div class="oq-settings-field-head">
-          <h3>Warmtevraag bepalen</h3>
-          <p class="oq-settings-action-note" style="margin:0">Bekijk welke warmtetoestemming logisch past bij je gekozen strategie. De gekoppelde en actieve thermostaatbron is het advies.</p>
+          <h3>${escapeHtml(t("quickStart.heatingAdviceTitle"))}</h3>
+          <p class="oq-settings-action-note" style="margin:0">${escapeHtml(t("quickStart.heatingAdviceCopy"))}</p>
         </div>
         <div class="oq-settings-field-control">
-          <button class="oq-helper-button ${deviant ? "oq-helper-button--warning-soft" : "oq-helper-button--ghost"}" type="button" data-oq-action="open-heating-strategy-advice-modal">${deviant ? '<span class="oq-advice-warn-icon"><svg viewBox="0 0 20 18" aria-hidden="true"><path d="M10 1.6 L18.2 16.4 H1.8 Z"/><rect x="9.1" y="5.4" width="1.8" height="5.8" rx="0.9"/><circle cx="10" cy="13.6" r="1.1"/></svg></span> Advies per strategie bekijken' : "Advies per strategie bekijken"}</button>
+          <button class="oq-helper-button ${deviant ? "oq-helper-button--warning-soft" : "oq-helper-button--ghost"}" type="button" data-oq-action="open-heating-strategy-advice-modal">${deviant ? `<span class="oq-advice-warn-icon"><svg viewBox="0 0 20 18" aria-hidden="true"><path d="M10 1.6 L18.2 16.4 H1.8 Z"/><rect x="9.1" y="5.4" width="1.8" height="5.8" rx="0.9"/><circle cx="10" cy="13.6" r="1.1"/></svg></span> ${escapeHtml(t("quickStart.heatingAdviceAction"))}` : escapeHtml(t("quickStart.heatingAdviceAction"))}</button>
         </div>
       </div>
     `;
@@ -658,8 +649,8 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     return `
       <section class="oq-helper-panel">
         <p class="oq-helper-label">${escapeHtml(getQuickStepKicker("strategy"))}</p>
-        <h2 class="oq-helper-section-title">Kies de verwarmingsstrategie</h2>
-        <p class="oq-helper-section-copy">Kies hier hoe OpenQuatt je verwarming regelt. Daarna lopen we samen de belangrijkste instellingen langs.</p>
+        <h2 class="oq-helper-section-title">${escapeHtml(getQuickStepTitleById("strategy"))}</h2>
+        <p class="oq-helper-section-copy">${escapeHtml(getQuickStepCopyById("strategy"))}</p>
         ${renderHeatingStrategyExplainCards()}
         ${renderStrategySelectionFields("oq-settings-grid oq-settings-grid--quickstart")}
         ${renderQuickStartStepNav()}
@@ -669,14 +660,31 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
 
   export function renderBoilerWorkspace() {
     const boilerConnectionMismatch = isEntityActive("otbConnectionMismatch");
+    const boilerConnection = String(getEntityValue("boilerConnection") || "R1");
+    const sourcePresent = hasEntity("auxHeatSourcePresent")
+      ? isEntityActive("auxHeatSourcePresent")
+      : isEntityActive("boilerCvAssistEnabled");
+    const otbConnectionStatePresent = hasEntity("otbConnectionState");
+    const otbConnectionState = otbConnectionStatePresent
+      ? String(getEntityValue("otbConnectionState") || "")
+      : "";
+    const openthermNotVerified = sourcePresent && boilerConnection === "OpenTherm"
+      && otbConnectionStatePresent && otbConnectionState !== "ot_verified";
+    const openthermChecking =
+      !otbConnectionState ||
+      otbConnectionState === "unknown" ||
+      otbConnectionState === "ot_checking";
     return `
       <section class="oq-helper-panel">
         <p class="oq-helper-label">${escapeHtml(getQuickStepKicker("boiler"))}</p>
-        <h2 class="oq-helper-section-title">Aanvullende warmtebron</h2>
-        <p class="oq-helper-section-copy">Dit kan bijvoorbeeld een cv-ketel, elektrische cv-ketel (e-cv) of doorstroomverwarmer zijn. Kies of de warmtebron hybride meeverwarmt bij een vermogenstekort en of deze mag overnemen wanneer geen warmtepomp beschikbaar is.</p>
+        <h2 class="oq-helper-section-title">${escapeHtml(getQuickStepTitleById("boiler"))}</h2>
+        <p class="oq-helper-section-copy">${escapeHtml(t("quickStart.boilerWorkspaceCopy"))}</p>
         ${renderBoilerCvFields("oq-settings-grid oq-settings-grid--quickstart oq-settings-boiler-simple-grid", true)}
         ${renderQuickStartStepNav({
-          nextDisabled: boilerConnectionMismatch,
+          nextDisabled: boilerConnectionMismatch || openthermNotVerified,
+          nextDisabledLabel: openthermNotVerified
+            ? openthermChecking ? t("quickStart.boilerChecking") : t("quickStart.boilerCheckConnection")
+            : t("quickStart.boilerChooseOt"),
         })}
       </section>
     `;
@@ -686,8 +694,8 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     return `
       <section class="oq-helper-panel">
         <p class="oq-helper-label">${escapeHtml(getQuickStepKicker("flow"))}</p>
-        <h2 class="oq-helper-section-title">Flowregeling en afstelling</h2>
-        <p class="oq-helper-section-copy">Kies hier hoe OpenQuatt de pomp regelt. De Kp- en Ki-waarden en autotune vind je later terug onder Instellingen → Installatie → Flowregeling en Service & commissioning.</p>
+        <h2 class="oq-helper-section-title">${escapeHtml(getQuickStepTitleById("flow"))}</h2>
+        <p class="oq-helper-section-copy">${escapeHtml(t("quickStart.flowStepCopy"))}</p>
         ${renderFlowSettingsFields("oq-settings-grid oq-settings-grid--quickstart")}
         ${renderQuickStartStepNav()}
       </section>
@@ -695,23 +703,17 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
   }
 
   export function renderHeatingWorkspace() {
+    const curveMode = isCurveMode();
     return `
       <section class="oq-helper-panel">
         <p class="oq-helper-label">${escapeHtml(getQuickStepKicker("heating"))}</p>
-        <h2 class="oq-helper-section-title">${escapeHtml(isCurveMode() ? "Stooklijn instellen" : "Power House instellen")}</h2>
+        <h2 class="oq-helper-section-title">${escapeHtml(t(curveMode ? "quickStart.heatingCurveTitle" : "quickStart.heatingPhTitle"))}</h2>
         <p class="oq-helper-section-copy">
-          ${escapeHtml(
-            isCurveMode()
-              ? "Stel hier je stooklijn en fallback-aanvoertemperatuur in."
-              : "Stel hier in hoe Power House het warmteverlies van je woning inschat en hoe snel het reageert.",
-          )}
+          ${escapeHtml(t(curveMode ? "quickStart.heatingCurveCopy" : "quickStart.heatingPhCopy"))}
         </p>
-        ${isCurveMode()
+        ${curveMode
           ? `
             <div class="oq-settings-grid oq-settings-grid--quickstart">${renderHeatingCurveProfileField()}</div>
-            <div class="oq-settings-curve-shell">
-              ${renderCurveGraph()}
-            </div>
             ${renderSettingsCurveInputs()}
           `
           : `
@@ -727,8 +729,8 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     return `
       <section class="oq-helper-panel">
         <p class="oq-helper-label">${escapeHtml(getQuickStepKicker("water"))}</p>
-        <h2 class="oq-helper-section-title">Watertemperatuur beveiligen</h2>
-        <p class="oq-helper-section-copy">Hier stel je de veilige bovengrens voor de watertemperatuur in. OpenQuatt regelt richting deze grens terug en grijpt 5°C erboven hard in.</p>
+        <h2 class="oq-helper-section-title">${escapeHtml(getQuickStepTitleById("water"))}</h2>
+        <p class="oq-helper-section-copy">${escapeHtml(t("quickStart.waterWorkspaceCopy"))}</p>
         ${renderWaterSettingsFields("oq-settings-grid oq-settings-grid--quickstart", { includeSensorCorrections: false })}
         ${renderQuickStartStepNav()}
       </section>
@@ -739,8 +741,8 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     return `
       <section class="oq-helper-panel">
         <p class="oq-helper-label">${escapeHtml(getQuickStepKicker("silent"))}</p>
-        <h2 class="oq-helper-section-title">Stille uren en niveaus</h2>
-        <p class="oq-helper-section-copy">Kies hier wanneer het systeem stiller moet werken, en hoe ver het dan nog mag opschalen.</p>
+        <h2 class="oq-helper-section-title">${escapeHtml(getQuickStepTitleById("silent"))}</h2>
+        <p class="oq-helper-section-copy">${escapeHtml(t("quickStart.silentWorkspaceCopy"))}</p>
         ${renderSilentSettingsGrid("oq-settings-grid oq-settings-grid--quickstart")}
         ${renderQuickStartStepNav()}
       </section>
@@ -754,25 +756,56 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     return `
       <section class="oq-helper-panel">
         <p class="oq-helper-label">${escapeHtml(getQuickStepKicker("usage-telemetry"))}</p>
-        <h2 class="oq-helper-section-title">Gebruiksstatistieken</h2>
-        <p class="oq-helper-section-copy">Bij een nieuwe Quick Start staat het delen van beperkte technische statistieken standaard aan. Wil je dit niet, zet delen hier uit. Je kunt de keuze later altijd wijzigen.</p>
+        <h2 class="oq-helper-section-title">${escapeHtml(getQuickStepTitleById("usage-telemetry"))}</h2>
+        <p class="oq-helper-section-copy">${escapeHtml(t("quickStart.usageCopy"))}</p>
         ${renderUsageTelemetryConsent({ enabled, busy })}
         ${renderUsageTelemetryDisclosure()}
         ${state.controlNotice ? `<p class="oq-helper-notice">${escapeHtml(state.controlNotice)}</p>` : ""}
         ${state.controlError ? `<p class="oq-helper-error">${escapeHtml(state.controlError)}</p>` : ""}
         ${state.controlError ? `
           <div class="oq-helper-actions">
-            <button class="oq-helper-button" type="button" data-oq-action="retry-usage-telemetry-choice" ${busy ? "disabled" : ""}>Keuze opnieuw opslaan</button>
+            <button class="oq-helper-button" type="button" data-oq-action="retry-usage-telemetry-choice" ${busy ? "disabled" : ""}>${escapeHtml(t("quickStart.usageRetrySave"))}</button>
           </div>
         ` : ""}
         ${!choiceConfigured && !busy ? `
           <div class="oq-helper-actions">
-            <button class="oq-helper-button oq-helper-button--ghost" type="button" data-oq-action="confirm-no-usage-telemetry">Niet delen bevestigen</button>
+            <button class="oq-helper-button oq-helper-button--ghost" type="button" data-oq-action="confirm-no-usage-telemetry">${escapeHtml(t("quickStart.usageConfirmNoShare"))}</button>
           </div>
         ` : ""}
         ${renderQuickStartStepNav({
           nextDisabled: busy || !choiceConfigured || Boolean(state.controlError),
-          nextDisabledLabel: busy || !choiceConfigured ? "Keuze opslaan..." : "Controleer keuze",
+          nextDisabledLabel: busy || !choiceConfigured ? t("quickStart.usageSaving") : t("quickStart.usageCheckChoice"),
+        })}
+      </section>
+    `;
+  }
+
+  export function renderPerformanceTelemetryWorkspace() {
+    const enabled = isEntityActive("performanceTelemetryEnabled");
+    const choiceConfigured = isEntityActive("performanceTelemetryChoiceConfigured");
+    const busy = state.loadingEntities || Boolean(state.busyAction);
+    return `
+      <section class="oq-helper-panel">
+        <p class="oq-helper-label">${escapeHtml(getQuickStepKicker("performance-telemetry"))}</p>
+        <h2 class="oq-helper-section-title">${escapeHtml(getQuickStepTitleById("performance-telemetry"))}</h2>
+        <p class="oq-helper-section-copy">${escapeHtml(t("quickStart.perfCopy"))}</p>
+        ${renderPerformanceTelemetryConsent({ enabled, busy })}
+        ${renderPerformanceTelemetryDisclosure()}
+        ${state.controlNotice ? `<p class="oq-helper-notice">${escapeHtml(state.controlNotice)}</p>` : ""}
+        ${state.controlError ? `<p class="oq-helper-error">${escapeHtml(state.controlError)}</p>` : ""}
+        ${state.controlError ? `
+          <div class="oq-helper-actions">
+            <button class="oq-helper-button" type="button" data-oq-action="retry-performance-telemetry-choice" ${busy ? "disabled" : ""}>${escapeHtml(t("quickStart.usageRetrySave"))}</button>
+          </div>
+        ` : ""}
+        ${!choiceConfigured && !busy ? `
+          <div class="oq-helper-actions">
+            <button class="oq-helper-button oq-helper-button--ghost" type="button" data-oq-action="confirm-no-performance-telemetry">${escapeHtml(t("quickStart.usageConfirmNoShare"))}</button>
+          </div>
+        ` : ""}
+        ${renderQuickStartStepNav({
+          nextDisabled: busy || !choiceConfigured || Boolean(state.controlError),
+          nextDisabledLabel: busy || !choiceConfigured ? t("quickStart.usageSaving") : t("quickStart.usageCheckChoice"),
         })}
       </section>
     `;
@@ -782,31 +815,31 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     return `
       <section class="oq-helper-panel">
         <p class="oq-helper-label">${escapeHtml(getQuickStepKicker("confirm"))}</p>
-        <h2 class="oq-helper-section-title">Bevestigen en afronden</h2>
-        <p class="oq-helper-section-copy">Controleer nog één keer je keuzes. Met afronden markeer je Quick Start als voltooid.</p>
+        <h2 class="oq-helper-section-title">${escapeHtml(getQuickStepTitleById("confirm"))}</h2>
+        <p class="oq-helper-section-copy">${escapeHtml(getQuickStepCopyById("confirm"))}</p>
         ${renderConfirmReviewCards()}
-        <section class="oq-quickstart-history" aria-label="Lokale historie">
+        <section class="oq-quickstart-history" aria-label="${escapeHtml(t("quickStart.confirmHistoryTitle"))}">
           <div>
-            <p class="oq-quickstart-history-label">Lokale historie</p>
-            <p class="oq-quickstart-history-copy">Energiegegevens en belangrijke regelgebeurtenissen blijven ook na een herstart beschikbaar in Resultaten en Diagnose.</p>
+            <p class="oq-quickstart-history-label">${escapeHtml(t("quickStart.confirmHistoryTitle"))}</p>
+            <p class="oq-quickstart-history-copy">${escapeHtml(t("quickStart.confirmHistoryCopy"))}</p>
           </div>
           <button class="oq-helper-button oq-helper-button--ghost" type="button" data-oq-action="open-history-storage-modal">
-            Gegevens bewaren
+            ${escapeHtml(t("quickStart.confirmHistoryAction"))}
           </button>
         </section>
         ${state.controlNotice ? `<p class="oq-helper-notice">${escapeHtml(state.controlNotice)}</p>` : ""}
         ${state.controlError ? `<p class="oq-helper-error">${escapeHtml(state.controlError)}</p>` : ""}
         <div class="oq-helper-actions oq-helper-actions--step">
           <button class="oq-helper-button oq-helper-button--ghost" type="button" data-oq-action="previous-step" ${state.busyAction ? "disabled" : ""}>
-            Vorige
+            ${escapeHtml(t("quickStart.navPrevious"))}
           </button>
         </div>
         <div class="oq-helper-actions">
           <button class="oq-helper-button oq-helper-button--primary" type="button" data-oq-action="apply" ${state.busyAction ? "disabled" : ""}>
-            ${state.busyAction === "apply" ? "Afronden..." : "Quick Start afronden"}
+            ${escapeHtml(state.busyAction === "apply" ? t("quickStart.confirmFinishing") : t("quickStart.confirmFinish"))}
           </button>
           <button class="oq-helper-button" type="button" data-oq-action="reset" ${state.busyAction ? "disabled" : ""}>
-            ${state.busyAction === "reset" ? "Resetten..." : "Setup-status resetten"}
+            ${escapeHtml(state.busyAction === "reset" ? t("quickStart.confirmResetting") : t("quickStart.confirmResetSetup"))}
           </button>
         </div>
       </section>
@@ -846,6 +879,9 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     if (activeStep === "usage-telemetry") {
       return renderUsageTelemetryWorkspace();
     }
+    if (activeStep === "performance-telemetry") {
+      return renderPerformanceTelemetryWorkspace();
+    }
     if (activeStep === "confirm") {
       return renderConfirmWorkspace();
     }
@@ -855,6 +891,26 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
   export function getQuickSteps() {
     const isQEdition = getQuickStartHardwareProfileModel().isQEdition;
     return QUICK_STEPS.filter((step) => (step.id !== "setup" || isQEdition) && (!step.optionalEntity || hasEntity(step.optionalEntity)));
+  }
+
+  export function getQuickStepDefinition(stepId) {
+    return QUICK_STEPS.find((step) => step.id === stepId) || null;
+  }
+
+  export function getQuickStepTitle(step) {
+    return step?.titleKey ? t(step.titleKey) : "";
+  }
+
+  export function getQuickStepCopy(step) {
+    return step?.copyKey ? t(step.copyKey) : "";
+  }
+
+  export function getQuickStepTitleById(stepId) {
+    return getQuickStepTitle(getQuickStepDefinition(stepId));
+  }
+
+  export function getQuickStepCopyById(stepId) {
+    return getQuickStepCopy(getQuickStepDefinition(stepId));
   }
 
   export function isQuickStartStepSelectionAllowed(stepId) {
@@ -867,7 +923,7 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
 
   export function getQuickStepKicker(stepId) {
     const index = getQuickSteps().findIndex((step) => step.id === stepId);
-    return `Stap ${Math.max(0, index) + 1}`;
+    return t("quickStart.step", { n: Math.max(0, index) + 1 });
   }
 
   export function getQuickStepStatus(index) {
@@ -876,7 +932,7 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     const isDone = state.complete === true || index < currentIndex;
     return {
       tone: isSelected ? "current" : isDone ? "done" : "upcoming",
-      label: isSelected ? "Actief" : isDone ? "Gereed" : "Volgend",
+      label: isSelected ? t("quickStart.statusActive") : isDone ? t("common.done") : t("quickStart.statusUpcoming"),
       current: isSelected,
     };
   }
@@ -895,10 +951,10 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
           ${selectionAllowed ? "" : "disabled"}
         >
           <div class="oq-helper-field-step-head">
-            <h3>${String(index + 1).padStart(2, "0")}. ${escapeHtml(step.title)}</h3>
-            <span class="oq-helper-field-step-state">${stepStatus.label}</span>
+            <h3>${String(index + 1).padStart(2, "0")}. ${escapeHtml(getQuickStepTitle(step))}</h3>
+            <span class="oq-helper-field-step-state">${escapeHtml(stepStatus.label)}</span>
           </div>
-          <p>${escapeHtml(step.copy)}</p>
+          <p>${escapeHtml(getQuickStepCopy(step))}</p>
         </button>
       `;
     }).join("");
@@ -933,15 +989,15 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     return `
       <div class="oq-helper-step-nav">
         <div class="oq-helper-step-nav-meta">
-          <strong>Stap ${index + 1} van ${steps.length}</strong>
-          <span>${escapeHtml(nextStep ? `Hierna: ${nextStep.title}` : "Je bent bij de laatste stap")}</span>
+          <strong>${escapeHtml(t("quickStart.navOf", { index: index + 1, total: steps.length }))}</strong>
+          <span>${escapeHtml(nextStep ? t("quickStart.navNext", { title: getQuickStepTitle(nextStep) }) : t("quickStart.navLast"))}</span>
         </div>
         <div class="oq-helper-actions oq-helper-actions--step">
           <button class="oq-helper-button oq-helper-button--ghost" type="button" data-oq-action="previous-step" ${previousStep ? "" : "disabled"}>
-            Vorige
+            ${escapeHtml(t("quickStart.navPrevious"))}
           </button>
           <button class="oq-helper-button oq-helper-button--primary" type="button" data-oq-action="next-step" ${nextStep && !options.nextDisabled ? "" : "disabled"}>
-            ${nextStep ? options.nextDisabled ? options.nextDisabledLabel || "Configureer eerst" : "Volgende" : "Laatste stap"}
+            ${escapeHtml(nextStep ? options.nextDisabled ? options.nextDisabledLabel || t("quickStart.navConfigureFirst") : t("common.next") : t("quickStart.navLastStep"))}
           </button>
         </div>
       </div>
@@ -954,9 +1010,9 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
     return `
       <section class="oq-helper-panel oq-helper-panel--aside">
         <p class="oq-helper-label">Quick Start</p>
-        <h2 class="oq-helper-section-title">Snel van start, stap voor stap</h2>
-        <p class="oq-helper-panel-note">Quick Start helpt je op weg met de belangrijkste keuzes. Later kun je alles verder verfijnen onder Instellingen.</p>
-        <h3 class="oq-helper-aside-title">Stap ${stepIndex + 1} van ${steps.length}</h3>
+        <h2 class="oq-helper-section-title">${escapeHtml(t("quickStart.sidebarTitle"))}</h2>
+        <p class="oq-helper-panel-note">${escapeHtml(t("quickStart.sidebarCopy"))}</p>
+        <h3 class="oq-helper-aside-title">${escapeHtml(t("quickStart.navOf", { index: stepIndex + 1, total: steps.length }))}</h3>
         <div class="oq-helper-fields oq-helper-fields--compact">
           ${renderStepOverview(true)}
         </div>
@@ -968,56 +1024,59 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
 
   export function renderConfirmReviewCards() {
     const selectedGeneration = formatSettingsOptionLabel(getEntityStateText("hpGeneration"));
-    const generationTitle = selectedGeneration ? `Geselecteerd: ${selectedGeneration}` : "";
+    const generationTitle = selectedGeneration ? t("quickStart.reviewSelected", { value: selectedGeneration }) : "";
     const generationDetection = getOduGenerationDetectionModel();
-    const strategyTitle = isCurveMode() ? "Stooklijn" : "Power House";
+    const strategyTitle = optionLabel(isCurveMode() ? STRATEGY_OPTION_CURVE : STRATEGY_OPTION_POWER_HOUSE);
     const formatReviewOption = (key) => formatSettingsOptionLabel(getEntityStateText(key));
+    const formatReviewTemp = (value) => Number.isFinite(value)
+      ? `${formatNumber(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} °C`
+      : t("quickStart.reviewNoFlowValue");
     const generationLines = generationDetection.available
       ? [
           ...generationDetection.heatPumps.map((heatPump) => [
-            `HP${heatPump.index} gedetecteerd`,
-            heatPump.known ? heatPump.generation : "Unknown",
+            t("quickStart.reviewDetectedHp", { index: heatPump.index }),
+            heatPump.known ? heatPump.generation : t("common.unknown"),
           ]),
-          ["Aanbevolen", generationDetection.recommendation || "Geen advies"],
+          [t("quickStart.reviewRecommended"), generationDetection.recommendation || t("quickStart.reviewNoAdvice")],
         ]
       : [];
     const strategyLines = isCurveMode()
       ? [
-          ["Regelprofiel", formatReviewOption("curveControlProfile")],
-          ["Aanvoer bij -20°C", formatValue("curveM20")],
-          ["Aanvoer bij -10°C", formatValue("curveM10")],
-          ["Aanvoer bij 0°C", formatValue("curve0")],
-          ["Aanvoer bij 5°C", formatValue("curve5")],
-          ["Aanvoer bij 10°C", formatValue("curve10")],
-          ["Aanvoer bij 15°C", formatValue("curve15")],
-          ["Fallback-aanvoer", formatValue("curveFallbackSupply")],
+          [t("quickStart.reviewControlProfile"), formatReviewOption("curveControlProfile")],
+          [t("quickStart.reviewSupplyAt", { label: "-20°C" }), formatValue("curveM20")],
+          [t("quickStart.reviewSupplyAt", { label: "-10°C" }), formatValue("curveM10")],
+          [t("quickStart.reviewSupplyAt", { label: "0°C" }), formatValue("curve0")],
+          [t("quickStart.reviewSupplyAt", { label: "5°C" }), formatValue("curve5")],
+          [t("quickStart.reviewSupplyAt", { label: "10°C" }), formatValue("curve10")],
+          [t("quickStart.reviewSupplyAt", { label: "15°C" }), formatValue("curve15")],
+          [t("quickStart.reviewFallbackSupply"), formatValue("curveFallbackSupply")],
         ]
       : [
-          ["Profiel", formatReviewOption("phResponseProfile")],
+          [t("quickStart.reviewProfile"), formatReviewOption("phResponseProfile")],
           ["Rated maximum house power", formatValue("housePower")],
           ["Maximum heating outdoor temperature", formatValue("houseOutdoorMax")],
-          ["Temperatuurreactie", formatValue("phKp")],
-          ["Comfort onder setpoint", formatValue("phComfortBelow")],
-          ["Comfort boven setpoint", formatValue("phComfortAbove")],
+          [t("quickStart.reviewTempReaction"), formatValue("phKp")],
+          [t("quickStart.reviewComfortBelow"), formatValue("phComfortBelow")],
+          [t("quickStart.reviewComfortAbove"), formatValue("phComfortAbove")],
         ];
 
     const flowMode = String(getEntityValue("flowControlMode") || "");
     const flowSourceModel = getQuickStartFlowSourceModel();
     const flowSourceLines = [
-      ["Status", flowSourceModel.status],
-      ["Actuele flow", flowSourceModel.flowAvailable ? `${Math.round(flowSourceModel.flowValue)} L/h` : "Nog geen actuele waarde"],
+      [t("quickStart.reviewStatus"), flowSourceModel.status],
+      [t("quickStart.reviewCurrentFlow"), flowSourceModel.flowAvailable ? `${formatNumber(Math.round(flowSourceModel.flowValue), { maximumFractionDigits: 0 })} L/h` : t("quickStart.reviewNoFlowValue")],
     ];
     const thermostatSourceModel = getQuickStartThermostatSourceModel();
     const thermostatSourceLines = [
-      ["Status", thermostatSourceModel.status],
-      ["Kamertemperatuur", Number.isFinite(thermostatSourceModel.roomTempValue) ? `${thermostatSourceModel.roomTempValue.toFixed(1)} °C` : "Nog geen actuele waarde"],
-      ["Kamer-setpoint", Number.isFinite(thermostatSourceModel.roomSetpointValue) ? `${thermostatSourceModel.roomSetpointValue.toFixed(1)} °C` : "Nog geen actuele waarde"],
+      [t("quickStart.reviewStatus"), thermostatSourceModel.status],
+      [t("quickStart.reviewRoomTemp"), formatReviewTemp(thermostatSourceModel.roomTempValue)],
+      [t("quickStart.reviewRoomSetpoint"), formatReviewTemp(thermostatSourceModel.roomSetpointValue)],
     ];
     const flowLines = [
-      ["Flowregeling", flowMode === "Manual PWM" ? "Vaste pompstand" : "Gewenste flow"],
+      [t("quickStart.reviewFlowControl"), flowMode === "Manual PWM" ? t("quickStart.reviewFixedPump") : t("quickStart.reviewDesiredFlow")],
       flowMode === "Manual PWM"
-        ? ["Vaste pompstand", formatValue("manualIpwm")]
-        : ["Gewenste flow", formatValue("flowSetpoint")],
+        ? [t("quickStart.reviewFixedPump"), formatValue("manualIpwm")]
+        : [t("quickStart.reviewDesiredFlow"), formatValue("flowSetpoint")],
     ];
 
     const sourcePresent = hasEntity("auxHeatSourcePresent")
@@ -1025,18 +1084,18 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
       : isEntityActive("boilerCvAssistEnabled");
     const boilerLines = hasEntity("auxHeatSourcePresent") || hasEntity("boilerCvAssistEnabled")
       ? [
-          ["Warmtebron aangesloten", sourcePresent ? "Ja" : "Nee"],
+          [t("quickStart.reviewHeatSourceConnected"), sourcePresent ? t("common.yes") : t("common.no")],
           ...(sourcePresent
             ? [
                 ...(hasEntity("boilerConnection")
-                  ? [["Aansturing warmtebron", String(getEntityValue("boilerConnection") || "R1") === "OpenTherm" ? "OpenTherm (OTB)" : "Aan/uit (R1)"]]
+                  ? [[t("quickStart.reviewSourceControl"), String(getEntityValue("boilerConnection") || "R1") === "OpenTherm" ? t("quickStart.reviewOtbControl") : t("quickStart.reviewRelayControl")]]
                   : []),
-                ["Beschikbaar verwarmingsvermogen", formatValue("boilerRatedHeatPower")],
+                [t("quickStart.reviewAvailablePower"), formatValue("boilerRatedHeatPower")],
                 ...(hasEntity("boilerCvAssistEnabled")
-                  ? [["Hybride verwarmen bij vermogenstekort", isEntityActive("boilerCvAssistEnabled") ? "Aan" : "Uit"]]
+                  ? [[t("quickStart.reviewHybridAssist"), isEntityActive("boilerCvAssistEnabled") ? t("common.on") : t("common.off")]]
                   : []),
                 ...(hasEntity("boilerFaultFallbackEnabled")
-                  ? [["Overnemen wanneer de warmtepomp niet beschikbaar is", isEntityActive("boilerFaultFallbackEnabled") ? "Aan" : "Uit"]]
+                  ? [[t("quickStart.reviewFaultFallback"), isEntityActive("boilerFaultFallbackEnabled") ? t("common.on") : t("common.off")]]
                   : []),
               ]
             : []),
@@ -1044,18 +1103,22 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
       : [];
 
     const waterLines = [
-      ["Maximale watertemperatuur", formatValue("maxWater")],
+      [t("quickStart.reviewMaxWaterTemp"), formatValue("maxWater")],
     ];
 
     const silentLines = [
-      ["Start stille uren", toTimeInputValue(getEntityValue("silentStartTime")) || "—"],
-      ["Einde stille uren", toTimeInputValue(getEntityValue("silentEndTime")) || "—"],
-      ["Maximaal tijdens stille uren", formatValue("silentMaxHz")],
-      ["Maximaal overdag", formatValue("dayMaxHz")],
+      [t("quickStart.reviewSilentStart"), toTimeInputValue(getEntityValue("silentStartTime")) || t("common.notAvailable")],
+      [t("quickStart.reviewSilentEnd"), toTimeInputValue(getEntityValue("silentEndTime")) || t("common.notAvailable")],
+      [t("quickStart.reviewSilentMax"), formatValue("silentMaxHz")],
+      [t("quickStart.reviewDayMax"), formatValue("dayMaxHz")],
     ];
 
     const usageTelemetryLines = hasEntity("usageTelemetryEnabled")
-      ? [["Technische gebruiksstatistieken", isEntityActive("usageTelemetryEnabled") ? "Delen" : "Niet delen"]]
+      ? [[t("quickStart.reviewUsageStats"), isEntityActive("usageTelemetryEnabled") ? t("quickStart.reviewSharing") : t("quickStart.reviewNotSharing")]]
+      : [];
+
+    const performanceTelemetryLines = hasEntity("performanceTelemetryEnabled")
+      ? [[t("quickStart.reviewPerfSharing"), isEntityActive("performanceTelemetryEnabled") ? t("common.on") : t("common.off")]]
       : [];
 
     const renderReviewList = (lines) => `
@@ -1083,15 +1146,16 @@ import { renderUsageTelemetryConsent, renderUsageTelemetryDisclosure } from "./u
 
     return `
       <div class="oq-helper-fields oq-helper-fields--review">
-        ${renderReviewCard("Quatt Hybrid-versie", generationLines, generationTitle)}
-        ${renderReviewCard("Flowmeting", flowSourceLines, flowSourceModel.sourceLabel)}
-        ${renderReviewCard("Verwarmingsstrategie", strategyLines, strategyTitle)}
-        ${renderReviewCard("Watertemperatuur", waterLines)}
-        ${renderReviewCard("Thermostaatgegevens", thermostatSourceLines, thermostatSourceModel.sourceLabel)}
-        ${renderReviewCard("Flowregeling", flowLines)}
-        ${boilerLines.length ? renderReviewCard("CV-ketel / boiler", boilerLines) : ""}
-        ${renderReviewCard("Stille uren", silentLines)}
-        ${usageTelemetryLines.length ? renderReviewCard("Gebruiksstatistieken", usageTelemetryLines) : ""}
+        ${renderReviewCard(t("quickStart.reviewCardGeneration"), generationLines, generationTitle)}
+        ${renderReviewCard(t("quickStart.reviewCardFlowMeasurement"), flowSourceLines, flowSourceModel.sourceLabel)}
+        ${renderReviewCard(t("quickStart.reviewCardStrategy"), strategyLines, strategyTitle)}
+        ${renderReviewCard(t("quickStart.reviewCardWaterTemp"), waterLines)}
+        ${renderReviewCard(t("quickStart.reviewCardThermostat"), thermostatSourceLines, thermostatSourceModel.sourceLabel)}
+        ${renderReviewCard(t("quickStart.reviewCardFlowControl"), flowLines)}
+        ${boilerLines.length ? renderReviewCard(t("quickStart.reviewCardBoiler"), boilerLines) : ""}
+        ${renderReviewCard(t("quickStart.reviewCardSilent"), silentLines)}
+        ${usageTelemetryLines.length ? renderReviewCard(t("quickStart.reviewCardUsage"), usageTelemetryLines) : ""}
+        ${performanceTelemetryLines.length ? renderReviewCard(t("quickStart.reviewCardPerformance"), performanceTelemetryLines) : ""}
       </div>
     `;
   }

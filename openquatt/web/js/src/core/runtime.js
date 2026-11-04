@@ -1,19 +1,22 @@
 import { FAST_POLL_INTERVAL_MS, HIDDEN_POLL_INTERVAL_MS, OFFICIAL_ESPHOME_UI_URL, POLL_JITTER_MAX_MS, POLL_JITTER_MIN_MS, SETTINGS_GROUP_IDS, SETTINGS_GROUPS } from "./config.js";
 import { setEntityPollingControls } from "./entity-polling-controls.js";
-import { getPrefersReducedMotion, getReducedMotionMedia, getStoredHpLayoutMode, getStoredHpVisualMode, getStoredOverviewTheme, getStoredSurface, getStoredTrendWindowHours, state } from "./state.js";
+import { syncDocumentTheme } from "./app-shared.js";
+import { getColorSchemeDarkMedia, getReducedMotionMedia, resolveOverviewTheme, state } from "./state.js";
 export { DEFAULT_TREND_WINDOW_HOURS, TREND_WINDOW_HOURS_OPTIONS, state } from "./state.js";
 import { handleChange, handleClick, handleFocusChange, handleInput, handleKeyDown, handlePointerDown, handlePointerMove, handlePointerUp, handleSettingsInteractionEnd, handleSettingsInteractionStart, handleWheel } from "./event-handlers.js";
-import { getDefaultAppView, getUrlAppView, getUrlControlReplayCustomRange, getUrlControlReplayTab, getUrlControlReplayWindow, getUrlSettingsGroup, setAppView, syncUrlAppView } from "./navigation.js";
+import { getDefaultAppView, getUrlAppView, getUrlControlReplayCustomRange, getUrlControlReplayTab, getUrlControlReplayWindow, getUrlSettingsGroup, getUrlSystemModal, SYSTEM_RECORDER_MODAL_ID, setAppView, syncUrlAppView } from "./navigation.js";
 import { primeEntities, syncEntities } from "./entity-sync.js";
-import { refreshDebugRecordingDeviceStatus } from "../features/debug-recording.js";
+import { clearPreparedDebugRecordingCopy, refreshDebugRecordingDeviceStatus } from "../features/debug-recording.js";
 import { isFirmwareOtaQuietActive } from "./firmware-quiet.js";
 import { clearLegacyMotionVariables, startMotionLoop, stopMotionLoop } from "./motion.js";
 import { render } from "./render-scheduler.js";
+import { t } from "../i18n/index.js";
 
-  export function setOverviewTheme(theme) {
-    state.overviewTheme = theme === "dark" ? "dark" : "light";
+  export function setOverviewTheme(preference) {
+    state.overviewThemePreference = preference === "light" || preference === "dark" ? preference : "auto";
+    state.overviewTheme = resolveOverviewTheme(state.overviewThemePreference);
     try {
-      window.localStorage.setItem("oq-overview-theme", state.overviewTheme);
+      window.localStorage.setItem("oq-overview-theme", state.overviewThemePreference);
     } catch (_error) {
       // Ignore storage failures in embedded browsers.
     }
@@ -101,6 +104,35 @@ import { render } from "./render-scheduler.js";
     state.reducedMotion = Boolean(media.matches);
   }
 
+  export function handleColorSchemePreferenceChange(event) {
+    if (state.overviewThemePreference !== "auto") {
+      return;
+    }
+    const theme = event?.matches ? "dark" : "light";
+    if (theme === state.overviewTheme) {
+      return;
+    }
+    state.overviewTheme = theme;
+    syncDocumentTheme();
+  }
+
+  export function bindColorSchemePreference() {
+    const media = getColorSchemeDarkMedia();
+    if (!media || state.overviewThemeMedia === media) {
+      return;
+    }
+
+    state.overviewThemeMedia = media;
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", handleColorSchemePreferenceChange);
+    } else if (typeof media.addListener === "function") {
+      media.addListener(handleColorSchemePreferenceChange);
+    }
+    if (state.overviewThemePreference === "auto") {
+      state.overviewTheme = media.matches ? "dark" : "light";
+    }
+  }
+
   export function hasLoadedEntities() {
     return Object.keys(state.entities).length > 0;
   }
@@ -178,12 +210,19 @@ import { render } from "./render-scheduler.js";
   }
 
   export function handlePopState() {
-    const nextView = getUrlAppView() || getDefaultAppView();
-    const nextSettingsGroup = nextView === "settings" ? (getUrlSettingsGroup() || state.settingsGroup) : "";
+    const urlSystemModal = getUrlSystemModal();
+    const nextView = urlSystemModal === SYSTEM_RECORDER_MODAL_ID
+      ? "settings"
+      : getUrlAppView() || getDefaultAppView();
+    const nextSettingsGroup = nextView === "settings"
+      ? (urlSystemModal === SYSTEM_RECORDER_MODAL_ID ? "system" : (getUrlSettingsGroup() || state.settingsGroup))
+      : "";
+    const nextSystemModal = urlSystemModal === SYSTEM_RECORDER_MODAL_ID ? SYSTEM_RECORDER_MODAL_ID : "";
     const nextControlReplayTab = nextView === "control" ? (getUrlControlReplayTab() || "status") : state.controlReplayTab;
     const nextControlReplayWindow = nextView === "control" ? (getUrlControlReplayWindow() || "last24") : state.controlReplayWindow;
     const nextControlReplayCustomRange = nextView === "control" ? getUrlControlReplayCustomRange() : null;
     if (nextView === state.appView &&
+        nextSystemModal === (state.systemModal || "") &&
         (nextView !== "settings" || nextSettingsGroup === state.settingsGroup) &&
         (nextView !== "control" || (
           nextControlReplayTab === state.controlReplayTab &&
@@ -214,8 +253,21 @@ import { render } from "./render-scheduler.js";
         // Ignore storage failures in embedded browsers.
       }
     }
+    if (nextSystemModal === SYSTEM_RECORDER_MODAL_ID) {
+      state.systemModal = SYSTEM_RECORDER_MODAL_ID;
+      state.debugRecordingError = "";
+      state.debugRecordingNotice = "";
+      state.debugRecordingConfirmDisable = false;
+      state.debugRecordingManageOpen = false;
+    } else if (state.systemModal === SYSTEM_RECORDER_MODAL_ID) {
+      clearPreparedDebugRecordingCopy();
+      state.systemModal = "";
+    }
     render();
     void syncEntities({ forceFast: true });
+    if (state.systemModal === SYSTEM_RECORDER_MODAL_ID) {
+      void refreshDebugRecordingDeviceStatus();
+    }
   }
 
   export function syncNativeVisibility() {
@@ -236,6 +288,8 @@ import { render } from "./render-scheduler.js";
     }
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+    window.addEventListener("blur", handlePointerUp);
     window.addEventListener("popstate", handlePopState);
     if (__OQ_PREVIEW__) {
       window.addEventListener("oq-mock-updated", handleMockUpdated);
@@ -316,8 +370,14 @@ import { render } from "./render-scheduler.js";
     root.addEventListener("pointerdown", handlePointerDown);
     state.root = root;
     bindReducedMotionPreference();
-    const initialUrlView = getUrlAppView() || getDefaultAppView();
-    const initialUrlSettingsGroup = initialUrlView === "settings" ? getUrlSettingsGroup() : "";
+    bindColorSchemePreference();
+    const initialUrlSystemModal = getUrlSystemModal();
+    const initialUrlView = initialUrlSystemModal === SYSTEM_RECORDER_MODAL_ID
+      ? "settings"
+      : getUrlAppView() || getDefaultAppView();
+    const initialUrlSettingsGroup = initialUrlSystemModal === SYSTEM_RECORDER_MODAL_ID
+      ? "system"
+      : initialUrlView === "settings" ? getUrlSettingsGroup() : "";
     const initialUrlControlReplayTab = initialUrlView === "control" ? getUrlControlReplayTab() : "";
     const initialUrlControlReplayWindow = initialUrlView === "control" ? getUrlControlReplayWindow() : "";
     const initialUrlControlReplayCustomRange = initialUrlView === "control" ? getUrlControlReplayCustomRange() : null;
@@ -333,6 +393,15 @@ import { render } from "./render-scheduler.js";
       state.controlReplayCustomEnd = initialUrlControlReplayCustomRange?.end || "";
     }
     setAppView(initialUrlView, { syncMode: "replace", forceSync: true });
+    if (initialUrlSystemModal === SYSTEM_RECORDER_MODAL_ID) {
+      setSettingsGroup("system", { syncUrl: false });
+      state.systemModal = SYSTEM_RECORDER_MODAL_ID;
+      state.debugRecordingError = "";
+      state.debugRecordingNotice = "";
+      state.debugRecordingConfirmDisable = false;
+      state.debugRecordingManageOpen = false;
+      syncUrlAppView("replace");
+    }
     clearLegacyMotionVariables();
     render();
   }
@@ -381,7 +450,7 @@ import { render } from "./render-scheduler.js";
       await loadScriptOnce(OFFICIAL_ESPHOME_UI_URL);
       state.nativeFrontendLoaded = true;
     } catch (error) {
-      state.controlError = `ESPHome fallback kon niet worden geladen. ${error.message || error}`;
+      state.controlError = t("errors.firmwareFallbackFailed", { message: error.message || error });
       state.nativeOpen = false;
       setStoredSurface("app");
       render();

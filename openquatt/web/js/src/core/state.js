@@ -1,18 +1,10 @@
 import { SETTINGS_GROUP_IDS, SETTINGS_GROUPS } from "./config.js";
 import { createDiagnosticsState, createFirmwareState, createHistoryState, createMotionState, createSecurityState, createSettingsState } from "./state-slices.js";
 
-function getStoredDebugRecordingAcknowledgedId() {
-  try {
-    return String(window.localStorage.getItem("oq-debug-recording-acknowledged-id") || "");
-  } catch (_error) {
-    return "";
-  }
-}
-
 export const DEFAULT_TREND_WINDOW_HOURS = 24;
 export const TREND_WINDOW_HOURS_OPTIONS = [3, 12, 24, 72, 168, 336, 720];
 const QUICK_START_SETUP_INSTALL_STORAGE_KEY = "oq-quickstart-setup-install";
-const QUICK_START_SETUP_INSTALL_STATUSES = new Set(["pending", "successful-phase", "complete"]);
+const QUICK_START_SETUP_INSTALL_STATUSES = new Set(["pending", "successful-phase", "complete", "skipped"]);
 
 export function getStoredQuickStartSetupInstall() {
   try {
@@ -25,10 +17,13 @@ export function getStoredQuickStartSetupInstall() {
     const sourceChannel = String(value?.sourceChannel || "");
     const sourceVersion = String(value?.sourceVersion || "");
     const status = String(value?.status || "");
+    const targetChannelValid = status === "skipped"
+      ? Boolean(targetChannel)
+      : targetChannel === "main";
     if (!QUICK_START_SETUP_INSTALL_STATUSES.has(status)
       || !["single", "duo"].includes(targetTopology)
       || !["wifi", "eth"].includes(targetConnection)
-      || targetChannel !== "main") {
+      || !targetChannelValid) {
       return null;
     }
     const sourceValid = ["single", "duo"].includes(sourceTopology)
@@ -51,8 +46,9 @@ export function getStoredQuickStartSetupInstall() {
 
 export function hasCompletedQuickStartSetupInstallFor(targetTopology, targetConnection) {
   const record = getStoredQuickStartSetupInstall();
-  return record?.status === "complete"
-    && record.targetChannel === "main"
+  return Boolean(record)
+    && (record.status === "complete" || record.status === "skipped")
+    && (record.status === "skipped" || record.targetChannel === "main")
     && record.targetTopology === String(targetTopology || "")
     && record.targetConnection === String(targetConnection || "");
 }
@@ -74,7 +70,8 @@ export function clearQuickStartSetupInstall() {
 }
 
 const initialQuickStartSetupInstall = getStoredQuickStartSetupInstall();
-const initialQuickStartSetupComplete = initialQuickStartSetupInstall?.status === "complete";
+const initialQuickStartSetupComplete = initialQuickStartSetupInstall?.status === "complete" || initialQuickStartSetupInstall?.status === "skipped";
+const initialOverviewThemePreference = getStoredOverviewThemePreference();
 
 export const state = {
   mounted: false,
@@ -95,7 +92,7 @@ export const state = {
   lastApiSecurityStatusRefreshAt: 0,
   lastMqttStatusRefreshAt: 0,
   summary: "",
-  stage: "Laden...",
+  stage: "",
   interfacePanelOpen: getStoredInterfacePanelOpen(),
   devPanelOpen: __OQ_PREVIEW__ && getStoredDevPanelOpen(),
   nativeOpen: getStoredSurface() === "native",
@@ -103,7 +100,9 @@ export const state = {
   quickStartModalMode: "wizard",
   settingsGroup: getStoredSettingsGroup(),
   appView: "",
-  overviewTheme: getStoredOverviewTheme(),
+  overviewThemePreference: initialOverviewThemePreference,
+  overviewTheme: resolveOverviewTheme(initialOverviewThemePreference),
+  overviewThemeMedia: null,
   hpVisualMode: getStoredHpVisualMode(),
   hpLayoutMode: getStoredHpLayoutMode(),
   ...createHistoryState(getStoredTrendWindowHours()),
@@ -127,7 +126,7 @@ export const state = {
   busyAction: "",
   controlError: "",
   controlNotice: "",
-  ...createDiagnosticsState(getStoredDebugRecordingAcknowledgedId()),
+  ...createDiagnosticsState(),
   ...createSettingsState(),
   quickStartSetupUpdateComplete: initialQuickStartSetupComplete,
   updateModalOpen: false,
@@ -139,7 +138,7 @@ export const state = {
 
 export function restoreStoredQuickStartSetupInstall() {
   const record = getStoredQuickStartSetupInstall();
-  if (!record || record.status === "complete") {
+  if (!record || record.status === "complete" || record.status === "skipped") {
     return record;
   }
   state.updateInstallMode = "quickstart-setup";
@@ -156,12 +155,31 @@ export function restoreStoredQuickStartSetupInstall() {
 
 restoreStoredQuickStartSetupInstall();
 
-export function getStoredOverviewTheme() {
+export function getStoredOverviewThemePreference() {
   try {
-    return window.localStorage.getItem("oq-overview-theme") === "dark" ? "dark" : "light";
+    const stored = window.localStorage.getItem("oq-overview-theme");
+    return stored === "light" || stored === "dark" ? stored : "auto";
   } catch (_error) {
-    return "light";
+    return "auto";
   }
+}
+
+export function getColorSchemeDarkMedia() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return null;
+  }
+  try {
+    return window.matchMedia("(prefers-color-scheme: dark)");
+  } catch (_error) {
+    return null;
+  }
+}
+
+export function resolveOverviewTheme(preference) {
+  if (preference === "light" || preference === "dark") {
+    return preference;
+  }
+  return getColorSchemeDarkMedia()?.matches ? "dark" : "light";
 }
 
 export function getStoredInterfacePanelOpen() {

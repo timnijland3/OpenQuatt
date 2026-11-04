@@ -1,0 +1,227 @@
+"""Compile the complete recorder with peripheral adapters, never source extraction.
+
+The real header, translation unit, default schema and PsramBuffer run unchanged.
+The fixture injects IDF allocation/HTTP failures and uses a host mutex; physical
+PSRAM margins, FreeRTOS scheduling and network timing remain HIL responsibilities.
+"""
+
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+from tests.support.cpp import COMPILE_TIMEOUT_SECONDS, RUN_TIMEOUT_SECONDS, compiler_command
+from tests.support.process import run_process
+
+ROOT = Path(__file__).resolve().parents[2]
+FIXTURE = ROOT / "tests/fixtures/debug_recorder"
+
+
+class RecorderComponentRuntimeTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        directory = tempfile.TemporaryDirectory(prefix="oq-recorder-component-")
+        cls.addClassCleanup(directory.cleanup)
+        cls.binaries = {}
+        for duo in [0, 1]:
+            binary = Path(directory.name) / f"recorder-{duo}"
+            result = run_process(
+                compiler_command(
+                    "-pthread", f"-DOQ_TOPOLOGY_DUO={duo}",
+                    "-DUSE_SENSOR", "-DUSE_NUMBER", "-DUSE_BINARY_SENSOR",
+                    "-DUSE_SWITCH", "-DUSE_TEXT_SENSOR", "-DUSE_SELECT",
+                    "-I", str(FIXTURE), "-I", str(ROOT),
+                    "-I", str(ROOT / "components/openquatt_common"),
+                    str(ROOT / "components/openquatt_debug_recorder/OpenQuattDebugRecorder.cpp"),
+                    str(FIXTURE / "component_test.cpp"), "-o", str(binary),
+                ),
+                timeout=COMPILE_TIMEOUT_SECONDS, capture_output=True, text=True,
+            )
+            if result.returncode:
+                raise AssertionError(result.stdout + result.stderr)
+            cls.binaries[duo] = binary
+
+    def scenario(self, name, duo):
+        result = run_process(
+            [str(self.binaries[duo]), name], timeout=RUN_TIMEOUT_SECONDS,
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout[:1000])
+        return dict(line.split("\t", 1) for line in result.stdout.splitlines())
+
+    @staticmethod
+    def initial(payload):
+        return {payload["columns"][index]: value for index, value in payload["initial"]}
+
+    def test_setup_psram_failure_at_each_allocation_and_unavailable_peripherals(self):
+        for duo in self.binaries:
+            with self.subTest(duo=duo):
+                output = self.scenario("setup", duo)
+                for failure in range(1, 10):
+                    status = json.loads(output[f"allocation-{failure}"])
+                    self.assertFalse(status["available"])
+                    self.assertFalse(status["active"])
+                    self.assertEqual(status["sample_count"], 0)
+                    self.assertEqual(status["storage"], "unavailable")
+                ready = json.loads(output["ready"])
+                self.assertTrue(ready["available"] and ready["active"])
+                self.assertEqual(ready["storage"], "psram")
+                self.assertGreaterEqual(ready["retention_capacity_s"], 6 * 3600)
+
+    def test_deferred_capture_real_lock_contention_persistence_and_clock_wrap(self):
+        for duo in self.binaries:
+            with self.subTest(duo=duo):
+                status = json.loads(self.scenario("lifecycle", duo)["lifecycle"])
+                self.assertTrue(status["available"] and status["enabled"] and status["active"])
+                self.assertGreater(status["elapsed_s"], 7 * 3600)
+                self.assertEqual(status["sample_count"], status["sample_capacity"])
+
+    def test_configuration_ownership_missing_values_real_pool_pressure_and_eviction(self):
+        for duo in self.binaries:
+            with self.subTest(duo=duo):
+                self.scenario("configuration", duo)
+
+    def test_sensor_source_switch_fallback_missing_measurement_and_recovery_are_exported(self):
+        for duo in self.binaries:
+            with self.subTest(duo=duo):
+                payload = json.loads(self.scenario("sensor-sources", duo)["sources"])
+                state = dict(payload["initial"])
+                rows = []
+                for _, changes in payload["samples"]:
+                    state.update(changes)
+                    rows.append({key: state.get(index) for index, key in enumerate(payload["columns"])})
+                self.assertEqual(len(rows), 4)
+                fallback = f"hp{2 if duo else 1} water out (fallback)"
+                self.assertEqual(rows[0]["waterSupplySource"], "CIC")
+                self.assertEqual(rows[0]["localWaterSupplyTempSource"], "PT1000")
+                self.assertEqual(rows[0]["waterSupplyTempEffectiveSource"], fallback)
+                self.assertTrue(rows[0]["waterSupplyTempFallbackActive"])
+                self.assertAlmostEqual(rows[0]["waterSupplyTempPt1000"], 21.9, places=4)
+                self.assertIsNone(rows[0]["cicWaterSupplyTemp"])
+                self.assertEqual(rows[1]["waterSupplySource"], "Local")
+                self.assertEqual(rows[1]["waterSupplyTempEffectiveSource"], "Local - PT1000")
+                self.assertFalse(rows[1]["waterSupplyTempFallbackActive"])
+                self.assertIsNone(rows[2]["waterSupplyTempPt1000"])
+                self.assertIsNone(rows[2]["waterSupplyTempEsp"])
+                self.assertTrue(rows[2]["pt1000ReadProblem"])
+                self.assertTrue(rows[2]["waterSupplyTempFallbackActive"])
+                self.assertEqual(rows[2]["waterSupplyTempEffectiveSource"], fallback)
+                self.assertFalse(rows[3]["pt1000ReadProblem"])
+                self.assertFalse(rows[3]["waterSupplyTempFallbackActive"])
+                self.assertAlmostEqual(rows[3]["waterSupplyTempPt1000"], 24.3, places=4)
+                self.assertAlmostEqual(rows[3]["supplyTemp"], 24.3, places=4)
+                self.assertEqual(rows[3]["waterSupplyTempEffectiveSource"], "Local - PT1000")
+
+    def test_real_default_schema_long_retention_snapshot_interleavings_and_http_failures(self):
+        for duo in self.binaries:
+            with self.subTest(duo=duo):
+                output = self.scenario("retention", duo)
+                status = json.loads(output["retention-status"])
+                capacity = status["sample_capacity"]
+                self.assertEqual(status["sample_count"], capacity)
+                self.assertGreaterEqual(status["retention_capacity_s"], 6 * 3600)
+                self.assertFalse(status["string_overflow"])
+                for minutes in [0, 15, 120, 360, 4294967295]:
+                    count = capacity if minutes in [0, 4294967295] else min(capacity, minutes * 6 + 1)
+                    span = (count - 1) * 10
+                    payload = json.loads(output[str(minutes)])
+                    self.assertEqual(payload["recording"]["sample_count"], count)
+                    self.assertEqual(payload["recording"]["duration_s"], span)
+                    self.assertEqual(payload["samples"][0], [0, []])
+                    self.assertEqual(payload["samples"][-1][0], span)
+                    self.assertEqual(payload["recording"]["event_count"], count - 1)
+                    self.assertEqual(payload["recording"]["mode"], "rolling")
+                    initial = self.initial(payload)
+                    self.assertEqual(initial["timeNowHhmm"], "12:34")
+                    self.assertEqual(
+                        json.loads(initial["configurationSnapshot"])["values"]["phRunExtension"],
+                        minutes != 15,
+                    )
+                jitter = json.loads(output["jitter"])
+                self.assertEqual([sample[0] for sample in jitter["samples"]], [0, 15, 47, 60])
+                self.assertEqual(jitter["recording"]["event_count"], 3)
+                self.assertEqual(json.loads(output["immutable"])["recording"]["sample_count"], 91)
+                with self.assertRaises(json.JSONDecodeError):
+                    json.loads(output["aborted"])
+                empty = json.loads(output["empty"])
+                self.assertEqual(empty["initial"], [])
+                self.assertEqual(empty["samples"], [])
+                self.assertEqual(empty["recording"]["duration_s"], 0)
+                for minutes, expected in [(0, "00:00"), (545, "09:05"), (754, "12:34"),
+                                          (1439, "23:59"), (1440, None), (65534, None)]:
+                    self.assertEqual(self.initial(json.loads(output[f"clock-{minutes}"]))["timeNowHhmm"], expected)
+
+    def test_warmup_values_coherent_provider_nulls_and_export_immutability(self):
+        for duo in self.binaries:
+            with self.subTest(duo=duo):
+                output = self.scenario("warmup", duo)
+                payload = json.loads(output["warmup-recording"])
+                columns = payload["columns"]
+                state = self.initial(payload)
+                self.assertNotIn("warmupStatus", state)
+                self.assertNotIn("warmupElapsed", state)
+                for _, changes in payload["samples"]:
+                    for index, value in changes:
+                        state[columns[index]] = value
+                self.assertEqual(state["warmupStatus"], 2)
+                self.assertEqual(state["warmupElapsed"], 900)
+                self.assertAlmostEqual(state["warmupBoost"], 0.3, places=3)
+                self.assertEqual(state["warmupStepTime"], 45)
+                for key, expected in {"warmupBasePower": 1071.4, "warmupMinimumPower": 2527.6,
+                                      "warmupExtraPower": 840, "warmupBeforeCapsPower": 3367.6,
+                                      "warmupAfterCapsPower": 3000, "warmupPowerPath": 2}.items():
+                    self.assertAlmostEqual(state[key], expected, places=1)
+                between = json.loads(output["warmup-between-ticks"])
+                state = self.initial(between)
+                for _, changes in between["samples"]:
+                    for index, value in changes:
+                        state[between["columns"][index]] = value
+                self.assertEqual(state["warmupStatus"], 3)
+                self.assertEqual(state["warmupPowerPath"], 8)
+                self.assertIsNone(state["warmupExtraPower"])
+                self.assertIsNone(state["warmupBeforeCapsPower"])
+                ended = json.loads(output["warmup-ended"])
+                state = self.initial(ended)
+                for _, changes in ended["samples"]:
+                    for index, value in changes:
+                        state[ended["columns"][index]] = value
+                self.assertIsNone(state["warmupStatus"])
+                self.assertIsNone(state["warmupElapsed"])
+                for key in ["warmupBasePower", "warmupMinimumPower", "warmupExtraPower",
+                            "warmupBeforeCapsPower", "warmupAfterCapsPower"]:
+                    self.assertIsNone(state[key])
+                self.assertEqual(state["warmupPowerPath"], 0)
+
+    def test_partial_sync_and_failed_compensation_require_durable_retries(self):
+        for duo in self.binaries:
+            with self.subTest(duo=duo):
+                output = self.scenario("preference-failures", duo)
+                for previous in ["off", "on"]:
+                    for failed_key in ["own", "other"]:
+                        status = json.loads(output[f"preference-{previous}-{failed_key}"])
+                        self.assertFalse(status["enabled"] or status["active"])
+                        self.assertEqual(status["sample_count"], 3)
+                for failure in ["save", "sync"]:
+                    status = json.loads(output[f"schema-compensation-{failure}"])
+                    self.assertFalse(status["enabled"] or status["active"])
+                    self.assertEqual(status["sample_count"], 0)
+                    self.assertEqual(status["recording_id"], 0)
+
+    def test_registered_handler_methods_same_origin_csrf_and_failed_persistence(self):
+        for duo in self.binaries:
+            with self.subTest(duo=duo):
+                output = self.scenario("http", duo)
+                full = json.loads(output["http-full-download"])
+                one_minute = json.loads(output["http-range-1"])
+                overflow = json.loads(output["http-range-4294967297"])
+                self.assertEqual(full["recording"]["sample_count"], 13)
+                self.assertEqual(full["recording"]["duration_s"], 120)
+                self.assertEqual(one_minute["recording"]["sample_count"], 7)
+                self.assertEqual(one_minute["recording"]["duration_s"], 60)
+                self.assertEqual(overflow, full)
+                self.assertNotEqual(overflow["samples"], one_minute["samples"])
+                self.assertFalse(overflow["recording"]["active"])
+
+
+if __name__ == "__main__":
+    unittest.main()

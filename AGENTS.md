@@ -45,8 +45,18 @@
 - For memory-affecting changes, compare identical baseline and candidate firmware through cold boot and realistic HA/web/API/MQTT/Modbus/OpenTherm/OTA load. A compile-time RAM report is not sufficient.
 - Treat unexplained regressions, allocation failures or a minimum/largest-block result without demonstrated margin for the worst simultaneous allocation as release-blocking. Maintain profile-specific budgets once healthy HIL baselines are established.
 
+## High-Risk Changes
+
+- For heat-pump control safety, embedded memory ownership, concurrency, or lifecycle timing, obtain an independent cold review before publishing.
+
 ## GitHub And PRs
 
 - Do not prefix PR titles with `[codex]`; use a concise human-readable title instead.
+- Write PR titles in Dutch unless the user explicitly requests another language.
 - Use `.github/pull_request_template.md` for PR bodies and fill every relevant section.
 - In PRs, issues and review comments, write canonical project commands without personal shell wrappers.
+
+## Releases
+
+- Follow `docs/development/releaseproces.md` for release preparation, promotion, publication and verification; use `docs/development/release-notes.md` for public notes.
+- The portable agent entrypoint is `.agents/skills/openquatt-release/SKILL.md`. Keep the procedure in the shared docs, not a separate personal skill copy.

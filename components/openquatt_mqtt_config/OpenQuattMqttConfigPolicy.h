@@ -25,12 +25,6 @@ enum class StorageTimeoutAction : uint8_t {
   REPORT_PERSISTENCE_PENDING = 2U,
 };
 
-enum class ClassicWorkerAction : uint8_t {
-  KEEP = 0U,
-  WAKE = 1U,
-  RELEASE = 2U,
-};
-
 inline MqttClientAction mqtt_client_action(bool desired_enabled, bool desired_broker_present, bool network_connected,
                                            bool client_present, bool client_matches_desired) {
   const bool should_run = desired_enabled && desired_broker_present;
@@ -75,14 +69,6 @@ inline StorageTimeoutAction storage_timeout_action(bool exact_generation_complet
     return StorageTimeoutAction::RETURN_COMPLETED;
   }
   return commit_in_progress ? StorageTimeoutAction::REPORT_PERSISTENCE_PENDING : StorageTimeoutAction::CANCEL;
-}
-
-inline ClassicWorkerAction classic_worker_action(bool waiting_or_suspended, bool worker_active, bool work_pending,
-                                                 bool can_reconcile, bool retry_due) {
-  if (!waiting_or_suspended || worker_active) {
-    return ClassicWorkerAction::KEEP;
-  }
-  return work_pending && can_reconcile && retry_due ? ClassicWorkerAction::WAKE : ClassicWorkerAction::RELEASE;
 }
 
 }  // namespace openquatt_mqtt_config

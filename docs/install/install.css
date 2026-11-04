@@ -543,6 +543,10 @@ esp-web-install-button {
 }
 
 @media (max-width: 960px) {
+  .install-page .docs-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .install-page .docs-main {
     padding: 32px 24px 56px;
   }

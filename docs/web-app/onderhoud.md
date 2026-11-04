@@ -1,0 +1,88 @@
+# Updates en backups
+
+Maak vóór een grotere wijziging een instellingenbackup. Gebruik voor normaal gebruik het stabiele kanaal `main`; `dev` is voor bewust testen.
+
+- [Backup maken en terugzetten](#backup-en-restore)
+- [Firmware bijwerken](#updates)
+- [Gegevens delen en privacy](privacy.md)
+
+### Zo controleer je dat het gelukt is
+
+Wacht tot de web-app na de update weer bereikbaar is. Controleer de draaiende firmwareversie en het releasekanaal in de firmware-updatefunctie en bekijk of de meetwaarden worden ververst. Lukt dat niet, begin bij [Problemen oplossen](../problemen-oplossen.md).
+
+## Systeemrecorder voor support
+
+Voor het bewaren van gegevens bij een storing zie [Diagnose en logboeken](diagnose.md#systeemrecorder-voor-support).
+
+## Backup en restore
+
+Maak een backup voordat je grotere wijzigingen doet of voordat je een factory-update uitvoert.
+
+De backup bevat de instellingen die de web-app beheert, inclusief de vier warmtepompoffsets en iedere geldige aanvoeroffset die per bron is opgeslagen. De MQTT-configuratie wordt ook meegenomen, maar het MQTT-wachtwoord nooit. Bij restore vergelijkt OpenQuatt de backup met de huidige installatie, zodat je verschillen kunt controleren voordat je ze terugzet.
+
+Externe invoerwaarden die je live aanlevert via MQTT of de API zijn geen instellingen en gaan niet mee in de backup. Dit geldt ook voor buitentemperatuur, kamertemperatuur, kamersetpoint, dauwpunt en toestemming voor verwarmen of koelen. De gekozen bronnen blijven wel bewaard, zodat na restore nieuwe invoer via dezelfde koppeling kan binnenkomen. Live API-invoerwaarden uit oudere backups worden overgeslagen en als niet-herstelde velden gemeld; ze worden niet opnieuw geldig gemaakt.
+
+De kalibratiewaarden worden op dezelfde manier als de overige instellingen hersteld, vóór de opgeslagen aanvoerbron wordt geselecteerd. Kalibreer na restore opnieuw als de controller of een temperatuursensor fysiek is vervangen; een gewone bron- of CIC-URL-wijziging verwijdert een geldige kalibratie niet.
+
+Een backup is vooral handig bij:
+
+- nieuwe release testen;
+- overstap naar een nieuw bordje;
+- factory-bin update;
+- terugzetten na experimenteren met instellingen.
+
+### Zo controleer je dat het gelukt is
+
+Controleer dat het backupbestand is gedownload en bewaar het op een herkenbare plek. Controleer na terugzetten de installatiekeuzes en actieve sensorbronnen in de web-app. Vul het MQTT-wachtwoord opnieuw in als je MQTT gebruikt. Bij afwijkingen zie [Bronnen en integraties](bronnen.md).
+
+## Updates
+
+De web-app toont update-informatie via de firmware-updatefunctie. Normaal volg je het stabiele kanaal.
+
+Na het kiezen van `dev` kun je de aangeboden dev-build ook installeren wanneer deze dezelfde basisversie heeft als de draaiende main-release (bijvoorbeeld `v0.49.1` → `v0.49.1-dev.780`). De web-app bevestigt de kanaalwissel pas wanneer het device de bedoelde dev-build en het dev-kanaal meldt.
+
+Gebruik een dev-kanaal alleen als je bewust test en weet dat de firmware nog kan veranderen. Voor releasegebruik is het stabiele kanaal de route.
+
+Draait het device op een nieuwere dev-versie dan de laatste main-release, dan biedt de OTA-modal na het kiezen van `main` een expliciete downgrade aan. Controleer de getoonde doelversie en bevestig bewust dat je teruggaat naar oudere firmware. Maak zo nodig eerst een instellingenbackup: instellingen blijven lokaal opgeslagen, maar functies en instellingen die alleen in de dev-build bestaan, zijn na de downgrade mogelijk niet meer beschikbaar.
+
+Bij de Heatpump Controller Q kun je de opstelling (`Single` of `Duo`) en netwerkverbinding kiezen. De huidige Q-firmware bevat Wi-Fi en Ethernet: een verbindingswissel verandert de netwerkvoorkeur, terwijl een wissel tussen Single en Duo andere firmware installeert. Bij oudere firmware kunnen verbindingsvarianten nog afzonderlijke updates vereisen. Controleer bij Ethernet eerst of de netwerkkabel is aangesloten en bij Duo of de tweede warmtepomp bij deze controller hoort.
+
+Als de verbinding voor de firmwaredownload niet kan worden geopend, probeert OpenQuatt dit eenmaal automatisch opnieuw. Mislukt ook die poging of wordt de installatie afgebroken, dan stopt de voortgang en kun je de setupwissel opnieuw starten.
+
+
+## Doorverwarmen na herstart of korte OTA
+
+Bij een geplande softwareherstart of korte, geslaagde OTA kan OpenQuatt een bestaande verwarmingscyclus per buitenunit overnemen. Dit geldt voor normaal verwarmen met een compatibele firmware die deze overdracht ondersteunt. Een koude start, crash, rollback, gewijzigde hardware/topologie/minimale uit-tijd, koelen of actieve defrost/oil return gebruikt het normale veilige opstartpad. De nieuwe firmware moet zijn normale imagebevestiging halen voordat zij de cyclus overneemt.
+
+Alleen een vóór de geplande herstart bevestigde lopende cyclus komt voor overname in aanmerking; ontbrekende stopgegevens gelden niet als bewijs van draaien. Tijdens het uitlezen blijven de bestaande pomp- en compressorinstellingen behouden. Binnen 45 seconden moeten actuele veiligheidsgegevens, voldoende flow en geldige toestemming voor verwarmen beschikbaar zijn. Daarnaast moet de bestaande incidentbewaking de verbinding vrijgeven; die controle duurt bij opstart minimaal 60 seconden. OpenQuatt mag tot maximaal 120 seconden vanaf de opstartfase wachten op die vrijgave, kamertemperatuur, setpoint en een geldige regeling. De deadline wordt niet verlengd. Een veiligheidsfout of expliciet ingetrokken toestemming beëindigt de overname direct. Bij mislukken volgt een stop met de normale minimale uit-tijd vanaf bevestigde stilstand.
+
+De overname vereist verse flow van een lokale of ODU-flowmeter; bij alleen CIC-flow wordt het normale veilige opstartpad gebruikt. De overname vereist zowel een draaiende compressor als uitgelezen verwarmingsopdrachten op R3999 en R1999. Een al stoppende compressor wordt niet opnieuw gestart. Na overname begint de minimale draaitijd conservatief opnieuw en blijft de bestaande stand maximaal drie minuten behouden voor mogelijk gemiste defrost-/oil-return-naloop; veiligheidsgrenzen blijven leidend. Bij Duo rekent Power House met die werkelijk vastgehouden stand en de bestaande minimale draaitijd. Tijdens het overnemen start geen stilstaande buitenunit; daarna mag de tweede unit wel bijspringen als de warmtevraag extra capaciteit vereist.
+
+OpenQuatt bepaalt de Control Mode opnieuw uit de actuele gegevens; de vorige CM wordt niet teruggezet. Voor Power House gaan alleen de laatst berekende vermogensvraag, het comfortgeheugen en het bijbehorende setpoint eenmalig mee in het bestaande overdrachtsrecord in NVS. Dit voorkomt dat een cyclus boven setpoint zijn vraag verliest doordat de regeling opnieuw met leeg geheugen begint. Herstel vereist het exact bedoelde firmware-image, verse geldige invoer, een volledig gecontroleerde lopende cyclus en een ongewijzigd setpoint. Een gewijzigd setpoint of koude start gebruikt die herinnering niet. Het record wordt vóór gebruik duurzaam gewist; er zijn geen nieuwe NVS-sleutels en geen periodieke geheugenschrijfacties. De overdracht schrijft alleen bij een geplande herstart of geslaagde OTA; de actuele begrenzingen en toestemming blijven gelden. Langer doorverwarmen bepaalt zijn fase opnieuw uit de bevestigde lopende cyclus en de actuele comfortstopgrens.
+
+Een OTA mag alleen overnemen als de transfer minder dan 45 seconden duurt. Die grens bepaalt of overname is toegestaan; zij breekt een trage upload niet af. Tijdens webuploads krijgt de hoofdloop tussendoor tijd voor Modbus-reads en veiligheidscontroles. Vlak vóór de overdracht worden die voorwaarden nogmaals gecontroleerd. Na verlies van een voorwaarde vervalt de overname voor de rest van die upload. Als het flashen de veiligheidsmetingen alsnog te lang vertraagt, vervalt de overname en volgt de normale stop. Native ESPHome-OTA en HTTP-download-OTA blokkeren tijdens de transfer de hoofdloop; dan zijn er tijdelijk geen Modbus-polls of nieuwe regelcontroles. Een lange of mislukte OTA krijgt geen overname van de lopende cyclus. De totale duur van upload plus herstart kan bij een trage verbinding alsnog de ODU-watchdog bereiken. Een upgrade vanaf firmware zonder deze overdracht gebruikt eveneens het normale veilige opstartpad.
+
+De normale Modbus-reads dienen als keepalive. In één onderzochte ODU-firmwarebackup is de communicatie-watchdog nominaal circa 120 seconden. Ook reads resetten die watchdog, waardoor deze geen begrenzing voor de opstartfase biedt; OpenQuatt bewaakt daarvoor een eigen deadline. De fysieke stoptijd en andere ODU-firmwareversies zijn hiermee niet bevestigd.
+
+## Systeem
+
+Hier vind je beheerfuncties:
+
+- Quick Start opnieuw openen;
+- opslag voor Diagnose, Beslislog en Energie;
+- firmware-updates en updatekanaal;
+- web-login en API-beveiliging;
+- de keuze voor gebruiksstatistieken;
+- backup en restore;
+- systeemstatus;
+- logboek;
+- herstarten.
+
+## Gebruiksstatistieken en privacy
+
+Zie [Gegevens delen en privacy](privacy.md) voor wat wordt gedeeld en hoe je dit aan- of uitzet.
+
+## Verder
+
+- [Overzicht van de web-app](../web-app.md)
+- [Problemen oplossen](../problemen-oplossen.md)

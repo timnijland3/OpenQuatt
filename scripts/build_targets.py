@@ -14,6 +14,37 @@ from typing import Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TARGETS_FILE = REPO_ROOT / "build_targets.yaml"
+LEGACY_EOL_RELEASE_TAG = "v0.50.0"
+LEGACY_EOL_TARGETS = (
+    {
+        "artifact_name": "openquatt-waveshare-single-wifi",
+        "display_name": "OpenQuatt Waveshare Single Wi-Fi",
+        "chip_family": "ESP32-S3",
+        "connection": "wifi",
+        "md5": "b454437984d1c0725ee1b1127ae2f22c",
+    },
+    {
+        "artifact_name": "openquatt-waveshare-duo-wifi",
+        "display_name": "OpenQuatt Waveshare Duo Wi-Fi",
+        "chip_family": "ESP32-S3",
+        "connection": "wifi",
+        "md5": "66671daa453777b3efb77b43911a30a1",
+    },
+    {
+        "artifact_name": "openquatt-heatpump-listener-single-wifi",
+        "display_name": "OpenQuatt Heatpump Listener Single Wi-Fi",
+        "chip_family": "ESP32",
+        "connection": "wifi",
+        "md5": "9ab6b82865d495c3d66befd41e4501b8",
+    },
+    {
+        "artifact_name": "openquatt-heatpump-listener-duo-wifi",
+        "display_name": "OpenQuatt Heatpump Listener Duo Wi-Fi",
+        "chip_family": "ESP32",
+        "connection": "wifi",
+        "md5": "c6d8e8746201341c0a19766046297df1",
+    },
+)
 
 
 def _parse_scalar(value: str) -> str:
@@ -182,7 +213,9 @@ def build_ota_manifest(
     }
 
 
-def prepare_release_assets(version: str, base_url: str, release_url: str) -> None:
+def prepare_release_assets(
+    version: str, base_url: str, release_url: str, include_legacy_eol_manifests: bool = False
+) -> None:
     dist_dir = REPO_ROOT / "dist"
     dist_dir.mkdir(parents=True, exist_ok=True)
 
@@ -220,6 +253,24 @@ def prepare_release_assets(version: str, base_url: str, release_url: str) -> Non
             )
             manifest_path = REPO_ROOT / manifest_name_for_artifact(target, published_name)
             manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+    if include_legacy_eol_manifests:
+        legacy_base_url = base_url.rsplit("/", 1)[0] + f"/{LEGACY_EOL_RELEASE_TAG}"
+        legacy_release_url = release_url.rsplit("/", 1)[0] + f"/{LEGACY_EOL_RELEASE_TAG}"
+        for target in LEGACY_EOL_TARGETS:
+            artifact_name = target["artifact_name"]
+            manifest = build_ota_manifest(
+                target,
+                artifact_name,
+                LEGACY_EOL_RELEASE_TAG,
+                legacy_base_url,
+                legacy_release_url,
+                f"{artifact_name}.firmware.ota.bin",
+                target["md5"],
+            )
+            (REPO_ROOT / f"{artifact_name}-ota.manifest.json").write_text(
+                json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+            )
 
 
 def prepare_pr_test_assets(
@@ -320,6 +371,8 @@ def command_release_files(args: argparse.Namespace) -> int:
     names: list[str] = []
     for target in filter_targets(load_targets(), args.status):
         names.extend(release_asset_names(target))
+    if args.include_legacy_eol_manifests and args.status in ("enabled", "all"):
+        names.extend(f"{target['artifact_name']}-ota.manifest.json" for target in LEGACY_EOL_TARGETS)
     for name in sorted(set(names)):
         print(name)
     return 0
@@ -332,7 +385,12 @@ def command_github_matrix(args: argparse.Namespace) -> int:
 
 
 def command_prepare_release_assets(args: argparse.Namespace) -> int:
-    prepare_release_assets(args.version, args.base_url, args.release_url)
+    prepare_release_assets(
+        args.version,
+        args.base_url,
+        args.release_url,
+        include_legacy_eol_manifests=args.include_legacy_eol_manifests,
+    )
     return 0
 
 
@@ -370,6 +428,7 @@ def create_parser() -> argparse.ArgumentParser:
 
     release_files_parser = subparsers.add_parser("release-files", help="Print expected release asset filenames.")
     add_status_argument(release_files_parser)
+    release_files_parser.add_argument("--include-legacy-eol-manifests", action="store_true")
     release_files_parser.set_defaults(func=command_release_files)
 
     github_matrix_parser = subparsers.add_parser("github-matrix", help="Print a GitHub Actions matrix JSON.")
@@ -380,6 +439,7 @@ def create_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("version")
     prepare_parser.add_argument("base_url")
     prepare_parser.add_argument("release_url")
+    prepare_parser.add_argument("--include-legacy-eol-manifests", action="store_true")
     prepare_parser.set_defaults(func=command_prepare_release_assets)
 
     pr_prepare_parser = subparsers.add_parser("prepare-pr-test-assets", help="Prepare PR test OTA assets.")

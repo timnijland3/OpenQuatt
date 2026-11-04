@@ -42,6 +42,46 @@ Voor flowdiagnose zijn er wel twee compile-time constanten die je soms in discus
 
 Die bepalen wanneer OpenQuatt een flowafwijking serieus genoeg vindt. Voor normale gebruikers zijn dit zelden de eerste knoppen om aan te raken.
 
+## Terugmelding aan een OpenTherm-thermostaat
+
+OpenQuatt presenteert zich aan de thermostaat als een virtuele warmtebron. Het
+vlammetje betekent **warmtebron actief**: een warmtepomp verwarmt, een
+OpenTherm-ketel meldt een echte vlam (ook bij tapwater), of de R1-keteluitgang is
+actief. Alleen watercirculatie, preflow/postflow en koeling geven geen
+warmtepompvlammetje. Warmtepompactiviteit vereist een online buitenunit met een
+geldige bedrijfsmodus en compressorfrequentie, maximaal
+`oq_hp_water_temp_stale_s` oud (standaard 60 seconden).
+
+De OpenTherm-velden voor capaciteit en modulatie beschrijven altijd het
+**warmtepompdeel**, zowel met een R1- als een OT-ketelaansluiting:
+
+- Maximale capaciteit: de som van de modelreferenties van de gedetecteerde
+  buitenunits bij **A7/W35** (7 °C buiten, 35 °C aanvoer), telkens het hoogste
+  beschikbare modelpunt. De OT-overdracht rondt
+  deze waarde af op hele kW. Dit is een vaste referentie; actuele begrenzingen
+  en weersomstandigheden wijzigen deze capaciteit niet.
+- Minimale modulatie: het kleinste modelvermogen van één draaiende buitenunit
+  bij A7/W35 als percentage van die gezamenlijke referentiecapaciteit.
+- Actuele modulatie: het geschatte verwarmingsvermogen bij de gemeten
+  compressorfrequenties, actuele buiten- en systeemaanvoertemperatuur, gedeeld
+  door dezelfde referentiecapaciteit en begrensd op 0–100%. Dit gebruikt het
+  vermogensmodel, niet een lineair percentage van het compressorlevel.
+  Bij ontdooien geldt de bestaande `oq_defrost_power_factor`; het vlammetje
+  blijft de actieve verwarmingscyclus aangeven.
+
+In CM3 geeft het percentage uitsluitend het warmtepompdeel weer. In CM4 staat
+het bij bevestigde stilstand van de warmtepompen op 0%, terwijl het vlammetje
+ketelbedrijf kan tonen. De echte OT-ketelmodulatie en -capaciteit blijven als
+`OTB - Relative Modulation` en `OTB - Maximum Boiler Capacity` beschikbaar in
+OpenQuatt/Home Assistant.
+
+Ontbrekende detectie, verouderde terugmelding of een onbruikbare
+modelvoorspelling levert `DATA_INVALID` op voor de betreffende numerieke
+waarde. Een bekende referentiecapaciteit blijft bij communicatieverlies
+beschikbaar; de actuele modulatie wordt ongeldig en de warmtepompactiviteitsbits
+vallen weg. Ontbrekende druk- en tapwatermetingen blijven ongeldig. De
+thermostaat bepaalt zelf welke gegevens en pictogrammen hij toont.
+
 ## Welke runtime-instellingen zijn het belangrijkst?
 
 ### 1. Basisbediening en begrenzing
@@ -89,6 +129,8 @@ Voor `Water Temperature Control` zijn vooral belangrijk:
 - `Curve Tsupply @ -20/-10/0/5/10/15°C`
 - `Curve Fallback Tsupply (No Outside Temp)`
 - `Heating Curve PID Kp/Ki/Kd`
+
+De stooklijneditor toont de zes opgeslagen punten in één grafiek. De schuiven maken een rechte basislijn; slepen of invoeren verfijnt losse punten in diezelfde grafiek. Met **Stooklijn opslaan** verstuurt de webinterface de uiteindelijke zes punten in één verzoek. De controller valideert ze samen en werkt ze in één hoofdloopstap bij. De zes punten blijven afzonderlijk opgeslagen voor herstart; een stroomuitval tijdens het opslaan kan daardoor een gedeeltelijk bijgewerkte curve achterlaten.
 
 Voor beide strategieën blijft belangrijk:
 
@@ -146,8 +188,13 @@ Belangrijke instellingen:
 - `Manual iPWM`
 - `Flow PI Kp`
 - `Flow PI Ki`
+- `Flow Delta T Target`, `Flow Delta T Minimum Flow`, `Flow Delta T Maximum Flow`, `Flow Delta T Step Interval`, `Flow Delta T Max Step`, `Flow Delta T Deadband` (alleen bij `Flow Control Mode` = `Delta T`)
 
 `Flow Setpoint` geldt voor verwarmen en normaal automatisch bedrijf. `Cooling Flow Setpoint` geldt alleen tijdens koelen, zodat koeling een eigen hydraulisch werkpunt kan hebben zonder de verwarmingsflow te veranderen.
+
+De standaard minimumflow voor compressorbedrijf is 400 L/h; precies 400 L/h voldoet aan de flowgrens. Een bestaand opgeslagen flowsetpoint onder 400 L/h wordt bij een update niet automatisch verhoogd en kan daardoor warmteproductie blokkeren. Controleer beide flowsetpoints en de werkelijk gemeten flow.
+
+**ΔT-regeling.** Met `Flow Control Mode` op `Delta T` beweegt de verwarmingsflow mee met de warmtevraag. OpenQuatt stelt het flowsetpoint rustig bij, standaard eens per 5 minuten (`Flow Delta T Step Interval`, 2–30 minuten) met hooguit 50 L/h per stap (`Flow Delta T Max Step`), en negeert afwijkingen binnen `Flow Delta T Deadband` (standaard 0,3 °C), zodat het temperatuurverschil over elke draaiende warmtepomp naar `Flow Delta T Target` gaat (standaard 3 °C), binnen `Flow Delta T Minimum Flow` en `Flow Delta T Maximum Flow`. Bij een Duo telt het gemiddelde verschil per draaiende warmtepomp. Het geldt alleen tijdens verwarmen met de warmtepomp (CM2); koelen houdt `Cooling Flow Setpoint`. `Flow Setpoint` blijft het start- en terugvaldebiet: daar begint de pomp, en daarheen gaat hij terug bij een flowstoring of ontbrekende temperaturen. Bij ontdooien houdt de regeling de flow die hij had, maar nooit minder dan `Flow Setpoint`: minder water koelt de warmtewisselaar verder af en vertraagt het ontdooien. Dat blijft zo tot 10 minuten na het ontdooien; daarna begint de regeling opnieuw vanaf die flow. Na elke stap telt de eerste minuut niet mee, omdat de temperaturen dan nog naar de nieuwe flow toe bewegen. Haalt de pomp op volle kracht het gevraagde debiet niet, dan vraagt de regeling niet meer dan de pomp levert; loopt de flow alleen achter terwijl de pomp nog ruimte heeft, dan wacht de regeling met verder verhogen. Bij `Manual PWM`, vorstbeveiliging, stilstand of een servicetaak stopt de regeling; daarna begint hij opnieuw met stabiliseren. Tijdens een olieretourcyclus blijft de flow staan waar hij staat en worden de metingen van die cyclus en de 2 minuten erna niet gebruikt. Het maximum ligt nooit onder `Flow Setpoint` en nooit onder het standaarddebiet van de Quatt-versie die bij de installatie is gekozen (`Quatt Hybrid version`: 800 L/h, V2 1000 L/h); het minimum ligt altijd minstens 50 L/h boven de minimumflow voor compressorbedrijf. Instellingen die elkaar tegenspreken worden binnen die grenzen gecorrigeerd. Grijpt de watertemperatuurbeveiliging in, dan gaat de flow eerst naar het maximum; knijpt de beveiliging na vijf minuten op maximumflow nog steeds vermogen af, dan gaat `Flow Delta T Warning` aan. `Flow Delta T Status` laat zien wat de regeling doet en waarom, met het verschil per warmtepomp. De ketelvermogenstest in CM100 vraagt nog steeds `Flow Setpoint`.
 
 CM98 gebruikt een vaste pompregeling van iPWM 800. AUTO start met de laatst bekende goede iPWM voor verwarmen of koelen en valt bij een ongeldige waarde terug op iPWM 440.
 
@@ -169,6 +216,7 @@ Belangrijke keuzes:
 - `Cooling Dew Point Source`
 - `External Heat Demand Source`
 - `Heating Supply Target Source`
+- `Heating Curve Modifier Source`
 
 En indirect alles wat bepaalt waar buiten-, kamer- en waterwaarden vandaan komen.
 
@@ -186,6 +234,7 @@ De betekenis van dezelfde bron verschilt per verwarmingsstrategie:
 | Warmtetoestemming (`Heating Enable Source`) | Meestal `Niet gebruiken` | Meestal externe thermostaat/zonevraag |
 | Externe warmtevraag | Optioneel (`HA`/`API`) | Niet van toepassing |
 | Extern aanvoertarget | Niet van toepassing | Optioneel (`OT`/`HA`/`API`/`MQTT`) |
+| Stooklijn-offset | Niet van toepassing | Optioneel (`HA`/`API`/`MQTT`, −5…+5 °C aanvoercorrectie) |
 
 Tijdens Quick Start vervangt een strategieswitch de warmtetoestemming automatisch: `Heating Enable Source = Niet gebruiken` bij `Power House` (OpenQuatt bepaalt zelf de vraag), of de eerder gekozen, gekoppelde en actieve thermostaatbron bij `Water Temperature Control` (`OT thermostat` op Q-edition, anders `CIC`/`HA input`). Een uitgeschakelde of niet-geconfigureerde bron wordt niet automatisch als harde gate gekozen. Buiten Quick Start overschrijft de web-app een bestaande keuze niet stil; daar verschijnt alleen een advies met een knop om het over te nemen. Afwijkende combinaties blijven bewust mogelijk (bijv. Power House met zone-gate, stooklijn volledig weersafhankelijk).
 
@@ -200,6 +249,8 @@ Voor `Cooling Dew Point Source` is `Auto` meestal ook de veiligste keuze. OpenQu
 Voor `External Heat Demand Source` is `Disabled` de standaard, en voor de meeste installaties ook de juiste keuze. Kies je `HA input` of `API input`, dan neemt een externe voorspelling de vermogensschatting van het huismodel in `Power House` over. De rest van de regeling blijft ongewijzigd, en bij een wegvallende of verouderde bron valt `Power House` terug op het eigen huismodel. Zie [Power House](power-house.md).
 
 Voor `Heating Supply Target Source` is `Heating curve` de standaard, en voor de meeste installaties ook de juiste keuze. Kies je `OT thermostat`, `HA input`, `API input` of `MQTT`, dan neemt een externe regelaar het aanvoerdoel van de stooklijn over, inclusief kamertrim. Limieten, PID en Duo-dispatch blijven van OpenQuatt, en bij een wegvallende of verouderde bron valt de regeling terug op de eigen stooklijn. Zie [Water Temperature Control](water-temperature-control.md#extern-aanvoertarget-optioneel).
+
+Voor alle bestaande live Home Assistant-bronnen (buiten-, water-, kamer- en dauwpunttemperatuur, externe warmtevraag en extern aanvoertarget) bewaakt OpenQuatt één centrale heartbeat: `sensor.openquatt_ha_ingress_heartbeat` uit het `dynamic-sources`-pakket, waarvan de state zelf ongeveer elke minuut verandert. Een constante waarde blijft daardoor bruikbaar zolang die heartbeat binnenkomt; blijft hij te lang uit, dan wordt de waarde ongeldig (per bron 10–30 minuten, zie de betreffende strategiepagina's). Zolang deze firmware na een (her)start nog nooit een heartbeat heeft ontvangen — bijvoorbeeld met een ouder pakket of eigen proxy-entiteiten zonder heartbeat — geldt voor deze bestaande bronnen de oude geldigheidscontrole, zodat een update bestaande HA-ingress nooit plotseling afwijst. De nieuwe `Heating Curve Modifier Source` is hiervan uitgezonderd en vereist altijd een verse heartbeat. Kamer-setpoint, `Heating Enable` en `Cooling Enable` zijn stateful en verlopen nooit op een constante waarde. Voor diagnose zijn er `HA Ingress Age` (seconden sinds de laatste heartbeat) en `HA Ingress Fresh`. Zolang deze boot nog nooit een heartbeat heeft gezien, blijven beide diagnostics `unknown`: dat betekent legacy-modus voor de bestaande bronnen, niet automatisch een verbroken HA-verbinding.
 
 De temperatuurkalibratie neemt ook de actieve aanvoertemperatuurbron mee. OpenQuatt bewaart daarvoor vier afzonderlijke offsets: voor de lokale PT1000, lokale DS18B20, CIC-feed en Home Assistant-invoer. Bij een bronwissel activeert OpenQuatt automatisch de eerder opgeslagen correctie voor die bron. De CIC-correctie blijft geldig na een gewijzigde feed-URL; na een andere Home Assistant-entiteit blijft die correctie uitgeschakeld totdat je de HA-invoer opnieuw kalibreert. Een tijdelijke automatische fallback naar de water-uitmeting van de warmtepomp gebruikt geen aanvoercorrectie en wist geen opgeslagen kalibratie.
 
@@ -216,10 +267,30 @@ Belangrijke instellingen:
 - `Aux Relay Heating Start Temp`
 - `Aux Relay Cooling Start Temp`
 - `Aux Relay Temp Hysteresis`
+- `Aux Relay Run-on`
+- `Aux Relay Run-on Time`
 
 Met `Aux Relay Function` volgt R2 de effectieve warmte- of koelvraag van OpenQuatt, bijvoorbeeld om een fancoil, pomp of klep mee te schakelen. Met de schakelaar `Aux Relay Wait For Supply Temp` wacht R2 daarnaast tot het aanvoerwater warm of koud genoeg is; de hysterese voorkomt snel aan/uit schakelen rond de grens. Kies `Externe bediening` om R2 zelf te schakelen via bijvoorbeeld Home Assistant of de REST-API; in de automatische functies worden externe schakelcommando's genegeerd. Zonder vraag, met de functie op `Niet gebruiken`, of zonder geldige aanvoertemperatuur (als de schakelaar aan staat) blijft R2 uit. De actuele toestand en reden zie je onder **Instellingen → Installatie → Hulprelais (R2)**.
 
+Met `Aux Relay Run-on` (nadraaien) blijft R2 na afloop van de vraag nog even aan, bijvoorbeeld zodat een fancoil of luchtverwarmer de restwarmte benut. Bij `Vaste tijd` blijft R2 `Aux Relay Run-on Time` aan (de regeling loopt per 5 seconden). Bij `Tot aanvoertemperatuur` schakelt R2 eerder uit op dezelfde grens waarop `Aux Relay Wait For Supply Temp` R2 uitschakelt: na warmtevraag zodra het aanvoerwater tot `Aux Relay Heating Start Temp` min `Aux Relay Temp Hysteresis` is afgekoeld, na koelvraag zodra het tot `Aux Relay Cooling Start Temp` plus de hysterese is opgewarmd. `Aux Relay Run-on Time` is dan de maximale nadraaitijd. De aanvoertemperatuur wordt bij de warmtepomp gemeten: circuleert er na de vraag geen water meer, dan volgt die meting de fancoil slechts beperkt. Nadraaien start alleen als R2 door de vraag aan stond. Komt dezelfde vraag tijdens het nadraaien terug, dan blijft R2 aan. Het nadraaien stopt direct bij een andere functie, bij `Tot aanvoertemperatuur` ook zonder geldige aanvoertemperatuur, en loopt na een herstart niet door. Met `Niet gebruiken` gaat R2 uit; met `Externe bediening` behoudt R2 zijn huidige stand tot je hem zelf schakelt. Zet je een instellingenbackup terug van vóór deze functie, dan staat nadraaien daarna op `Niet gebruiken`, net als in de firmware waarmee die backup is gemaakt.
+
 ## Welke meetwaarden wil je meestal zien?
+
+### Geleidelijk opwarmen na nachtverlaging
+
+Optioneel en standaard uit, alleen voor Power House, voor thermostaten en bronnen met een
+geldige kamertemperatuur en setpoint. De thermostaat blijft het einddoel bepalen.
+Instellingen en actuele voortgang staan in **Instellingen → Verwarmen** en zijn ook
+beschikbaar via Home Assistant/API:
+
+- `Controlled warmup enabled`;
+- `Controlled warmup trigger`, `Controlled warmup step`, `Controlled warmup step time`;
+- `Controlled warmup active`, `Controlled warmup intermediate target`;
+- `Controlled warmup boost`, `Controlled warmup effective target`.
+
+Zie [Geleidelijk opwarmen](web-app/instellingen.md#geleidelijk-opwarmen-na-nachtverlaging)
+voor de werking, standaardwaarden en beperkingen. De maximale boost is
+vast 0,5 °C en de maximale duur 8 uur; de stooklijn gebruikt deze functie niet.
 
 ### Voor comfort en strategie
 
@@ -254,6 +325,10 @@ Alleen als het probleem daar lijkt te zitten:
 - opgenomen vermogen;
 - power cap;
 - gedrag rond stille uren of begrenzing.
+
+### Voor het compressorprofiel
+
+`Compressor Level Profile` toont `V2 F0-F10` zodra een V2 old model is herkend en beide frequentietabellen geldig zijn ingelezen. Dit model heeft fysieke compressorstanden F0 tot en met F10. Een V2 new model kan met geldige uitbreidingstabellen `V2 F0-F20` tonen, of een afzonderlijk verwarmings- of koelprofiel. `Unknown / F0-F10 safe` betekent dat nog geen bevestigd V2-profiel met geldige tabellen beschikbaar is; ook V1 en V1.5 gebruiken dit bestaande label. Het profiel is diagnostiek; de standbegrenzing en frequentiemapping gebruiken de ingelezen tabellen.
 
 ### Voor compressorpendelen
 
@@ -306,7 +381,7 @@ Als je te veel tegelijk wijzigt, wordt het juist moeilijker om te begrijpen wat 
 ## Verder lezen
 
 - Web-app gebruiken: [Web-app gebruiken](web-app.md)
-- [Verwarmen en koelen uitgelegd](verwarmen-en-koelen.md)
+- [Verwarmen en comfort](dagelijks/verwarmen.md)
 - [Power House](power-house.md)
 - [Water Temperature Control](water-temperature-control.md)
 - [Regelgedrag van OpenQuatt](regelgedrag-van-openquatt.md)

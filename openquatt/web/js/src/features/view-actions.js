@@ -10,6 +10,7 @@ import { setTrendWindowHours } from "../core/trend-window.js";
 import { setEnergyHistoryPeriodToNow, setEnergyHistoryView, shiftEnergyHistoryPeriod } from "../views/energy.js";
 import { refreshTrendHistoryData } from "./storage-history.js";
 import { refreshOduRuntimeFrequencyStatuses } from "./odu-runtime-frequency.js";
+import { refreshOduDefrostStatuses } from "./odu-defrost.js";
 import { refreshOduSettingsStatuses } from "./odu-settings.js";
 
 function openServiceSettings() {
@@ -72,6 +73,22 @@ const viewActionHandlers = {
       }
     });
   },
+  "toggle-trend-series": (button) => {
+    const cardId = button.dataset.trendCard;
+    const seriesId = button.dataset.trendSeries;
+    if (!cardId || !seriesId) {
+      return;
+    }
+    const key = `${cardId}:${seriesId}`;
+    const restoreFocus = typeof document !== "undefined" && document.activeElement === button;
+    state.trendHiddenSeries[key] = !state.trendHiddenSeries[key];
+    render();
+    if (restoreFocus) {
+      const replacement = [...(state.root?.querySelectorAll('[data-oq-action="toggle-trend-series"]') || [])]
+        .find((candidate) => candidate.dataset.trendCard === cardId && candidate.dataset.trendSeries === seriesId);
+      replacement?.focus({ preventScroll: true });
+    }
+  },
   "select-energy-history-view": (button) => {
     if (!button.disabled) {
       setEnergyHistoryView(button.dataset.energyHistoryView || "day");
@@ -129,8 +146,8 @@ const viewActionHandlers = {
       signal?.scrollIntoView({ block: "nearest", behavior: "auto" });
     });
   },
-  "toggle-overview-theme": () => {
-    setOverviewTheme(state.overviewTheme === "light" ? "dark" : "light");
+  "select-overview-theme": (button) => {
+    setOverviewTheme(button.dataset.overviewTheme);
     render();
   },
   "select-hp-visual": (button) => {
@@ -151,6 +168,9 @@ const viewActionHandlers = {
   "toggle-integration-diagnostics": (button, event) => {
     toggleDetails(event, button, ".oq-settings-integration-diagnostics", "integrationDiagnosticsOpen");
   },
+  "toggle-cic-address": (button, event) => {
+    toggleDetails(event, button, ".oq-settings-cic-address", "cicAddressOpen");
+  },
   "open-odu-bottom-plate-settings": () => {
     state.controlNotice = "";
     state.systemModal = "odu-bottom-plate-settings";
@@ -163,11 +183,27 @@ const viewActionHandlers = {
     render();
     void refreshOduRuntimeFrequencyStatuses({ force: true });
   },
+  "open-odu-defrost": () => {
+    state.oduDefrostError = "";
+    state.oduDefrostStatusFailed = true;
+    state.systemModal = "odu-defrost";
+    render();
+    void refreshOduDefrostStatuses({ force: true });
+  },
+  "toggle-odu-defrost-details": (button, event) => {
+    event.preventDefault();
+    const hp = Number(button.dataset.hp) === 2 ? 2 : 1;
+    state.oduDefrostDetailsOpen = { ...state.oduDefrostDetailsOpen, [hp]: !button.closest("details").open };
+    render();
+  },
   "toggle-odu-frequency-technical-details": (button, event) => {
     toggleDetails(event, button, ".oq-settings-odu-technical", "oduRuntimeFrequencyTechnicalDetailsOpen");
   },
   "toggle-usage-telemetry-details": (button, event) => {
-    toggleDetails(event, button, ".oq-usage-disclosure--collapsible", "usageTelemetryDetailsOpen");
+    toggleDetails(event, button, ".oq-usage-consent-details", "usageTelemetryDetailsOpen");
+  },
+  "toggle-performance-telemetry-details": (button, event) => {
+    toggleDetails(event, button, ".oq-usage-consent-details", "performanceTelemetryDetailsOpen");
   },
   "toggle-storage-technical-details": (button, event) => {
     toggleDetails(event, button, ".oq-settings-storage-technical", "settingsStorageDetailsOpen");
