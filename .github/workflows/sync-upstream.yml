@@ -1,0 +1,203 @@
+name: Sync Upstream
+
+# Fork-only workflow: houdt `main` van deze fork automatisch bij met
+# OpenQuatt/OpenQuatt zolang dat de fork-features niet blokkeert.
+#
+# Werking:
+#   1. Merge upstream/<branch> in een tijdelijke branch (sync/upstream-auto).
+#   2. Bij een merge-conflict stopt de run en wordt een issue aangemaakt/bijgewerkt.
+#   3. Guard: de update-check manifest-URL's in het Q-profiel moeten naar deze
+#      fork blijven wijzen (nooit terug naar upstream).
+#   4. De volledige CI (ci-build.yml, incl. ESPHome compile) draait op de
+#      gemergede branch. Alleen bij groen wordt `main` fast-forward bijgewerkt.
+#   5. Bij falen blijft `main` ongemoeid en wordt het issue bijgewerkt;
+#      bij succes wordt dat issue weer gesloten.
+#
+# Vereist (eenmalig, in de fork):
+#   - Actions ingeschakeld op de fork (Actions-tab) en workflow-permissions op
+#     "Read and write".
+#   - Secret SYNC_TOKEN: een PAT met `repo` + `workflow` scope. Zonder `workflow`
+#     scope kan GitHub geen merge pushen die .github/workflows wijzigt (upstream
+#     doet dat regelmatig). Zonder secret valt de workflow terug op GITHUB_TOKEN;
+#     dat werkt alleen voor merges die geen workflow-bestanden raken.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_branch:
+        description: "Upstream branch om te mergen"
+        required: false
+        default: main
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: OpenQuatt/OpenQuatt
+  UPSTREAM_BRANCH: ${{ inputs.upstream_branch || 'main' }}
+  SYNC_BRANCH: sync/upstream-auto
+  # Bestand met de update-check manifest-URL's die naar de fork moeten blijven wijzen.
+  FORK_URL_FILE: openquatt/profiles/heatpump_controller_q.yaml
+  GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+
+jobs:
+  sync:
+    # Nooit draaien in de upstream-repository zelf.
+    if: github.repository != 'OpenQuatt/OpenQuatt'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Merge upstream in tijdelijke branch
+        id: merge
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --no-tags upstream "${UPSTREAM_BRANCH}"
+
+          if git merge-base --is-ancestor "upstream/${UPSTREAM_BRANCH}" HEAD; then
+            echo "Fork bevat upstream/${UPSTREAM_BRANCH} al; niets te doen."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          fork_pattern="github.com/${GITHUB_REPOSITORY}/releases"
+          upstream_pattern="github.com/${UPSTREAM_REPO}/releases"
+          fork_urls_before="$(grep -c -- "${fork_pattern}" "${FORK_URL_FILE}" || true)"
+
+          git checkout -B "${SYNC_BRANCH}"
+          if ! git merge --no-edit -m "Merge upstream/${UPSTREAM_BRANCH} in fork (automatische sync)" "upstream/${UPSTREAM_BRANCH}"; then
+            {
+              echo "De merge van upstream/${UPSTREAM_BRANCH} geeft conflicten met de fork. Los dit handmatig op."
+              echo
+              echo "Conflicterende bestanden:"
+              git diff --name-only --diff-filter=U | sed 's/^/- /'
+            } > "${RUNNER_TEMP}/sync-reason.md"
+            git merge --abort
+            echo "reason_file=${RUNNER_TEMP}/sync-reason.md" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          # Guard: update-check URL's moeten naar de fork blijven wijzen.
+          if [[ "${fork_urls_before}" -gt 0 ]]; then
+            fork_urls_after="$(grep -c -- "${fork_pattern}" "${FORK_URL_FILE}" || true)"
+            upstream_urls_after="$(grep -c -- "${upstream_pattern}" "${FORK_URL_FILE}" || true)"
+            if [[ "${fork_urls_after}" -ne "${fork_urls_before}" || "${upstream_urls_after}" -ne 0 ]]; then
+              {
+                echo "De merge zou de update-check manifest-URL's in \`${FORK_URL_FILE}\` weer naar upstream laten wijzen."
+                echo "Fork-URL's voor/na: ${fork_urls_before}/${fork_urls_after}; upstream-URL's na: ${upstream_urls_after}."
+                echo "Controleer de URL's handmatig."
+              } > "${RUNNER_TEMP}/sync-reason.md"
+              echo "reason_file=${RUNNER_TEMP}/sync-reason.md" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+          else
+            echo "::warning::${FORK_URL_FILE} bevat nog geen fork-URL's; URL-guard overgeslagen."
+          fi
+
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Draai volledige CI op de gemergede branch
+        id: ci
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          MERGED_SHA: ${{ steps.merge.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git push --force origin "HEAD:refs/heads/${SYNC_BRANCH}"
+
+          gh workflow run ci-build.yml --ref "${SYNC_BRANCH}"
+
+          run_id=""
+          for _ in $(seq 1 30); do
+            run_id="$(gh run list --workflow ci-build.yml --branch "${SYNC_BRANCH}" --event workflow_dispatch \
+              --json databaseId,headSha \
+              --jq "[.[] | select(.headSha == \"${MERGED_SHA}\")][0].databaseId // empty")"
+            [[ -n "${run_id}" ]] && break
+            sleep 10
+          done
+          if [[ -z "${run_id}" ]]; then
+            echo "CI-run voor ${MERGED_SHA} is niet gestart." > "${RUNNER_TEMP}/sync-reason.md"
+            echo "reason_file=${RUNNER_TEMP}/sync-reason.md" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+          echo "CI-run: ${run_url}"
+          if ! gh run watch "${run_id}" --exit-status --interval 30 --compact; then
+            {
+              echo "De CI op de gemergede branch \`${SYNC_BRANCH}\` is mislukt: ${run_url}"
+              echo "\`main\` is niet aangepast. Los de oorzaak op in een eigen PR of merge upstream handmatig."
+            } > "${RUNNER_TEMP}/sync-reason.md"
+            echo "reason_file=${RUNNER_TEMP}/sync-reason.md" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Werk main fast-forward bij
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor origin/main HEAD; then
+            echo "main is tijdens de sync veranderd; de volgende run probeert opnieuw." >&2
+            exit 1
+          fi
+          git push origin HEAD:refs/heads/main
+          git push origin --delete "${SYNC_BRANCH}" || true
+
+      - name: Sluit open sync-issue
+        if: success() && steps.merge.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          for number in $(gh issue list --state open --search "Upstream-sync geblokkeerd in:title" --json number,title \
+            --jq '.[] | select(.title == "Upstream-sync geblokkeerd") | .number'); do
+            gh issue close "${number}" --comment "Upstream is weer succesvol gesynchroniseerd (${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})."
+          done
+
+      - name: Meld geblokkeerde sync
+        if: failure()
+        env:
+          MERGE_REASON: ${{ steps.merge.outputs.reason_file }}
+          CI_REASON: ${{ steps.ci.outputs.reason_file }}
+        run: |
+          set -euo pipefail
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          body_file="${RUNNER_TEMP}/sync-issue.md"
+          {
+            echo "De automatische sync met \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\` is geblokkeerd."
+            echo
+            reason="${CI_REASON:-${MERGE_REASON:-}}"
+            if [[ -n "${reason}" && -f "${reason}" ]]; then
+              cat "${reason}"
+            else
+              echo "Oorzaak onbekend (bijvoorbeeld een mislukte push, ontbrekende \`SYNC_TOKEN\` met workflow-scope of een verschoven \`main\`). Zie de run."
+            fi
+            echo
+            echo "Run: ${run_url}"
+          } > "${body_file}"
+
+          number="$(gh issue list --state open --search "Upstream-sync geblokkeerd in:title" --json number,title \
+            --jq '[.[] | select(.title == "Upstream-sync geblokkeerd")][0].number // empty')"
+          if [[ -n "${number}" ]]; then
+            gh issue comment "${number}" --body-file "${body_file}"
+          else
+            gh issue create --title "Upstream-sync geblokkeerd" --body-file "${body_file}"
+          fi
