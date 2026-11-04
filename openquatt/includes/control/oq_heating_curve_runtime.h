@@ -434,9 +434,8 @@ class Runtime {
     const int share_load_start_level = static_cast<int>(std::lround(id(oq_duo_share_load_start_level).state));
     // Share Load levels are expressed on the legacy 1..10 scale (setting range 2..9), not on the extended range
     // behind level_cap, so the level ratios used for its thresholds stay independent of the ODU level table size.
-    const auto duo_thresholds = oq_curve::duo_enable_thresholds(dispatch_mode, owner_max,
-                                                                oq_odu::LEGACY_PHYSICAL_LEVEL_MAX, heat_phase,
-                                                                share_load_start_level);
+    const auto duo_thresholds = oq_curve::duo_enable_thresholds(
+        dispatch_mode, owner_max, oq_odu::LEGACY_PHYSICAL_LEVEL_MAX, heat_phase, share_load_start_level);
     float duo_capacity_w = std::isfinite(owner_capacity_w) ? owner_capacity_w : 0.0f;
     float duo_floor_w = NAN;
     const int hp1_pair_max = model.coupled ? frequency.automatic_level_limit(true, 2) : hp1_max;
@@ -647,11 +646,15 @@ class Runtime {
         probe_step(hp1_level + 1, hp2_level);
         probe_step(hp1_level, hp2_level + 1);
       } else if (hp1_level > 0) {
-        if (hp1_level < duo_thresholds.single_search_max_level) probe_step(hp1_level + 1, 0);
-        else probe_step(hp1_level, 1);
+        if (hp1_level < duo_thresholds.single_search_max_level)
+          probe_step(hp1_level + 1, 0);
+        else
+          probe_step(hp1_level, 1);
       } else if (hp2_level > 0) {
-        if (hp2_level < duo_thresholds.single_search_max_level) probe_step(0, hp2_level + 1);
-        else probe_step(1, hp2_level);
+        if (hp2_level < duo_thresholds.single_search_max_level)
+          probe_step(0, hp2_level + 1);
+        else
+          probe_step(1, hp2_level);
       }
     }
     id(oq_curve_next_level_power_w) = next_level_power_w;

@@ -31,7 +31,9 @@ export const WEB_BUNDLE_BUDGETS = [
     // Daily recovery reasons and conditional gap-budget copy in both locales:
     // +2,378 B raw / +702 B gzip versus dev 5ae3951f (Node 24.14.1).
     // Preserve the existing 411 B raw headroom and unchanged relative gzip limits.
-    raw: 1_396_675,
+    // Duo dispatch mode (share-load) setting, status and copy in both locales:
+    // +4,750 B raw versus a3266a68 (1,396,267 B -> 1,401,017 B); keeps ~380 B raw headroom.
+    raw: 1_401_400,
     gzipBaselineCeiling: 362_000,
   },
   // Includes passive-learning cards and the curve editor: ~207.9 kB raw.

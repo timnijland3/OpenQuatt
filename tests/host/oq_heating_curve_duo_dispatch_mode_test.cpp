@@ -8,9 +8,9 @@ bool approx(float actual, float expected) { return std::fabs(actual - expected) 
 }  // namespace
 
 int main() {
-  using oq_curve::DuoDispatchMode;
   using oq_curve::duo_dispatch_mode;
   using oq_curve::duo_enable_thresholds;
+  using oq_curve::DuoDispatchMode;
 
   // Mode selection: unknown/empty option (e.g. entity not yet restored) falls
   // back to the historical Sequential behaviour, never to Share Load.
@@ -80,7 +80,7 @@ int main() {
     const auto floored = duo_enable_thresholds(DuoDispatchMode::SHARE_LOAD, 10, level_cap, true, 1);
     assert(floored.single_search_max_level == 2);
     assert(floored.enable_min_u == 0.20f);
-    assert(floored.disable_max_u == 0.05f);  // clamped up from 0.0f.
+    assert(floored.disable_max_u == 0.05f);           // clamped up from 0.0f.
     assert(approx(floored.enable_margin_w, 140.0f));  // 700 * (2/10)
     assert(approx(floored.disable_margin_w, 50.0f));  // 250 * (2/10)
 

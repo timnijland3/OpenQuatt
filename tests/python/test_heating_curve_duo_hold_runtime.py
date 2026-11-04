@@ -54,6 +54,8 @@ struct Harness {
   } tuning;
   // RESET_METHOD
   bool tick(uint32_t now_ms) {
+    const auto dispatch_mode=oq_curve::DuoDispatchMode::SEQUENTIAL;
+    const auto duo_thresholds=oq_curve::duo_enable_thresholds(dispatch_mode, 10, 10, heat_phase, 2);
     // ELIGIBILITY_BLOCK
     const int single_owner=1, previous_hp1=8, previous_hp2=8;
     const float owner_capacity_w=10000, duo_floor_w=3000;

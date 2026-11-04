@@ -86,6 +86,12 @@ uint32_t oq_curve_request_last_loop_ms=0, oq_ph_request_last_loop_ms=555;
 uint32_t oq_duo_request_hold_until_ms=0;
 int oq_curve_request_total_level=0, oq_curve_request_owner_hp=0;
 int oq_curve_dispatch_hp1_level=0, oq_curve_dispatch_hp2_level=0, oq_curve_capacity_mode_code=0;
+float oq_curve_next_level_power_w=NAN;
+struct Select {
+  bool has_state() const { return true; }
+  std::string current_option() const { return "1 Running / 1 Standby"; }
+} oq_duo_dispatch_mode;
+Sensor oq_duo_share_load_start_level{2};
 Sensor oq_supply_target_temp{40}, oq_system_supply_temp{39}, outside_temp_selected{5};
 Sensor oq_dual_hp_enable_hold_min{1}, oq_dual_hp_disable_hold_min{1};
 int physical[2]={0,0}, starts[2]={0,0};
