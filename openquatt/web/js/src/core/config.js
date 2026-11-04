@@ -175,8 +175,6 @@
     ["heatingEnableSource", DOMAIN_SELECT, "Heating Enable Source"],
     ["coolingEnableSource", DOMAIN_SELECT, "Cooling Enable Source"],
     ["localWaterSupplyTempSource", DOMAIN_SELECT, "Local Water Supply Temp Source"],
-    ["controllerFlowMeter", DOMAIN_SELECT, "Controller Flow Meter"],
-    ["customFlowMeterPulsesPerLiter", DOMAIN_NUMBER, "Custom Flow Meter Pulses Per Liter"],
     ["coolingMinimumSupplyTemp", DOMAIN_NUMBER, "Cooling Minimum Supply Temp"],
     ["coolingDemandMax", DOMAIN_NUMBER, "Cooling Demand Max"],
     ["coolingRestartMode", DOMAIN_SELECT, "Cooling Restart Mode"],
