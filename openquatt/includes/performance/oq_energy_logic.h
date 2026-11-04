@@ -100,21 +100,29 @@ inline HpInputPowerEstimate hp_input_power_for_variant(oq_odu::Variant variant, 
     return {};
   }
 
+  // V2 switches the 140 W bottom plate and 140 W drain pan heaters together via R2108 bit 2.
   const float power_w = 5.93f + 1.02579f * in.voltage_v * in.current_a + (in.fan_speed * -0.0133119f) +
-                        (in.pump_relay_running ? in.pump_power_w : 0.0f) + (in.bottom_plate_heater ? 140.0f : 0.0f) +
+                        (in.pump_relay_running ? in.pump_power_w : 0.0f) + (in.bottom_plate_heater ? 280.0f : 0.0f) +
                         (in.crankcase_heater ? 33.62f : 0.0f);
   if (!isfinite(power_w)) return {};
   return {nonnegative(power_w), HpInputPowerStatus::V2_ESTIMATED};
 }
 
+// Signed thermal transfer to water. Callers decide whether operating mode and
+// measurement provenance make this value suitable for their purpose.
+inline float hydronic_heat_power(float inlet_c, float outlet_c, float flow_lph, float cp_j_per_kgk) {
+  if (isnan(inlet_c) || isnan(outlet_c) || isnan(flow_lph) || isnan(cp_j_per_kgk)) return NAN;
+  return (flow_lph / 3600.0f) * cp_j_per_kgk * (outlet_c - inlet_c);
+}
+
 inline float hp_heating_power(float mode, float inlet_c, float outlet_c, float flow_lph, float cp_j_per_kgk) {
   if (mode != 2.0f || isnan(inlet_c) || isnan(outlet_c) || isnan(flow_lph)) return 0.0f;
-  return (flow_lph / 3600.0f) * cp_j_per_kgk * (outlet_c - inlet_c);
+  return hydronic_heat_power(inlet_c, outlet_c, flow_lph, cp_j_per_kgk);
 }
 
 inline float hp_cooling_power(float mode, float inlet_c, float outlet_c, float flow_lph, float cp_j_per_kgk) {
   if (mode != 1.0f || isnan(inlet_c) || isnan(outlet_c) || isnan(flow_lph)) return 0.0f;
-  return nonnegative((flow_lph / 3600.0f) * cp_j_per_kgk * (inlet_c - outlet_c));
+  return nonnegative(-hydronic_heat_power(inlet_c, outlet_c, flow_lph, cp_j_per_kgk));
 }
 
 inline float sum_or_zero(float first, float second = NAN) { return value_or_zero(first) + value_or_zero(second); }
@@ -130,26 +138,63 @@ inline float sum_available(float first, float second = NAN) {
   return isnan(first) && isnan(second) ? NAN : sum_or_zero(first, second);
 }
 
-inline float heating_input_power(bool cooling_session, float hp1_mode, float hp1_power, float hp2_mode = NAN,
-                                 float hp2_power = NAN) {
-  if (cooling_session) return 0.0f;
-  return (hp1_mode == 2.0f ? value_or_zero(hp1_power) : 0.0f) + (hp2_mode == 2.0f ? value_or_zero(hp2_power) : 0.0f);
+inline float attributed_input_power(float total, bool cooling_purpose, bool for_cooling) {
+  if (cooling_purpose != for_cooling) return 0.0f;
+  return isfinite(total) && total >= 0.0f ? total : NAN;
 }
 
-inline float heating_input_power_required(bool cooling_session, float hp1_mode, float hp1_power,
-                                          bool second_required = false, float hp2_mode = NAN, float hp2_power = NAN) {
-  if (cooling_session) return 0.0f;
-  const float hp1_heating_power = hp1_mode == 2.0f ? hp1_power : 0.0f;
-  const float hp2_heating_power = hp2_mode == 2.0f ? hp2_power : 0.0f;
-  return nonnegative_sum_required(hp1_heating_power, hp2_heating_power, second_required);
-}
-
-inline float cooling_input_power(bool cooling_session, float hp1_power, float hp2_power = NAN) {
-  return cooling_session ? sum_or_zero(hp1_power, hp2_power) : 0.0f;
+// Only a new thermal purpose changes the owner; postflow, standby and idle
+// service retain it. An unresolved request must not invent a new owner.
+inline bool cooling_energy_purpose(bool previous, int desired_mode, int next_mode, bool heating_request,
+                                   bool cooling_request, int manual_hp1_mode = 0, int manual_hp2_mode = 0) {
+  if (desired_mode == 100) {
+    const bool heating = manual_hp1_mode == 2 || manual_hp2_mode == 2;
+    const bool cooling = manual_hp1_mode == 1 || manual_hp2_mode == 1;
+    return heating != cooling ? cooling : previous;
+  }
+  if (desired_mode == 5) return true;
+  if (desired_mode == 2 || desired_mode == 3 || desired_mode == 4 || desired_mode == 98) return false;
+  if (desired_mode == 1) {
+    if (next_mode == 5) return true;
+    if (next_mode == 2 || next_mode == 3 || next_mode == 4 || next_mode == 98) return false;
+    if (next_mode != 0) return previous;
+    if (heating_request != cooling_request) return cooling_request;
+  }
+  return previous;
 }
 
 inline float ratio_or_nan(float output, float input, float minimum_input) {
   if (isnan(output) || isnan(input) || input < minimum_input) return NAN;
+  return output / input;
+}
+
+struct HeatingCopState {
+  float working_mode{NAN};
+  float compressor_hz{NAN};
+  float defrost{NAN};
+  bool fresh{false};
+};
+
+inline bool heating_cop_state_valid(const HeatingCopState& state) {
+  return state.fresh &&
+         (state.working_mode == 0.0f || state.working_mode == 1.0f || state.working_mode == 2.0f ||
+          state.working_mode == 4.0f) &&
+         isfinite(state.compressor_hz) && state.compressor_hz >= 0.0f && state.compressor_hz <= 120.0f &&
+         (state.defrost == 0.0f || state.defrost == 1.0f);
+}
+
+inline float heating_cop_or_nan(float output, float input, float minimum_input, const HeatingCopState& first,
+                                const HeatingCopState& second = {}, bool second_required = false) {
+  if (!heating_cop_state_valid(first) || (second_required && !heating_cop_state_valid(second))) return NAN;
+  const bool first_heating = first.working_mode == 2.0f;
+  const bool second_heating = second_required && second.working_mode == 2.0f;
+  if (first.working_mode == 4.0f || first.defrost != 0.0f ||
+      (second_required && (second.working_mode == 4.0f || second.defrost != 0.0f)))
+    return NAN;
+  // Heating mode can precede compressor start. Positive heat alone may also be
+  // residual heat or a sensor offset while only the circulation pump is running.
+  if (!(first_heating && first.compressor_hz > 0.0f) && !(second_heating && second.compressor_hz > 0.0f)) return NAN;
+  if (!isfinite(output) || output <= 0.0f || !isfinite(input) || input <= 0.0f || input < minimum_input) return NAN;
   return output / input;
 }
 

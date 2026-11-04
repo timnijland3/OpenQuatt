@@ -322,9 +322,9 @@
 
   <!-- Stap 6 -->
   <rect x="32" y="2111" width="936" height="405" rx="24" fill="#f5f3ff" stroke="#ddd6fe"/>
-  <text x="58" y="2153" class="step-no">06 · OPTIONEEL · CiC-COMPATIBILITEIT</text>
+  <text x="58" y="2153" class="step-no">06 · OPTIONEEL · QUATT-APP VIA CiC</text>
   <text x="58" y="2188" class="step-title">Verbind M2 met de vrijgekomen CiC-Modbuspoort.</text>
-  <text x="58" y="2217" class="step-copy">OpenQuatt stuurt zo meetdata naar de CiC, zodat de Quatt app kan blijven meekijken.</text>
+  <text x="58" y="2217" class="step-copy">M2 geeft alleen buitenunitgegevens via Modbus door aan de CiC; OpenQuatt blijft regelen.</text>
 
   <rect x="58" y="2237" width="400" height="244" rx="18" fill="#f8fafc"/>
   <text x="78" y="2265" class="panel-kicker">AANSLUITEN OP CiC</text>
@@ -340,7 +340,7 @@
   <path d="M214 2433 C214 2456 232 2456 258 2456 H840 C890 2456 915 2425 915 2414 C915 2398 862 2387 820 2387" fill="none" stroke="#2563eb" stroke-width="5" stroke-linecap="round"/>
   <use href="#hcq-device" transform="translate(687 2302) scale(.62)"/>
 
-  <text x="500" y="2503" class="map-copy" text-anchor="middle">Na Quick Start: Instellingen → Bronnen / integraties → CiC-compatibiliteit (standaard uit).</text>
+  <text x="500" y="2503" class="map-copy" text-anchor="middle">Na Quick Start: Instellingen → Bronnen / integraties → Quatt-app via CiC (standaard uit).</text>
 
   <!-- Stap 7 -->
   <rect x="32" y="2532" width="936" height="329" rx="24" fill="#f0fdf4" stroke="#bbf7d0"/>
@@ -354,7 +354,7 @@
   <circle cx="348" cy="2731" r="14" fill="#dcfce7"/><path d="M341 2731l6 6 11-13" fill="none" stroke="#15803d" stroke-width="3"/>
   <text x="375" y="2737" class="check">De Q-stekker en alle overige verbindingen zitten stevig vast.</text>
   <circle cx="348" cy="2765" r="14" fill="#dcfce7"/><path d="M341 2765l6 6 11-13" fill="none" stroke="#15803d" stroke-width="3"/>
-  <text x="375" y="2771" class="check">M2 is alleen aangesloten als je CiC-compatibiliteit wilt.</text>
+  <text x="375" y="2771" class="check">M2 is alleen aangesloten voor Quatt-app via CiC.</text>
   <rect x="335" y="2802" width="565" height="46" rx="12" fill="#166534"/>
   <text x="359" y="2831" class="map-title completion-title">Voed HCQ via USB. Schakel daarna de Quatt-buitenunit(s) in.</text>
 

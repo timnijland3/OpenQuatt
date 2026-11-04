@@ -13,11 +13,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 TEXT_PATTERNS = (
     "configs/**/*.yaml",
+    "scripts/hil/configs/*.yaml",
     "openquatt/*.yaml",
     "openquatt/base/*.yaml",
     "openquatt/connection/*.yaml",
     "openquatt/packages/*.yaml",
-    "openquatt/profiles/*.yaml",
+    "openquatt/profiles/**/*.yaml",
     "openquatt/topology/*.yaml",
     "scripts/*.py",
     "scripts/*.sh",
@@ -25,21 +26,23 @@ TEXT_PATTERNS = (
 
 YAML_BANNER_PATTERNS = (
     "configs/**/*.yaml",
+    "scripts/hil/configs/*.yaml",
     "openquatt/*.yaml",
     "openquatt/base/*.yaml",
     "openquatt/connection/*.yaml",
     "openquatt/packages/*.yaml",
-    "openquatt/profiles/*.yaml",
+    "openquatt/profiles/**/*.yaml",
     "openquatt/topology/*.yaml",
 )
 
 LAMBDA_PATTERNS = (
     "configs/**/*.yaml",
+    "scripts/hil/configs/*.yaml",
     "openquatt/*.yaml",
     "openquatt/base/*.yaml",
     "openquatt/connection/*.yaml",
     "openquatt/packages/*.yaml",
-    "openquatt/profiles/*.yaml",
+    "openquatt/profiles/**/*.yaml",
     "openquatt/topology/*.yaml",
 )
 
@@ -49,12 +52,14 @@ PACKAGE_ORDER_PATTERNS = (
 
 BUILTIN_YAML_PATTERNS = (
     "configs/**/*.yaml",
+    "scripts/hil/configs/*.yaml",
     "docs/templates/**/*.yaml",
     "openquatt/**/*.yaml",
 )
 ENTITY_YAML_PATTERNS = (
     "components/**/*.yaml",
     "configs/**/*.yaml",
+    "scripts/hil/configs/*.yaml",
     "openquatt/**/*.yaml",
 )
 BUILTIN_WEB_SORTING_KEY_RE = re.compile(
@@ -70,26 +75,6 @@ INTERNAL_ENTITY_PRESENTATION_KEYS = {
 }
 
 STRICT_TOP_LEVEL_ORDER_RULES = {
-    "configs/waveshare/single_wifi.yaml": (
-        "substitutions",
-        "esphome",
-        "packages",
-    ),
-    "configs/waveshare/duo_wifi.yaml": (
-        "substitutions",
-        "esphome",
-        "packages",
-    ),
-    "configs/heatpump_listener/single_wifi.yaml": (
-        "substitutions",
-        "esphome",
-        "packages",
-    ),
-    "configs/heatpump_listener/duo_wifi.yaml": (
-        "substitutions",
-        "esphome",
-        "packages",
-    ),
     "configs/heatpump_controller_q/single.yaml": (
         "substitutions",
         "esphome",
@@ -133,61 +118,33 @@ STRICT_TOP_LEVEL_ORDER_RULES = {
         "packages",
     ),
     "openquatt/topology/duo.yaml": (
-        "secondary_hp_id",
-        "oq_topology",
-        "secondary_outside_is_distinct",
-        "flow_secondary_enabled",
-        "flow_mismatch_internal",
-        "hc_dual_tuning_internal",
-        "hc_hp2_diag_internal",
-        "hc_runtime_reset_button_name",
-        "cic_secondary_enabled",
-        "cic_hp2_sensor_internal",
-        "sensor_sources_duo_flow_internal",
-        "ot_secondary_present",
-        "monitoring_hp2_internal",
-    ),
-    "openquatt/topology/duo_packages.yaml": (
+        "substitutions",
         "packages",
     ),
-    "openquatt/topology/duo_package.yaml": (
-        "substitutions",
-    ),
     "openquatt/topology/single.yaml": (
-        "secondary_hp_id",
-        "oq_topology",
-        "secondary_outside_is_distinct",
-        "flow_secondary_enabled",
-        "flow_mismatch_internal",
-        "oq_flow_kp_default",
-        "oq_flow_ki_default",
-        "hc_dual_tuning_internal",
-        "hc_hp2_diag_internal",
-        "hc_runtime_reset_button_name",
-        "cic_secondary_enabled",
-        "cic_hp2_sensor_internal",
-        "sensor_sources_duo_flow_internal",
-        "ot_secondary_present",
-        "monitoring_hp2_internal",
-    ),
-    "openquatt/topology/single_package.yaml": (
         "substitutions",
     ),
-    "openquatt/profiles/heatpump_controller_q_cic_compatibility.yaml": (
+    "openquatt/profiles/heatpump_controller_q/cic_compatibility.yaml": (
         "substitutions",
         "uart",
         "modbus",
         "packages",
     ),
-    "openquatt/profiles/heatpump_controller_q_cic_compatibility_duo.yaml": (
+    "openquatt/profiles/heatpump_controller_q/cic_compatibility_duo.yaml": (
         "packages",
     ),
     "openquatt/profiles/heatpump_controller_q.yaml": (
         "substitutions",
+        "esphome",
         "packages",
         "openquatt_usage_telemetry",
         "psram",
+        "uart",
+    ),
+    "openquatt/profiles/heatpump_controller_q/local_sensors.yaml": (
+        "external_components",
         "select",
+        "number",
         "spi",
         "sensor",
         "interval",
@@ -195,45 +152,9 @@ STRICT_TOP_LEVEL_ORDER_RULES = {
 }
 
 NESTED_KEY_ORDER_RULES = {
-    ("configs/waveshare/single_wifi.yaml", "packages"): (
-        "openquatt_substitutions_common",
-        "openquatt_topology_single_substitutions",
-        "openquatt_profile_waveshare",
-        "openquatt_base_common",
-        "openquatt_connection_wifi",
-        "openquatt_packages_common",
-    ),
-    ("configs/waveshare/duo_wifi.yaml", "packages"): (
-        "openquatt_substitutions_common",
-        "openquatt_topology_duo_substitutions",
-        "openquatt_profile_waveshare",
-        "openquatt_base_common",
-        "openquatt_connection_wifi",
-        "openquatt_packages_common",
-        "openquatt_topology_duo_packages",
-    ),
-    ("configs/heatpump_listener/single_wifi.yaml", "packages"): (
-        "openquatt_substitutions_common",
-        "openquatt_topology_single_substitutions",
-        "openquatt_profile_heatpump_listener",
-        "openquatt_base_common",
-        "openquatt_connection_wifi",
-        "oq_heatpump_listener_extras",
-        "openquatt_packages_common",
-    ),
-    ("configs/heatpump_listener/duo_wifi.yaml", "packages"): (
-        "openquatt_substitutions_common",
-        "openquatt_topology_duo_substitutions",
-        "openquatt_profile_heatpump_listener",
-        "openquatt_base_common",
-        "openquatt_connection_wifi",
-        "oq_heatpump_listener_extras",
-        "openquatt_packages_common",
-        "openquatt_topology_duo_packages",
-    ),
     ("configs/heatpump_controller_q/single.yaml", "packages"): (
         "openquatt_substitutions_common",
-        "openquatt_topology_single_substitutions",
+        "openquatt_topology_single",
         "openquatt_profile_heatpump_controller_q",
         "openquatt_base_common",
         "openquatt_connection_wifi_eth",
@@ -241,13 +162,12 @@ NESTED_KEY_ORDER_RULES = {
     ),
     ("configs/heatpump_controller_q/duo.yaml", "packages"): (
         "openquatt_substitutions_common",
-        "openquatt_topology_duo_substitutions",
         "openquatt_profile_heatpump_controller_q",
         "openquatt_profile_heatpump_controller_q_cic_compatibility_duo",
         "openquatt_base_common",
         "openquatt_connection_wifi_eth",
         "openquatt_packages_common",
-        "openquatt_topology_duo_packages",
+        "openquatt_topology_duo",
     ),
     ("openquatt/oq_packages_common.yaml", "packages"): (
         "oq_runtime_packages",
@@ -258,7 +178,7 @@ NESTED_KEY_ORDER_RULES = {
         "oq_ui_runtime_packages",
         "oq_heatpump1_package",
     ),
-    ("openquatt/topology/duo_packages.yaml", "packages"): (
+    ("openquatt/topology/duo.yaml", "packages"): (
         "heatpump2",
         "hp2_odu_runtime_frequency_table",
     ),
@@ -271,6 +191,7 @@ NESTED_KEY_ORDER_RULES = {
     ),
     ("openquatt/packages/20_strategies.yaml", "packages"): (
         "oq_strategy_manager",
+        "oq_warmup",
         "oq_cooling_strategy",
         "oq_heating_curve_strategy",
         "oq_power_house_strategy",
@@ -279,6 +200,7 @@ NESTED_KEY_ORDER_RULES = {
         "oq_thermal_request_control",
         "oq_thermal_actuator",
         "oq_flow_control",
+        "oq_flow_delta_t",
     ),
     ("openquatt/packages/40_service_tasks.yaml", "packages"): (
         "oq_flow_autotune",
@@ -297,6 +219,7 @@ NESTED_KEY_ORDER_RULES = {
         "oq_api_ingress",
         "oq_mqtt_ingress",
         "oq_usage_telemetry",
+        "oq_performance_telemetry",
         "oq_local_sensors",
         "oq_sensor_sources",
     ),
@@ -310,6 +233,8 @@ NESTED_KEY_ORDER_RULES = {
         "hp1_odu_runtime_frequency_table",
     ),
     ("openquatt/profiles/heatpump_controller_q.yaml", "packages"): (
+        "oq_partition_migration",
+        "oq_power_house_learning",
         "oq_hardware_revision",
         "oq_status_leds",
         "oq_cic_compatibility",
@@ -317,6 +242,7 @@ NESTED_KEY_ORDER_RULES = {
         "oq_sensor_source_selects_opentherm",
         "oq_ot_slave",
         "oq_boiler_opentherm",
+        "oq_q_local_sensors",
     ),
 }
 
@@ -349,7 +275,7 @@ PACKAGE_GROUP_BY_KEY = {
     "wifi": 0,
     "captive_portal": 0,
     "improv_serial": 0,
-    "esp32_improv": 0,
+    "improv_ble": 0,
     "http_request": 0,
     "uart": 0,
     "modbus": 0,

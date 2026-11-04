@@ -123,6 +123,17 @@ BINARY_SENSORS: Schema[BinarySensorSchema] = Schema(
                 "update_time": -1,
             }
         ),
+        "master_dhw_enable": BinarySensorSchema(
+            {
+                "description": "Master status: Domestic Hot Water enabled",
+                "device_class": DEVICE_CLASS_HEAT,
+                "icon": "mdi:water-boiler",
+                "message": "Status",
+                "message_data": "flag8_hb_1",
+                "init": False,
+                "update_time": -1,
+            }
+        ),
         "master_cooling_enable": BinarySensorSchema(
             {
                 "description": "Master status: Cooling enabled",

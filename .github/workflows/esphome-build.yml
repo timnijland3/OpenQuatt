@@ -85,11 +85,11 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version-file: '.node-version'
           cache: npm
 
       - name: Install web build dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build embedded web bundles
         run: npm run build:web
@@ -106,6 +106,34 @@ jobs:
           ESPHOME_VERSION="$(cat .github/requirements-esphome.txt | sed 's/^esphome==//')"
           pip install --upgrade "esphome==${ESPHOME_VERSION}"
           esphome version
+
+      - name: Validate Duo HIL config
+        if: ${{ matrix.target.id == 'heatpump_controller_q_duo' }}
+        run: esphome config configs/heatpump_controller_q/duo_hil.yaml
+
+      - name: Validate HIL test overlays
+        if: ${{ matrix.target.id == 'heatpump_controller_q_duo' }}
+        run: |
+          esphome config scripts/hil/configs/input_sources_fast_duo.yaml
+          esphome config scripts/hil/configs/v2_performance_duo.yaml
+
+      - name: Assert HIL overlays keep the testcontroller identity
+        if: ${{ matrix.target.id == 'heatpump_controller_q_duo' }}
+        run: |
+          set -euo pipefail
+          for overlay in scripts/hil/configs/input_sources_fast_duo.yaml \
+                          scripts/hil/configs/v2_performance_duo.yaml; do
+            # duo.yaml carries the production device_name "openquatt"; an
+            # overlay that includes it would republish openquatt.local and
+            # collide with a real production controller.
+            if grep -q 'heatpump_controller_q/duo\.yaml' "$overlay"; then
+              echo "::error file=$overlay::HIL overlay includes the production duo.yaml entrypoint"
+              exit 1
+            fi
+            esphome config "$overlay" > /tmp/hil-overlay.yml
+            grep -q '^  name: openquatt-test$' /tmp/hil-overlay.yml \
+              || { echo "::error file=$overlay::overlay does not resolve to device_name openquatt-test"; exit 1; }
+          done
 
       - name: Resolve ESP-IDF version for cache key
         id: idf_version
@@ -212,6 +240,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: q-debug-stage-${{ matrix.target.id }}-${{ inputs.artifact_suffix }}
+          overwrite: true
           if-no-files-found: error
           retention-days: 1
           path: ${{ runner.temp }}/q-debug-symbols
@@ -221,6 +250,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.target.artifact_name }}-${{ inputs.artifact_suffix }}
+          overwrite: true
           if-no-files-found: error
           path: |
             ${{ matrix.target.build_path }}/build/firmware.bin
@@ -232,6 +262,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.target.artifact_name }}-${{ inputs.artifact_suffix }}
+          overwrite: true
           if-no-files-found: error
           path: |
             ${{ matrix.target.build_path }}/build/firmware.ota.bin
@@ -242,5 +273,6 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.target.artifact_name }}-${{ inputs.artifact_suffix }}
+          overwrite: true
           if-no-files-found: error
           path: ${{ matrix.target.build_path }}/build/firmware.ota.bin

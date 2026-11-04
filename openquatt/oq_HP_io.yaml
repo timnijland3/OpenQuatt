@@ -46,8 +46,11 @@ esphome:
           id(${hp_id}_runtime_frequency_snapshot_storage) = {};
           id(${hp_id}_odu_runtime_frequency)->reset_runtime_state();
           id(${hp_id}_odu_settings)->notify_odu_offline();
+          id(${hp_id}_odu_defrost)->set_odu_identity(oq_odu::Variant::UNKNOWN);
           id(${hp_id}_compressor_level_profile_request_pending) = false;
           id(${hp_id}_compressor_level_profile_request_token) = 0U;
+          id(${hp_id}_recovery_probe_pending) = false;
+          id(${hp_id}_poll_cycle) = 0U;
           id(${hp_id}_runtime_frequency_retry_ms) = 0U;
           id(${hp_id}_compressor_level_profile).publish_state(
               oq_odu::compressor_level_profile_label(
@@ -70,7 +73,12 @@ modbus_controller:
     on_offline:
       then:
         - lambda: |-
+            id(mod_bus).record_offline_transition();
             id(${hp_id}_is_online) = false;
+            // The hub purges queued frames for this address on transport loss,
+            // so an outstanding recovery probe is gone: allow a fresh one.
+            id(${hp_id}_recovery_probe_pending) = false;
+            id(${hp_id}_odu_defrost)->offline();
             // Preserve validated control metadata; the incident manager decides
             // whether a transport interruption requires a stop.
             id(${hp_id}_odu_generation_request_token) =
@@ -100,6 +108,15 @@ modbus_controller:
             id(${hp_id}_power_input_status_code) =
                 static_cast<int>(oq_energy::HpInputPowerStatus::INVALID_OR_STALE);
             id(${hp_id}_pump_relay).invalidate_state();
+            oq_sources::${hp_id}.working_mode.invalidate();
+            oq_sources::${hp_id}.compressor_frequency.invalidate();
+            oq_sources::${hp_id}.status_2108.invalidate();
+            oq_sources::${hp_id}.defrost.invalidate();
+            oq_sources::${hp_id}.status_2119.invalidate();
+            oq_sources::${hp_id}.water_in.invalidate();
+            oq_sources::${hp_id}.water_out.invalidate();
+            oq_sources::${hp_id}.flow.invalidate();
+            oq_sources::${hp_id}.outside.invalidate();
             id(${hp_id}_status_2108_raw).publish_state(NAN);
             id(${hp_id}_status_2115_raw).publish_state(NAN);
             id(${hp_id}_pump_ipwm_feedback_raw).publish_state(NAN);
@@ -109,9 +126,42 @@ modbus_controller:
       then:
         - lambda: |-
             id(${hp_id}_is_online) = true;
+            id(${hp_id}_recovery_probe_pending) = false;
             id(oq_incident_manager).observe_transport(${hp_index}, true, millis());
             ESP_LOGI("quatt", "%sModbus ONLINE", "${prefix}");
         - script.execute: ${hp_id}_detect_odu_generation_once
+
+  # Slow readback controller for the same physical ODU (the ESPHome #18652
+  # replacement for per-entity polling cadences). Same modbus_id and device
+  # address as the primary controller; both run update_interval: never so the
+  # OpenQuatt planner below owns all timing. Owns only the 30 s control readbacks
+  # (R1999/R2006/R2010/R2015). The primary controller remains the
+  # transport owner for OpenQuatt incident/recovery state. Slow read failures
+  # stay local; only exhausted slow write timeouts are escalated to primary
+  # below. Writes via these entities remain immediate one-shot commands.
+  - id: ${hp_id}_slow
+    address: ${device_address}
+    modbus_id: mod_bus
+    update_interval: never
+    max_cmd_retries: ${oq_modbus_max_cmd_retries}
+    setup_priority: -10
+    on_offline:
+      then:
+        - lambda: |-
+            // Read timeouts stay local: a failed slow readback must never
+            // mark the physical HP offline. An exhausted write timeout has
+            // physical meaning, so escalate it to the transport owner.
+            // Exception responses never reach this callback (ESPHome treats
+            // them as proof the device is online).
+            if (!esphome::modbus::helpers::is_function_code_write(
+                    static_cast<uint8_t>(function_code))) {
+              ESP_LOGV("quatt", "%sSlow readback timeout stays local (FC %d)",
+                       "${prefix}", function_code);
+              return;
+            }
+            ESP_LOGW("quatt", "%sSlow-controller write failed after retries (FC %d); escalating to primary",
+                     "${prefix}", function_code);
+            id(${hp_id}).set_online(false, function_code, address);
 
 openquatt_odu_eeprom_dump:
   - id: ${hp_id}_odu_eeprom_dump
@@ -123,6 +173,13 @@ openquatt_odu_eeprom_dump:
 
 openquatt_odu_settings:
   - id: ${hp_id}_odu_settings
+    controller: ${hp_id}
+    eeprom_dump: ${hp_id}_odu_eeprom_dump
+    web_auth: oq_web_auth_store
+    hp_index: ${hp_index}
+
+openquatt_odu_defrost:
+  - id: ${hp_id}_odu_defrost
     controller: ${hp_id}
     eeprom_dump: ${hp_id}_odu_eeprom_dump
     web_auth: oq_web_auth_store
@@ -156,8 +213,14 @@ globals:
     restore_value: false
     initial_value: '0'
 
-  # Last physical F-level written to register 1999. Control bookkeeping above
-  # deliberately remains in the independent 0..10 model-level domain.
+  # Last physical F-level written to register 1999. Applied/requested levels
+  # use the same physical stand domain; PID demand remains normalized separately.
+  # A retired queued command must be re-issued despite optimistic select state.
+  - id: ${hp_id}_compressor_command_revalidation_required
+    type: bool
+    restore_value: false
+    initial_value: 'true'
+
   - id: ${hp_id}_last_commanded_physical_level
     type: int
     restore_value: false
@@ -215,6 +278,21 @@ globals:
     initial_value: 'false'
 
   - id: ${hp_id}_last_offline_probe_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+
+  # True while a queued offline recovery probe has not resolved yet.
+  # Caps outstanding recovery probes at one per HP; cleared on the probe
+  # response, on transport transitions, or by the stale-probe timeout.
+  - id: ${hp_id}_recovery_probe_pending
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  # Counts 10 s planner cycles; every third cycle also polls the slow
+  # controller (fast + slow every 30 s). Explicit counter, not millis()%30000.
+  - id: ${hp_id}_poll_cycle
     type: uint32_t
     restore_value: no
     initial_value: '0'
@@ -302,7 +380,7 @@ script:
             return;
           }
 
-          auto command = esphome::modbus_controller::ModbusCommandItem::create_read_command(
+          openquatt_modbus_shim::queue_modbus_read(
               id(${hp_id}), esphome::modbus::EntityType::HOLDING,
               oq_odu::CORE_IDENTITY_REGISTER,
               oq_odu::CORE_IDENTITY_REGISTER_COUNT,
@@ -359,6 +437,7 @@ script:
                       detection.variant == oq_odu::Variant::V2_NEW_MODEL);
                   id(${hp_id}_odu_settings)->set_odu_identity(
                       core.control_board_item, detection.variant);
+                  id(${hp_id}_odu_defrost)->set_odu_identity(detection.variant, core.control_board_item);
                   id(${hp_id}_generation_variant_code) =
                       static_cast<int>(detection.variant);
                   id(${hp_id}_validated_control_board_item) = core.control_board_item;
@@ -384,8 +463,7 @@ script:
                   return;
                 }
 
-                auto customer_model_command =
-                    esphome::modbus_controller::ModbusCommandItem::create_read_command(
+                openquatt_modbus_shim::queue_modbus_read(
                         id(${hp_id}), esphome::modbus::EntityType::HOLDING,
                         oq_odu::CUSTOMER_MODEL_REGISTER,
                         oq_odu::CUSTOMER_MODEL_REGISTER_COUNT,
@@ -418,9 +496,7 @@ script:
                               oq_odu::customer_model_label(customer_model));
                           id(${hp_id}_load_runtime_frequency_table_once).execute();
                         });
-                id(${hp_id}).queue_command(std::move(customer_model_command));
               });
-          id(${hp_id}).queue_command(std::move(command));
       - delay: 30s
       - lambda: |-
           if (!id(${hp_id}_odu_generation_request_pending)) return;
@@ -458,8 +534,7 @@ script:
             ESP_LOGW("quatt.odu", "%sRuntime frequency table load blocked while runtime polling is paused", "${prefix}");
             return;
           }
-          auto command =
-              esphome::modbus_controller::ModbusCommandItem::create_read_command(
+          openquatt_modbus_shim::queue_modbus_read(
                   id(${hp_id}), esphome::modbus::EntityType::HOLDING,
                   oq_odu::BASE_FREQUENCY_TABLE_REGISTER,
                   oq_odu::BASE_FREQUENCY_TABLE_REGISTER_COUNT,
@@ -495,8 +570,7 @@ script:
                       return;
                     }
 
-                    auto extension_command =
-                        esphome::modbus_controller::ModbusCommandItem::create_read_command(
+                    openquatt_modbus_shim::queue_modbus_read(
                             id(${hp_id}), esphome::modbus::EntityType::HOLDING,
                             oq_odu::EXTENDED_FREQUENCY_TABLE_REGISTER,
                             oq_odu::EXTENDED_FREQUENCY_TABLE_REGISTER_COUNT,
@@ -545,9 +619,7 @@ script:
                               id(${hp_id}_compressor_level_profile_request_pending) =
                                   false;
                             });
-                    id(${hp_id}).queue_command(std::move(extension_command));
                   });
-          id(${hp_id}).queue_command(std::move(command));
       - delay: 30s
       - lambda: |-
           if (!id(${hp_id}_compressor_level_profile_request_pending)) return;
@@ -583,20 +655,37 @@ select:
     address: 3999
     value_type: U_WORD
     optimistic: true
+    lambda: |-
+      id(oq_incident_manager).observe_boot_readback(${hp_index}, 3999U, static_cast<float>(x), millis());
+      return {};
     optionsmap:
       "Standby": 0
       "Cooling": 1
       "Heating": 2
-    skip_updates: ${oq_modbus_target_readback_skip}
+    write_lambda: |-
+      if (!oq_command_runtime::guarded_write(${hp_index} == 1, 3999, value)) {
+        id(${hp_id}_compressor_command_revalidation_required) = true;
+        return {};
+      }
+      return value;
 
   - platform: modbus_controller
-    modbus_controller_id: ${hp_id}
+    modbus_controller_id: ${hp_id}_slow
     id: ${hp_id}_compressor_level
     name: "${prefix}Set Compressor Level"
     internal: true
     address: 1999
     value_type: U_WORD
     optimistic: true
+    lambda: |-
+      id(oq_incident_manager).observe_boot_readback(${hp_index}, 1999U, static_cast<float>(x), millis());
+      return {};
+    write_lambda: |-
+      if (!oq_command_runtime::guarded_write(${hp_index} == 1, 1999, value)) {
+        id(${hp_id}_compressor_command_revalidation_required) = true;
+        return {};
+      }
+      return value;
     optionsmap:
       "0": 0
       "1": 1
@@ -619,33 +708,36 @@ select:
       "18": 18
       "19": 19
       "20": 20
-    skip_updates: ${oq_modbus_control_readback_skip}
 
   - platform: modbus_controller
-    modbus_controller_id: ${hp_id}
+    modbus_controller_id: ${hp_id}_slow
     id: ${hp_id}_low_noise_mode
     name: "${prefix}Silent Mode"
     internal: true
     address: 2006
     value_type: U_WORD
     optimistic: true
+    write_lambda: |-
+      if (!oq_command_runtime::guarded_write(${hp_index} == 1, 2006, value)) return {};
+      return value;
     optionsmap:
       "Off": 0
       "On": 1
-    skip_updates: ${oq_modbus_control_readback_skip}
 
   - platform: modbus_controller
-    modbus_controller_id: ${hp_id}
+    modbus_controller_id: ${hp_id}_slow
     id: ${hp_id}_set_pump_mode
     name: "${prefix}Set Pump Mode"
     internal: true
     address: 2010
     value_type: U_WORD
     optimistic: true
+    write_lambda: |-
+      if (!oq_command_runtime::guarded_write(${hp_index} == 1, 2010, value)) return {};
+      return value;
     optionsmap:
       "Off": 0
       "On": 4096
-    skip_updates: ${oq_modbus_control_readback_skip}
 
 # One shared range applies to heating and cooling. A zero boundary disables it.
 number:
@@ -681,17 +773,19 @@ number:
 # NUMBER
 # ----------------------------
   - platform: modbus_controller
-    modbus_controller_id: ${hp_id}
+    modbus_controller_id: ${hp_id}_slow
     id: ${hp_id}_pump_speed
     name: "${prefix}Set Pump Speed"
     internal: true
     register_type: holding
     address: 2015
     value_type: U_WORD
+    write_lambda: |-
+      if (!oq_command_runtime::guarded_write(${hp_index} == 1, 2015, x)) return {};
+      return x;
     min_value: 0
     max_value: 1000
     mode: slider
-    skip_updates: ${oq_modbus_control_readback_skip}
 
 # ----------------------------
 # SENSOR
@@ -719,13 +813,14 @@ sensor:
     state_class: measurement
     register_type: holding
     address: 2099
-    skip_updates: ${oq_modbus_telemetry_skip}
     on_value:
       then:
         - lambda: |-
+            oq_sources::${hp_id}.working_mode.observe(x, oq_sources::monotonic_ms(), !isnan(x));
             id(${hp_id}_outside_temp_activity_ms) = millis();
             id(oq_incident_manager).observe_working_mode(
                 ${hp_index}, x, millis());
+            id(${hp_id}_odu_defrost)->cycle.observe_mode(x, millis());
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
@@ -745,7 +840,6 @@ sensor:
           min_value: 0
           max_value: 300
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
     on_value:
       then:
         - lambda: |-
@@ -769,7 +863,6 @@ sensor:
           min_value: 0
           max_value: 16
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
     on_value:
       then:
         - lambda: |-
@@ -824,7 +917,6 @@ sensor:
           min_value: 0
           max_value: 120
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
@@ -839,16 +931,20 @@ sensor:
     accuracy_decimals: 0
     filters:
       - multiply: 1
+      - lambda: |-
+          oq_sources::${hp_id}.compressor_frequency.observe(
+              x, oq_sources::monotonic_ms(), isfinite(x) && x >= 0.0f && x <= 120.0f);
+          return x;
       - clamp:
           min_value: 0
           max_value: 120
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
     on_value:
       then:
         - lambda: |-
             id(oq_incident_manager).observe_compressor_frequency(
                 ${hp_index}, x, millis());
+            id(${hp_id}_odu_defrost)->observe(0, millis());
             if (oq_diagnostics::installation_monitor().observe_compressor_frequency(
                     ${hp_index}, x, millis())) {
               ESP_LOGI("oq_diag", "%sMeasured compressor start.", "${prefix}");
@@ -872,7 +968,6 @@ sensor:
           min_value: 0
           max_value: 1000
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
@@ -884,14 +979,12 @@ sensor:
     unit_of_measurement: "RPM"
     state_class: "measurement"
     accuracy_decimals: 0
-    register_count: 2  # 2105-2106; bridge reserved register 2106.
     filters:
       - multiply: 1
       - clamp:
           min_value: 0
           max_value: 1000
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
     on_value:
       then:
         - lambda: |-
@@ -904,6 +997,7 @@ sensor:
     icon: mdi:valve
     register_type: holding
     address: 2107
+    reuse_previous_range: true  # Bridge reserved 2106; keep 2099-2138 in one efficient range.
     unit_of_measurement: "p"
     state_class: "measurement"
     accuracy_decimals: 0
@@ -913,7 +1007,6 @@ sensor:
           min_value: 0
           max_value: 1000
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
@@ -922,6 +1015,7 @@ sensor:
     icon: mdi:thermometer
     register_type: holding
     address: 2110
+    reuse_previous_range: true  # Bridge reserved 2109; keep 2099-2138 in one efficient range.
     #skip_updates: 0
     unit_of_measurement: "°C"
     device_class: "temperature"
@@ -930,21 +1024,28 @@ sensor:
     filters:
       - offset: -3000
       - multiply: 0.01
+      - lambda: |-
+          oq_sources::${hp_id}.outside.observe(
+              x, oq_sources::monotonic_ms(), isfinite(x) && x >= -30.0f && x <= 100.0f);
+          return x;
       - clamp:
           min_value: -30
           max_value: 100
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
     on_value:
       then:
         - lambda: |-
             const uint32_t now_ms = millis();
             id(${hp_id}_outside_temp_last_change_ms) = now_ms;
             id(${hp_id}_outside_temp_activity_ms) = now_ms;
+            id(${hp_id}_odu_defrost)->observe(1, now_ms);
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
     id: ${hp_id}_evaporator_coil_temp
+    on_value:
+      - lambda: |-
+          id(${hp_id}_odu_defrost)->observe(2, millis());
     name: "${prefix}Evaporator coil temperature"
     icon: mdi:thermometer
     register_type: holding
@@ -960,7 +1061,6 @@ sensor:
           min_value: -30
           max_value: 100
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
@@ -980,7 +1080,6 @@ sensor:
           min_value: -30
           max_value: 150
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
@@ -993,7 +1092,6 @@ sensor:
     device_class: "temperature"
     state_class: "measurement"
     accuracy_decimals: 2
-    register_count: 3  # 2113-2115; includes the R2115 status word.
     filters:
       - offset: -3000
       - multiply: 0.01
@@ -1001,7 +1099,6 @@ sensor:
           min_value: -30
           max_value: 100
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
@@ -1020,7 +1117,6 @@ sensor:
           min_value: 0
           max_value: 20
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
@@ -1040,14 +1136,12 @@ sensor:
           min_value: 0
           max_value: 60
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
     id: ${hp_id}_pcb_firmware_raw
     register_type: holding
     address: 2122
-    skip_updates: ${oq_modbus_telemetry_skip}
     value_type: U_WORD
     internal: true
 
@@ -1056,9 +1150,7 @@ sensor:
     name: "${prefix}Firmware EEPROM"
     internal: true
     register_type: holding
-    register_count: 4  # 2123 - 2127
     address: 2123
-    skip_updates: ${oq_modbus_telemetry_skip}
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
@@ -1066,11 +1158,9 @@ sensor:
     name: "${prefix}Control board item number"
     internal: true
     register_type: holding
-    # Read span 2127-2130 to keep the Modbus range contiguous with 2131.
-    # Only register 2127 is decoded as this U_WORD diagnostic value.
-    register_count: 4
+    # Span 2123-2131 via range reuse; only register 2127 is decoded as this U_WORD value.
     address: 2127
-    skip_updates: ${oq_modbus_telemetry_skip}
+    reuse_previous_range: true  # Bridge 2124-2126; keep 2099-2138 in one efficient range.
     value_type: U_WORD
 
   - platform: modbus_controller
@@ -1081,6 +1171,7 @@ sensor:
     disabled_by_default: true
     register_type: holding
     address: 2131
+    reuse_previous_range: true  # Bridge 2128-2130; keep 2099-2138 in one efficient range.
     unit_of_measurement: "°C"
     device_class: "temperature"
     state_class: "measurement"
@@ -1092,11 +1183,13 @@ sensor:
           min_value: -30
           max_value: 100
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
     id: ${hp_id}_evaporating_temp
+    on_value:
+      - lambda: |-
+          id(${hp_id}_odu_defrost)->observe(3, millis());
     name: "${prefix}Evaporating temperature"
     icon: mdi:thermometer
     register_type: holding
@@ -1112,7 +1205,6 @@ sensor:
           min_value: -30
           max_value: 100
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
@@ -1128,11 +1220,14 @@ sensor:
     filters:
       - offset: -3000
       - multiply: 0.01
+      - lambda: |-
+          oq_sources::${hp_id}.water_in.observe(
+              x, oq_sources::monotonic_ms(), isfinite(x) && x >= -10.0f && x <= 100.0f);
+          return x;
       - clamp:
           min_value: -10
           max_value: 100
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
@@ -1148,6 +1243,10 @@ sensor:
     filters:
       - offset: -3000
       - multiply: 0.01
+      - lambda: |-
+          oq_sources::${hp_id}.water_out.observe(
+              x, oq_sources::monotonic_ms(), isfinite(x) && x >= -10.0f && x <= 100.0f);
+          return x;
       - clamp:
           min_value: -10
           max_value: 100
@@ -1156,7 +1255,6 @@ sensor:
       then:
         - lambda: |-
             id(${hp_id}_water_out_temp_last_update_ms) = millis();
-    skip_updates: ${oq_modbus_telemetry_skip}
 
   - platform: template
     id: ${hp_id}_water_in_temp
@@ -1199,7 +1297,6 @@ sensor:
     device_class: "temperature"
     state_class: "measurement"
     accuracy_decimals: 2
-    register_count: 2  # 2135-2136; bridge reserved register 2136.
     filters:
       - offset: -3000
       - multiply: 0.01
@@ -1207,7 +1304,6 @@ sensor:
           min_value: -30
           max_value: 100
           ignore_out_of_range: true
-    skip_updates: ${oq_modbus_telemetry_skip}
 
   - platform: modbus_controller
     modbus_controller_id: ${hp_id}
@@ -1216,13 +1312,26 @@ sensor:
     internal: true
     register_type: holding
     address: 2137
+    reuse_previous_range: true  # Bridge reserved 2136; keep 2099-2138 in one efficient range.
     value_type: U_WORD
     accuracy_decimals: 0
-    skip_updates: ${oq_modbus_telemetry_skip}
     on_value:
       then:
         - lambda: |-
             id(${hp_id}_pump_feedback_last_update_ms) = millis();
+
+  - platform: template
+    id: ${hp_id}_pump_ipwm_feedback
+    name: "${prefix}Pump iPWM feedback"
+    icon: mdi:speedometer
+    unit_of_measurement: "iPWM"
+    state_class: "measurement"
+    accuracy_decimals: 0
+    update_interval: 10s
+    lambda: |-
+      if (!id(${hp_id}_is_online)) return NAN;
+      const float raw = id(${hp_id}_pump_ipwm_feedback_raw).state;
+      return isfinite(raw) ? raw : NAN;
 
   - platform: template
     id: ${hp_id}_pump_power
@@ -1248,14 +1357,15 @@ sensor:
     icon: mdi:water-pump
     register_type: holding
     address: 2138
-    force_new_range: false
-    skip_updates: ${oq_modbus_telemetry_skip}
     unit_of_measurement: "L/h"
     device_class: "volume_flow_rate"
     state_class: "measurement"
     accuracy_decimals: 2
     filters:
       - multiply: 0.618
+      - lambda: |-
+          oq_sources::${hp_id}.flow.observe(x, oq_sources::monotonic_ms(), !isnan(x));
+          return x;
     on_value:
       then:
         - lambda: |-
@@ -1355,7 +1465,11 @@ sensor:
     accuracy_decimals: 2
     update_interval: 10s
     lambda: |-
-      return oq_energy::instant_ratio_or_nan(id(${hp_id}_heat_power).state, id(${hp_id}_power_input).state, 5.0f);
+      const auto operating = oq_energy_runtime::heating_cop_state(
+          oq_sources::${hp_id}, id(${hp_id}_is_online), oq_sources::monotonic_ms(),
+          static_cast<uint64_t>(${oq_power_measurement_stale_s}) * 1000ULL);
+      return oq_energy::heating_cop_or_nan(
+          id(${hp_id}_heat_power).state, id(${hp_id}_power_input).state, 5.0f, operating);
 
   - platform: template
     id: ${hp_id}_eer
@@ -1376,9 +1490,16 @@ sensor:
     register_type: holding
     address: 2108
     value_type: U_WORD
-    register_count: 2  # 2108-2109; bridge reserved register 2109.
-    skip_updates: ${oq_modbus_telemetry_skip}
     internal: true
+    filters:
+      - lambda: |-
+          // on_offline publishes a synthetic NaN; keep it out of physical receipt metadata.
+          if (!id(${hp_id}_is_online)) {
+            oq_sources::${hp_id}.status_2108.invalidate();
+            return x;
+          }
+          oq_sources::${hp_id}.status_2108.observe(x, oq_sources::monotonic_ms(), !isnan(x));
+          return x;
     on_value:
       then:
         - lambda: |-
@@ -1399,11 +1520,11 @@ sensor:
     register_type: holding
     address: 2119
     value_type: U_WORD
-    skip_updates: ${oq_modbus_telemetry_skip}
     internal: true
     on_value:
       then:
         - lambda: |-
+            oq_sources::${hp_id}.status_2119.observe(x, oq_sources::monotonic_ms(), !isnan(x));
             id(oq_incident_manager).observe_fault_word(
                 ${hp_index}, 2119U,
                 static_cast<uint16_t>(lroundf(x)), millis());
@@ -1412,12 +1533,10 @@ sensor:
     modbus_controller_id: ${hp_id}
     id: ${hp_id}_status_2115_raw
     register_type: holding
-    # Share the existing 2113-2115 range; byte offset 4 is register R2115.
-    address: 2113
-    offset: 4
+    # Decode physical register R2115 explicitly; 2114 is bridged via range reuse below.
+    address: 2115
+    reuse_previous_range: true  # Bridge reserved 2114; keep 2099-2138 in one efficient range.
     value_type: U_WORD
-    register_count: 3
-    skip_updates: ${oq_modbus_telemetry_skip}
     internal: true
 
   - platform: modbus_controller
@@ -1426,7 +1545,6 @@ sensor:
     register_type: holding
     address: 2120
     value_type: U_WORD
-    skip_updates: ${oq_modbus_telemetry_skip}
     internal: true
     on_value:
       then:
@@ -1441,7 +1559,6 @@ sensor:
     register_type: holding
     address: 2121
     value_type: U_WORD
-    skip_updates: ${oq_modbus_telemetry_skip}
     internal: true
     on_value:
       then:
@@ -1532,7 +1649,11 @@ binary_sensor:
     device_class: running
     register_type: holding
     address: 2118
-    skip_updates: ${oq_modbus_telemetry_skip}
+    lambda: |-
+      // Capture every parsed R2118 response before binary state deduplication.
+      oq_sources::${hp_id}.defrost.observe(x ? 1.0f : 0.0f, oq_sources::monotonic_ms(), true);
+      id(${hp_id}_odu_defrost)->cycle.observe_bit(x, millis());
+      return x;
     on_state:
       then:
         - lambda: |-
@@ -1657,6 +1778,8 @@ text_sensor:
           return std::string("Cooling");
         case 2:
           return std::string("Heating");
+        case 4:
+          return std::string("Defrost");
         default: {
           char buf[24];
           snprintf(buf, sizeof(buf), "Unknown (%d)", working_mode);
@@ -1798,7 +1921,10 @@ interval:
     startup_delay: ${oq_modbus_startup_delay_ms}ms
     then:
       - lambda: |-
-          if (id(${hp_id}_odu_eeprom_dump).is_active()) {
+          // Defrost reserves service access, but needs live mode/bit telemetry
+          // throughout the cycle. Other EEPROM operations still pause polling.
+          if (id(${hp_id}_odu_eeprom_dump).is_active() &&
+              !id(${hp_id}_odu_defrost)->reserved()) {
             return;
           }
           if (id(oq_runtime_polling_paused).state) {
@@ -1839,25 +1965,43 @@ interval:
             }
 
             id(${hp_id}).update();
+            // Slow control readbacks (R1999/R2006/R2010/R2015) keep their
+            // historic 30 s cadence: every third 10 s cycle polls the slow
+            // controller right after the primary, so live telemetry and the
+            // R3999 readback take priority on a slow cycle.
+            const uint32_t poll_cycle = id(${hp_id}_poll_cycle);
+            id(${hp_id}_poll_cycle) = poll_cycle + 1U;
+            if (poll_cycle % 3U == 0U) {
+              id(${hp_id}_slow).update();
+            }
             return;
           }
 
-          // An absent HP only receives one lightweight recovery probe per interval.
+          // An absent HP receives at most one lightweight recovery probe per
+          // offline interval. The probe is queued on the shared hub behind any
+          // in-flight traffic instead of requiring an idle bus, so HP1 traffic
+          // may delay but can never starve HP2 recovery.
           const uint32_t now = millis();
           const uint32_t last_probe = id(${hp_id}_last_offline_probe_ms);
-          if (last_probe != 0U &&
-              now - last_probe < ${oq_modbus_offline_probe_interval_s}UL * 1000UL) {
-            return;
-          }
-          if (!id(${hp_id}).hub()->tx_buffer_empty() ||
-              id(${hp_id}).hub()->tx_blocked()) {
+          const uint32_t probe_interval_ms =
+              ${oq_modbus_offline_probe_interval_s}UL * 1000UL;
+          if (id(${hp_id}_recovery_probe_pending)) {
+            // One probe is still outstanding: only re-queue after a full
+            // interval without a response, so a lost probe cannot wedge
+            // recovery forever.
+            if (last_probe == 0U || now - last_probe < probe_interval_ms) {
+              return;
+            }
+          } else if (last_probe != 0U && now - last_probe < probe_interval_ms) {
             return;
           }
 
+          id(${hp_id}_recovery_probe_pending) = true;
           id(${hp_id}_last_offline_probe_ms) = now == 0U ? 1U : now;
-          auto probe = esphome::modbus_controller::ModbusCommandItem::create_read_command(
+          openquatt_modbus_shim::queue_modbus_read(
               id(${hp_id}), esphome::modbus::EntityType::HOLDING, 2099, 1,
               [=](esphome::modbus::EntityType, uint16_t, std::span<const uint8_t>) {
+                id(${hp_id}_recovery_probe_pending) = false;
                 id(${hp_id}_is_online) = true;
                 id(oq_incident_manager).observe_transport(
                     ${hp_index}, true, millis());
@@ -1865,4 +2009,3 @@ interval:
                   id(${hp_id}_detect_odu_generation_once).execute();
                 }
               });
-          id(${hp_id}).queue_command(std::move(probe));

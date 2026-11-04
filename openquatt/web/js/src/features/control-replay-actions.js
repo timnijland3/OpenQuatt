@@ -2,6 +2,7 @@ import { invokeActionMap } from "../core/action-router.js";
 import { normalizeControlReplayTab, normalizeControlReplayWindow, syncUrlAppView } from "../core/navigation.js";
 import { render } from "../core/render-scheduler.js";
 import { state } from "../core/state.js";
+import { t } from "../i18n/index.js";
 
 const CONTROL_REPLAY_CUSTOM_MAX_RANGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -30,6 +31,7 @@ const controlReplayActionHandlers = {
   "select-control-replay-window": ({ button }) => {
     const windowId = normalizeControlReplayWindow(button.dataset.replayWindow || "") || "last24";
     if (windowId !== "custom") {
+      state.controlReplayTimelineLimit = 80;
       state.controlReplayWindow = windowId;
       state.controlReplayPeriodMenuOpen = false;
       state.controlReplayCustomPeriodOpen = false;
@@ -63,18 +65,18 @@ const controlReplayActionHandlers = {
     const startEpochMs = parseControlReplayCustomDateTime(start);
     const endEpochMs = parseControlReplayCustomDateTime(end);
     if (!Number.isFinite(startEpochMs) || !Number.isFinite(endEpochMs) || endEpochMs <= startEpochMs) {
-      state.controlReplayCustomPeriodError = "Kies een eindtijd na de starttijd.";
+      state.controlReplayCustomPeriodError = t("controlReplay.customEndAfterStart");
       render();
       return;
     }
     if (endEpochMs - startEpochMs > CONTROL_REPLAY_CUSTOM_MAX_RANGE_MS) {
-      state.controlReplayCustomPeriodError = "Een eigen periode mag maximaal 7 dagen beslaan.";
+      state.controlReplayCustomPeriodError = t("controlReplay.customMaxRange");
       render();
       return;
     }
     const nowMs = Date.now();
     if (startEpochMs < nowMs - CONTROL_REPLAY_CUSTOM_MAX_RANGE_MS || endEpochMs > nowMs + (60 * 1000)) {
-      state.controlReplayCustomPeriodError = "Kies een periode binnen de laatste 7 dagen.";
+      state.controlReplayCustomPeriodError = t("controlReplay.customInRange");
       render();
       return;
     }
@@ -82,6 +84,7 @@ const controlReplayActionHandlers = {
     state.controlReplayCustomEnd = end;
     state.controlReplayCustomPeriodError = "";
     state.controlReplayWindow = "custom";
+    state.controlReplayTimelineLimit = 80;
     state.controlReplayPeriodMenuOpen = false;
     state.controlReplayCustomPeriodOpen = false;
     setControlReplayGraphMinute("custom");
@@ -92,6 +95,10 @@ const controlReplayActionHandlers = {
   },
   "select-control-replay-episode": ({ button }) => {
     state.controlReplaySelectedEpisode = button.dataset.replayEpisode || "";
+    render();
+  },
+  "more-control-replay-events": () => {
+    state.controlReplayTimelineLimit = (Number(state.controlReplayTimelineLimit) || 80) + 80;
     render();
   },
   "toggle-control-replay-support-details": ({ button, event }) => {

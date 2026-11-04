@@ -66,6 +66,123 @@ void test_cold_start_temperature_bands() {
   assert(!decision.samples_ready);
 }
 
+void test_cold_start_availability_matrix() {
+  using oq_hp_supervisory::cold_start_required_added;
+  using oq_hp_supervisory::cold_start_required_set;
+  using oq_hp_supervisory::cold_start_sample_is_new;
+  using oq_hp_supervisory::ColdStartWaterSample;
+  using oq_hp_supervisory::evaluate_cold_start;
+
+  uint32_t sample_after_ms = 1000;
+
+  // A. HP1 unavailable, HP2 available and warm: healthy HP2 alone releases.
+  auto required = cold_start_required_set(false, true);
+  assert(!required.hp1);
+  assert(required.hp2);
+  ColdStartWaterSample hp1{required.hp1, NAN, 0};
+  ColdStartWaterSample hp2{required.hp2, 15.0f, 1001};
+  auto decision = evaluate_cold_start(sample_after_ms, hp1, hp2, 5.0f, 12.0f);
+  assert(decision.samples_ready);
+  assert(decision.hp_start_allowed);
+  assert(decision.released);
+  assert(decision.minimum_temperature_c == 15.0f);
+
+  // B. Mirror: only HP1 available.
+  required = cold_start_required_set(true, false);
+  assert(required.hp1);
+  assert(!required.hp2);
+  hp1 = ColdStartWaterSample{required.hp1, 15.0f, 1001};
+  hp2 = ColdStartWaterSample{required.hp2, NAN, 0};
+  decision = evaluate_cold_start(sample_after_ms, hp1, hp2, 5.0f, 12.0f);
+  assert(decision.samples_ready);
+  assert(decision.hp_start_allowed);
+  assert(decision.released);
+  assert(decision.minimum_temperature_c == 15.0f);
+
+  // C. Available HP below 5 C blocks the start.
+  required = cold_start_required_set(false, true);
+  hp1 = ColdStartWaterSample{required.hp1, NAN, 0};
+  hp2 = ColdStartWaterSample{required.hp2, 4.9f, 1001};
+  decision = evaluate_cold_start(sample_after_ms, hp1, hp2, 5.0f, 12.0f);
+  assert(decision.samples_ready);
+  assert(!decision.hp_start_allowed);
+  assert(!decision.released);
+
+  // D. Available HP at 5..12 C allows start with assist, without release.
+  hp2 = ColdStartWaterSample{required.hp2, 8.0f, 1001};
+  decision = evaluate_cold_start(sample_after_ms, hp1, hp2, 5.0f, 12.0f);
+  assert(decision.samples_ready);
+  assert(decision.hp_start_allowed);
+  assert(decision.auxiliary_assist_recommended);
+  assert(!decision.released);
+
+  // E. Two available HP's: both samples required, coldest outlet decides.
+  required = cold_start_required_set(true, true);
+  hp1 = ColdStartWaterSample{required.hp1, 15.0f, 1002};
+  hp2 = ColdStartWaterSample{required.hp2, 4.0f, 1003};
+  decision = evaluate_cold_start(sample_after_ms, hp1, hp2, 5.0f, 12.0f);
+  assert(decision.samples_ready);
+  assert(decision.minimum_temperature_c == 4.0f);
+  assert(!decision.hp_start_allowed);
+  assert(!decision.released);
+
+  // F. No available HP must never fake a release; fallback logic stays owner.
+  required = cold_start_required_set(false, false);
+  hp1 = ColdStartWaterSample{required.hp1, NAN, 0};
+  hp2 = ColdStartWaterSample{required.hp2, NAN, 0};
+  decision = evaluate_cold_start(sample_after_ms, hp1, hp2, 5.0f, 12.0f);
+  assert(!decision.samples_ready);
+  assert(!decision.hp_start_allowed);
+  assert(!decision.released);
+
+  // Recovery before any compressor start is a false->true edge in the
+  // required set, whatever the release history was.
+  const auto hp2_only = cold_start_required_set(false, true);
+  const auto both = cold_start_required_set(true, true);
+  const auto none = cold_start_required_set(false, false);
+  assert(!cold_start_required_added(hp2_only, hp2_only));
+  assert(cold_start_required_added(hp2_only, both));
+  assert(cold_start_required_added(none, cold_start_required_set(true, false)));
+  assert(!cold_start_required_added(hp2_only, none));
+  assert(!cold_start_required_added(both, both));
+  assert(!cold_start_required_added(both, hp2_only));
+
+  // Recovery must start a new freshness epoch: a measurement taken before
+  // the edge is stale even though it is newer than the original preflow.
+  // t=1000 flow OK, t=1500 HP1 sample, t=2000 HP1 offline, t=5000 HP2-only
+  // release, t=8000 HP1 recovers.
+  sample_after_ms = 1000;
+  hp1 = ColdStartWaterSample{false, 20.0f, 1500};
+  hp2 = ColdStartWaterSample{true, 21.0f, 4000};
+  decision = evaluate_cold_start(sample_after_ms, hp1, hp2, 5.0f, 12.0f);
+  assert(decision.released);
+  assert(cold_start_required_added(hp2_only, both));
+  // Without the epoch reset, the pre-recovery HP1 sample would wrongly
+  // count as fresh (1500 > 1000) and release immediately: the reported bug.
+  assert(cold_start_sample_is_new(ColdStartWaterSample{true, 20.0f, 1500}, 1000));
+  assert(evaluate_cold_start(1000, ColdStartWaterSample{true, 20.0f, 1500}, ColdStartWaterSample{true, 21.0f, 4000},
+                             5.0f, 12.0f)
+             .released);
+  sample_after_ms = 8000;  // runtime resets the epoch on the edge
+  assert(!cold_start_sample_is_new(ColdStartWaterSample{true, 20.0f, 1500}, sample_after_ms));
+  assert(!cold_start_sample_is_new(ColdStartWaterSample{true, 21.0f, 4000}, sample_after_ms));
+  decision = evaluate_cold_start(sample_after_ms, ColdStartWaterSample{true, 20.0f, 1500},
+                                 ColdStartWaterSample{true, 21.0f, 4000}, 5.0f, 12.0f);
+  assert(!decision.samples_ready);
+  assert(!decision.hp_start_allowed);
+  assert(!decision.released);
+  decision = evaluate_cold_start(sample_after_ms, ColdStartWaterSample{true, 20.5f, 8100},
+                                 ColdStartWaterSample{true, 21.0f, 8200}, 5.0f, 12.0f);
+  assert(decision.released);
+
+  // A validated HP that drops out and recovers also edges false->true, so
+  // it cannot restart on its pre-loss measurement either.
+  assert(!cold_start_required_added(hp2_only, none));
+  assert(cold_start_required_added(none, hp2_only));
+  sample_after_ms = 9000;  // runtime resets the epoch on the recovery edge
+  assert(!cold_start_sample_is_new(ColdStartWaterSample{true, 21.0f, 8200}, sample_after_ms));
+}
+
 oq_hp_supervisory::FallbackEvaluationInputs eligible_fallback_evaluation_inputs() {
   oq_hp_supervisory::FallbackEvaluationInputs inputs;
   inputs.current_mode = 3;
@@ -177,6 +294,77 @@ void test_fallback_evaluation_and_recovering_handover() {
   assert(!evaluation.decision.cm4_allowed);
 }
 
+void test_degraded_link_loss_cm4_evaluation() {
+  using oq_hp_fallback::FallbackBlockReason;
+  using oq_hp_supervisory::evaluate_fallback;
+
+  // Single HP, confirmed link loss, stop confirmation still pending: the
+  // fallback is requested but CM4 stays blocked on the HP output state.
+  auto inputs = eligible_fallback_evaluation_inputs();
+  inputs.all_hp_outputs_safe = false;
+  auto evaluation = evaluate_fallback(inputs);
+  assert(evaluation.fallback_requested);
+  assert(!evaluation.decision.cm4_allowed);
+  assert(evaluation.decision.block_reason == FallbackBlockReason::HP_OUTPUT_STATE_UNSAFE);
+
+  // After the stop-confirmation timeout the degraded output gate clears and
+  // CM4 is allowed while every other guard stays green.
+  inputs.all_hp_outputs_safe = true;
+  evaluation = evaluate_fallback(inputs);
+  assert(evaluation.fallback_requested);
+  assert(evaluation.decision.cm4_allowed);
+
+  // RECOVERING after a confirmed loss keeps CM4: raw availability is still
+  // incomplete, but the degraded gate completes it.
+  inputs.raw_availability_complete = false;
+  evaluation = evaluate_fallback(inputs);
+  assert(evaluation.availability_complete);
+  assert(evaluation.no_hp_available_confirmed);
+  assert(evaluation.decision.cm4_allowed);
+
+  // Every independent CM4 guard still blocks with a clear degraded gate.
+  const auto degraded = inputs;
+  const auto assert_still_blocked = [&](const oq_hp_supervisory::FallbackEvaluationInputs& candidate,
+                                        FallbackBlockReason expected) {
+    const auto blocked = evaluate_fallback(candidate);
+    assert(!blocked.decision.cm4_allowed);
+    assert(blocked.decision.block_reason == expected);
+  };
+  auto candidate = degraded;
+  candidate.flow_valid = false;
+  assert_still_blocked(candidate, FallbackBlockReason::FLOW_UNAVAILABLE);
+  candidate = degraded;
+  candidate.flow_sufficient = false;
+  assert_still_blocked(candidate, FallbackBlockReason::FLOW_INSUFFICIENT);
+  candidate = degraded;
+  candidate.supply_temperature_valid = false;
+  assert_still_blocked(candidate, FallbackBlockReason::SUPPLY_TEMPERATURE_UNAVAILABLE);
+  candidate = degraded;
+  candidate.boiler_guards_clear = false;
+  assert_still_blocked(candidate, FallbackBlockReason::BOILER_GUARD_BLOCKED);
+  candidate = degraded;
+  candidate.cooling_active = true;
+  assert_still_blocked(candidate, FallbackBlockReason::COOLING_ACTIVE);
+  candidate = degraded;
+  candidate.frost_active = true;
+  assert_still_blocked(candidate, FallbackBlockReason::FROST_ACTIVE);
+  candidate = degraded;
+  candidate.commissioning_active = true;
+  assert_still_blocked(candidate, FallbackBlockReason::COMMISSIONING_ACTIVE);
+  candidate = degraded;
+  candidate.override_active = true;
+  assert_still_blocked(candidate, FallbackBlockReason::OVERRIDE_ACTIVE);
+  candidate = degraded;
+  candidate.heating_demand = false;
+  assert_still_blocked(candidate, FallbackBlockReason::NO_HEATING_DEMAND);
+  candidate = degraded;
+  candidate.fallback_enabled = false;
+  assert_still_blocked(candidate, FallbackBlockReason::FALLBACK_DISABLED);
+  candidate = degraded;
+  candidate.available_hp_count = 1;
+  assert_still_blocked(candidate, FallbackBlockReason::HP_AVAILABLE);
+}
+
 void test_heating_mode_decisions() {
   using oq_hp_supervisory::decide_heating_mode;
   using oq_hp_supervisory::HeatingModeInputs;
@@ -284,6 +472,7 @@ int main() {
   test_heating_enable_gate();
   test_frost_control_mode_remains_independent_of_heating_request();
   test_cold_start_temperature_bands();
+  test_cold_start_availability_matrix();
   using oq_hp_supervisory::Cm4ResumeTracker;
   using oq_hp_supervisory::fallback_availability_is_confirmed;
   using oq_hp_supervisory::recovered_heating_mode;
@@ -330,6 +519,7 @@ int main() {
   assert(recovered_heating_mode(3, false, true, true) == 1);
 
   test_fallback_evaluation_and_recovering_handover();
+  test_degraded_link_loss_cm4_evaluation();
   test_heating_mode_decisions();
   test_control_mode_log_classification();
   return 0;

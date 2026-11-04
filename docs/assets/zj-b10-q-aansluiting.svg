@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 900" role="img" aria-labelledby="title desc">
+  <title id="title">ZJ-B10 naar Q-stekker — aansluitschema</title>
+  <desc id="desc">Aansluitschema van de ZJ-B10-flowmeter op de Q-stekker (Molex MX3.0). Rood naar pin 1, PT1000 draad 1 naar pin 2, geel via 4,7 kilo-ohm naar de basis van een BC547 NPN. Collector naar pin 3 FLOW GPIO15. Emitter en zwart naar pin 4 GND. PT1000 draad 2 naar pin 5. Pin 6 niet gebruikt. De emitterpijl wijst van de basis af.</desc>
+  <defs>
+    <style>
+      text { font-family: 'Inter', 'Segoe UI', Arial, sans-serif; fill: #111827; }
+      .eyebrow { font-size: 13px; font-weight: 700; letter-spacing: 2px; fill: #6b7280; }
+      .title { font-size: 38px; font-weight: 700; letter-spacing: -1px; }
+      .label { font-size: 21px; font-weight: 600; }
+      .small { font-size: 16px; fill: #6b7280; }
+      .pin { font-size: 17px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+      .wire { fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+      .symbol { fill: none; stroke: #111827; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; }
+      .terminal { fill: white; stroke-width: 3; }
+    </style>
+  </defs>
+  <rect width="1400" height="900" fill="#ffffff"/>
+
+  <rect x="24" y="24" width="1352" height="846" rx="16" fill="white" stroke="#e5e7eb"/>
+  <path d="M48 24 H1352 Q1376 24 1376 48 V134 H24 V48 Q24 24 48 24Z" fill="#f9fafb"/>
+  <rect x="58" y="53" width="26" height="4" rx="2" fill="#ea580c"/>
+  <text class="eyebrow" x="96" y="60" style="fill:#c2410c">AANSLUITSCHEMA</text>
+  <text class="title" x="58" y="108" style="fill:#111827">ZJ-B10 <tspan style="fill:#ea580c">→</tspan> Q-stekker</text>
+  <text class="small" x="1340" y="76" text-anchor="end" style="fill:#4b5563">Flowmeter &amp; temperatuursensor</text>
+  <text class="eyebrow" x="1340" y="104" text-anchor="end" style="fill:#6b7280">BC547 · NPN</text>
+
+  <rect x="48" y="156" width="278" height="624" rx="16" fill="#f9fafb"/>
+  <text class="eyebrow" x="72" y="186">01 / SENSOR</text>
+  <text class="small" x="72" y="210">ZJ-B10 + PT1000</text>
+  <rect x="1034" y="156" width="318" height="624" rx="16" fill="#f9fafb" stroke="#e5e7eb"/>
+  <text class="eyebrow" x="1058" y="186">03 / Q-STEKKER</text>
+  <text class="small" x="1058" y="210">Molex MX3.0 · 6-polig</text>
+  <text class="eyebrow" x="366" y="186">02 / VERBINDINGEN</text>
+  <rect x="417" y="383" width="565" height="192" rx="18" fill="#fff7ed" stroke="#fed7aa"/>
+
+  <g class="label">
+    <text x="99" y="255">+5V</text>
+    <text x="99" y="365">PT1000</text>
+    <text x="99" y="475">SIG</text>
+    <text x="99" y="615">GND</text>
+    <text x="99" y="725">PT1000</text>
+  </g>
+  <g class="small">
+    <text x="99" y="280">Rode draad</text><text x="99" y="390">Draad 1</text>
+    <text x="99" y="500">Gele draad · flow</text><text x="99" y="640">Zwarte draad</text>
+    <text x="99" y="750">Draad 2</text>
+  </g>
+  <g>
+    <rect x="72" y="241" width="12" height="18" rx="4" fill="#e5484d"/>
+    <rect x="72" y="351" width="12" height="18" rx="4" fill="#6b7280"/>
+    <rect x="72" y="461" width="12" height="18" rx="4" fill="#de9600"/>
+    <rect x="72" y="601" width="12" height="18" rx="4" fill="#111827"/>
+    <rect x="72" y="711" width="12" height="18" rx="4" fill="#6b7280"/>
+  </g>
+
+  <g class="wire">
+    <path d="M326 250 H1034" stroke="#e5484d"/>
+    <path d="M326 360 H1034" stroke="#6b7280"/>
+    <path d="M326 720 H1034" stroke="#6b7280"/>
+    <path d="M326 610 H1034" stroke="#111827"/>
+    <path d="M326 470 H452" stroke="#de9600"/>
+  </g>
+
+  <!-- IEC resistor, connected to the base. -->
+  <rect x="452" y="458" width="94" height="24" rx="1" fill="white" stroke="#111827" stroke-width="3.5"/>
+  <path class="symbol" d="M546 470 H650"/>
+  <text class="label" x="499" y="423" text-anchor="middle">4,7 kΩ</text>
+  <text class="small" x="499" y="447" text-anchor="middle">R1</text>
+
+  <!-- NPN: continuous base; collector above, emitter below.
+       The emitter arrow points away from the base and lies on the emitter branch.
+       Collector routing remains outside the symbol and never crosses the base. -->
+  <circle cx="681" cy="470" r="57" fill="white" stroke="#111827" stroke-width="2.5"/>
+  <path class="symbol" d="M603 470 H650 M650 434 V506 M650 450 L711 422 V396 H792 Q806 396 806 410 V456 Q806 470 820 470 H1034 M650 490 L711 518 V610"/>
+  <path d="M704 515 L684 516 L692 500 Z" fill="#111827"/>
+  <circle cx="711" cy="610" r="6" fill="#111827"/>
+  <text class="label" x="858" y="411">BC547</text>
+  <text class="small" x="858" y="435">Q1 · NPN</text>
+  <text class="small" x="627" y="432">B</text>
+  <text class="small" x="724" y="426">C</text>
+  <text class="small" x="724" y="548">E</text>
+  <text class="small" x="757" y="559" style="font-size:14px">Emitter → GND</text>
+
+  <g class="terminal">
+    <circle cx="1034" cy="250" r="5" stroke="#e5484d"/>
+    <circle cx="1034" cy="360" r="5" stroke="#6b7280"/>
+    <circle cx="1034" cy="470" r="5" stroke="#111827"/>
+    <circle cx="1034" cy="610" r="5" stroke="#111827"/>
+    <circle cx="1034" cy="720" r="5" stroke="#7a8fa5"/>
+  </g>
+  <g fill="white" stroke="#e5e7eb">
+    <rect x="1058" y="234" width="32" height="32" rx="8"/>
+    <rect x="1058" y="344" width="32" height="32" rx="8"/>
+    <rect x="1058" y="454" width="32" height="32" rx="8"/>
+    <rect x="1058" y="594" width="32" height="32" rx="8"/>
+    <rect x="1058" y="704" width="32" height="32" rx="8"/>
+    <rect x="1058" y="751" width="32" height="32" rx="8"/>
+  </g>
+  <g class="pin">
+    <text x="1074" y="250">1</text><text x="1074" y="360">2</text>
+    <text x="1074" y="470">3</text><text x="1074" y="610">4</text>
+    <text x="1074" y="720">5</text><text x="1074" y="767">6</text>
+  </g>
+  <g class="label">
+    <text x="1108" y="258">+5V</text><text x="1108" y="368">PT1000</text>
+    <text x="1108" y="478">FLOW</text><text x="1108" y="618">GND</text>
+    <text x="1108" y="728">PT1000</text>
+  </g>
+  <text class="small" x="1108" y="504">GPIO15</text>
+  <text class="small" x="1108" y="773">Niet gebruikt</text>
+  <path d="M58 803 H1342" stroke="#e5e7eb"/>
+  <circle cx="67" cy="829" r="5" fill="#111827"/>
+  <text class="small" x="82" y="834" style="font-size:14px">Punt = verbinding</text>
+  <text class="small" x="298" y="834" style="font-size:14px">Controleer de pinnummers op de stekker en de pinout van jouw BC547.</text>
+  <text class="small" x="1340" y="834" text-anchor="end" style="font-size:14px">B basis · C collector · E emitter</text>
+</svg>

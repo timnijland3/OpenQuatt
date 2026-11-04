@@ -238,6 +238,11 @@ void OpenQuattOduSettings::setup() {
     this->auto_reapply_.store((stored.flags & oq_odu::BOTTOM_PLATE_PROFILE_AUTO_REAPPLY) != 0U,
                               std::memory_order_release);
   }
+  if (this->controller_ != nullptr && this->controller_->hub() != nullptr) {
+    this->modbus_device_.set_parent(this->controller_->hub());
+    this->modbus_device_.set_address(this->controller_->device_address());
+    this->modbus_device_.set_parent_component(this);
+  }
   web_server_base::global_web_server_base->add_handler(new OduSettingsRequestHandler(this, this->hp_index_));
 }
 
@@ -316,10 +321,12 @@ OpenQuattOduSettings::RequestResult OpenQuattOduSettings::request_load() {
   if (!this->available_.load(std::memory_order_acquire) || !this->online_.load(std::memory_order_acquire)) {
     return RequestResult::UNAVAILABLE;
   }
+  const uint32_t epoch = web_server_base::global_web_server_base->recovery_epoch();
   uint32_t request_token = 0U;
   if (!this->begin_request_(request_token)) return RequestResult::BUSY;
   portENTER_CRITICAL(&this->state_mux_);
   this->pending_action_ = PendingAction::LOAD;
+  this->pending_recovery_epoch_ = epoch;
   this->pending_request_token_ = request_token;
   this->set_status_locked_("LOAD_REQUESTED");
   portEXIT_CRITICAL(&this->state_mux_);
@@ -333,26 +340,32 @@ OpenQuattOduSettings::RequestResult OpenQuattOduSettings::request_save(const oq_
     return RequestResult::UNAVAILABLE;
   }
   if (!this->identity_ready_.load(std::memory_order_acquire)) return RequestResult::IDENTITY_REQUIRED;
+  const uint32_t epoch = web_server_base::global_web_server_base->recovery_epoch();
   uint32_t request_token = 0U;
   if (!this->begin_request_(request_token)) return RequestResult::BUSY;
 
-  bool accepted = false;
+  RequestResult result = RequestResult::IDENTITY_REQUIRED;
   portENTER_CRITICAL(&this->state_mux_);
   if (this->token_matches_(request_token) && this->identity_ready_.load(std::memory_order_acquire)) {
-    this->desired_ = settings;
-    this->pending_profile_ =
-        oq_odu::make_bottom_plate_profile(settings, this->variant_, this->control_board_item_, auto_reapply);
-    this->pending_action_ = PendingAction::SAVE;
-    this->pending_request_token_ = request_token;
-    this->set_status_locked_("SAVE_REQUESTED");
-    accepted = true;
+    if (!oq_odu::valid_bottom_plate_settings(settings, this->variant_)) {
+      result = RequestResult::INVALID_SETTINGS;
+    } else {
+      this->desired_ = settings;
+      this->pending_profile_ =
+          oq_odu::make_bottom_plate_profile(settings, this->variant_, this->control_board_item_, auto_reapply);
+      this->pending_action_ = PendingAction::SAVE;
+      this->pending_recovery_epoch_ = epoch;
+      this->pending_request_token_ = request_token;
+      this->set_status_locked_("SAVE_REQUESTED");
+      result = RequestResult::ACCEPTED;
+    }
   }
   portEXIT_CRITICAL(&this->state_mux_);
-  if (!accepted) {
-    this->finish_operation_("IDENTITY_REQUIRED", request_token);
-    return RequestResult::IDENTITY_REQUIRED;
+  if (result != RequestResult::ACCEPTED) {
+    this->finish_operation_(result == RequestResult::INVALID_SETTINGS ? "INVALID_SETTINGS" : "IDENTITY_REQUIRED",
+                            request_token);
   }
-  return RequestResult::ACCEPTED;
+  return result;
 }
 
 bool OpenQuattOduSettings::identity_matches_profile_() const {
@@ -361,6 +374,7 @@ bool OpenQuattOduSettings::identity_matches_profile_() const {
 }
 
 bool OpenQuattOduSettings::persist_profile_(const oq_odu::BottomPlateProfileStorage& profile) {
+  if (!oq_odu::valid_bottom_plate_profile(profile)) return false;
   const bool queued = this->profile_pref_.save(&profile);
   const bool sync_ok = global_preferences->sync();
   oq_odu::BottomPlateProfileStorage verify{};
@@ -400,14 +414,21 @@ void OpenQuattOduSettings::loop() {
 
   PendingAction pending = PendingAction::NONE;
   uint32_t request_token = 0U;
+  uint32_t epoch = 0U;
   portENTER_CRITICAL(&this->state_mux_);
   pending = this->pending_action_;
   request_token = this->pending_request_token_;
+  epoch = this->pending_recovery_epoch_;
   this->pending_action_ = PendingAction::NONE;
   this->pending_request_token_ = 0U;
   portEXIT_CRITICAL(&this->state_mux_);
 
   if (pending != PendingAction::NONE) {
+    if (pending != PendingAction::RECONCILE && (web_server_base::global_web_server_base->is_recovery_active() ||
+                                                epoch != web_server_base::global_web_server_base->recovery_epoch())) {
+      this->finish_operation_("RECOVERY_CANCELLED", request_token);
+      return;
+    }
     const Operation operation = pending == PendingAction::LOAD
                                     ? Operation::LOAD
                                     : (pending == PendingAction::RECONCILE ? Operation::RECONCILE : Operation::APPLY);
@@ -416,7 +437,14 @@ void OpenQuattOduSettings::loop() {
       oq_odu::BottomPlateProfileStorage profile;
       portENTER_CRITICAL(&this->state_mux_);
       profile = this->pending_profile_;
+      const bool identity_matches =
+          this->identity_ready_.load(std::memory_order_acquire) &&
+          oq_odu::bottom_plate_profile_matches_identity(profile, this->control_board_item_, this->variant_);
       portEXIT_CRITICAL(&this->state_mux_);
+      if (!identity_matches) {
+        this->finish_operation_("IDENTITY_MISMATCH", request_token);
+        return;
+      }
       if (!this->persist_profile_(profile)) {
         portENTER_CRITICAL(&this->state_mux_);
         if (this->profile_available_.load(std::memory_order_acquire)) {
@@ -468,19 +496,23 @@ bool OpenQuattOduSettings::begin_reconcile_() {
 }
 
 void OpenQuattOduSettings::queue_settings_read_(uint32_t operation_token) {
-  auto command = modbus_controller::ModbusCommandItem::create_read_command(
-      this->controller_, modbus::EntityType::HOLDING, oq_odu::BOTTOM_PLATE_START_ADDRESS,
-      oq_odu::BOTTOM_PLATE_REGISTER_COUNT,
-      [this, operation_token](modbus::EntityType, uint16_t start_address, std::span<const uint8_t> data) {
-        if (!this->token_matches_(operation_token) || start_address != oq_odu::BOTTOM_PLATE_START_ADDRESS) return;
-        oq_odu::BottomPlateSettings settings;
-        if (!oq_odu::decode_bottom_plate_settings(data.data(), data.size(), settings)) {
-          this->fail_operation_(this->operation_ == Operation::LOAD ? "LOAD_FAILED" : "VERIFY_FAILED", operation_token);
-          return;
-        }
-        this->handle_settings_read_(settings, operation_token);
-      });
-  this->controller_->queue_command(std::move(command));
+  this->pending_modbus_token_ = operation_token;
+  this->pending_modbus_type_ = modbus::EntityType::HOLDING;
+  this->pending_modbus_start_ = oq_odu::BOTTOM_PLATE_START_ADDRESS;
+  this->pending_modbus_is_write_ = false;
+  this->pending_modbus_handler_ = [this, operation_token](modbus::EntityType, uint16_t start_address,
+                                                          std::span<const uint8_t> data) {
+    if (!this->token_matches_(operation_token) || start_address != oq_odu::BOTTOM_PLATE_START_ADDRESS) return;
+    oq_odu::BottomPlateSettings settings;
+    if (!oq_odu::decode_bottom_plate_settings(data.data(), data.size(), settings)) {
+      this->fail_operation_(this->operation_ == Operation::LOAD ? "LOAD_FAILED" : "VERIFY_FAILED", operation_token);
+      return;
+    }
+    this->handle_settings_read_(settings, operation_token);
+  };
+  const bool accepted = this->modbus_device_.read_holding_registers(oq_odu::BOTTOM_PLATE_START_ADDRESS,
+                                                                    oq_odu::BOTTOM_PLATE_REGISTER_COUNT);
+  if (!accepted) ESP_LOGW(TAG, "HP%u settings read not accepted", this->hp_index_);
 }
 
 void OpenQuattOduSettings::handle_settings_read_(const oq_odu::BottomPlateSettings& settings,
@@ -493,6 +525,20 @@ void OpenQuattOduSettings::handle_settings_read_(const oq_odu::BottomPlateSettin
   this->actual_ = settings;
   this->loaded_.store(true, std::memory_order_release);
   const Operation operation = this->operation_;
+  if (operation == Operation::APPLY &&
+      (web_server_base::global_web_server_base->is_recovery_active() ||
+       this->pending_recovery_epoch_ != web_server_base::global_web_server_base->recovery_epoch())) {
+    this->manual_apply_pending_.store(false, std::memory_order_release);
+    portEXIT_CRITICAL(&this->state_mux_);
+    this->finish_operation_("RECOVERY_CANCELLED", operation_token);
+    return;
+  }
+  if (operation != Operation::LOAD &&
+      (!this->identity_matches_profile_() || !oq_odu::valid_bottom_plate_settings(this->desired_, this->variant_))) {
+    portEXIT_CRITICAL(&this->state_mux_);
+    this->finish_operation_("IDENTITY_MISMATCH", operation_token);
+    return;
+  }
   const bool matches = oq_odu::bottom_plate_settings_match(settings, this->desired_);
   if (operation != Operation::LOAD && !matches) this->set_status_locked_("APPLYING");
   portEXIT_CRITICAL(&this->state_mux_);
@@ -515,6 +561,14 @@ void OpenQuattOduSettings::handle_settings_read_(const oq_odu::BottomPlateSettin
 
 void OpenQuattOduSettings::queue_next_write_(uint32_t operation_token) {
   if (!this->token_matches_(operation_token)) return;
+  portENTER_CRITICAL(&this->state_mux_);
+  const bool supported = this->identity_ready_.load(std::memory_order_acquire) && this->identity_matches_profile_() &&
+                         oq_odu::valid_bottom_plate_settings(this->desired_, this->variant_);
+  portEXIT_CRITICAL(&this->state_mux_);
+  if (!supported) {
+    this->fail_operation_("IDENTITY_MISMATCH", operation_token);
+    return;
+  }
   const auto targets = oq_odu::bottom_plate_write_targets(this->desired_);
   while (this->write_index_ < targets.size()) {
     const auto target = targets[this->write_index_];
@@ -533,38 +587,51 @@ void OpenQuattOduSettings::queue_next_write_(uint32_t operation_token) {
   const auto target = targets[current_index];
   this->write_started_ = true;
   this->write_tainted_.store(true, std::memory_order_release);
-  auto command = modbus_controller::ModbusCommandItem::create_write_single_command(this->controller_, target.address,
-                                                                                   target.value);
-  command.on_data_func = [this, current_index, operation_token](modbus::EntityType, uint16_t,
-                                                                std::span<const uint8_t>) {
+  this->pending_modbus_token_ = operation_token;
+  this->pending_modbus_type_ = modbus::EntityType::HOLDING;
+  this->pending_modbus_start_ = target.address;
+  this->pending_modbus_is_write_ = true;
+  this->pending_modbus_handler_ = [this, current_index, operation_token](modbus::EntityType, uint16_t,
+                                                                         std::span<const uint8_t>) {
     if (!this->token_matches_(operation_token) || this->write_index_ != current_index) return;
     ++this->write_index_;
     this->queue_next_write_(operation_token);
   };
-  this->controller_->queue_command(std::move(command));
+  const bool accepted = this->modbus_device_.write_single_register(target.address, target.value);
+  if (!accepted) ESP_LOGW(TAG, "HP%u settings write not accepted for addr %u", this->hp_index_, target.address);
 }
 
 void OpenQuattOduSettings::queue_readback_(uint32_t operation_token) {
-  auto command = modbus_controller::ModbusCommandItem::create_read_command(
-      this->controller_, modbus::EntityType::HOLDING, oq_odu::BOTTOM_PLATE_START_ADDRESS,
-      oq_odu::BOTTOM_PLATE_REGISTER_COUNT,
-      [this, operation_token](modbus::EntityType, uint16_t start_address, std::span<const uint8_t> data) {
-        if (!this->token_matches_(operation_token) || start_address != oq_odu::BOTTOM_PLATE_START_ADDRESS) return;
-        oq_odu::BottomPlateSettings actual;
-        if (!oq_odu::decode_bottom_plate_settings(data.data(), data.size(), actual) ||
-            !oq_odu::bottom_plate_settings_match(actual, this->desired_)) {
-          this->fail_operation_("VERIFY_FAILED", operation_token);
-          return;
-        }
-        portENTER_CRITICAL(&this->state_mux_);
-        this->actual_ = actual;
-        this->loaded_.store(true, std::memory_order_release);
-        this->manual_apply_pending_.store(false, std::memory_order_release);
-        this->write_tainted_.store(false, std::memory_order_release);
-        portEXIT_CRITICAL(&this->state_mux_);
-        this->finish_operation_("IN_SYNC", operation_token, PERIODIC_RECONCILE_MS);
-      });
-  this->controller_->queue_command(std::move(command));
+  this->pending_modbus_token_ = operation_token;
+  this->pending_modbus_type_ = modbus::EntityType::HOLDING;
+  this->pending_modbus_start_ = oq_odu::BOTTOM_PLATE_START_ADDRESS;
+  this->pending_modbus_is_write_ = false;
+  this->pending_modbus_handler_ = [this, operation_token](modbus::EntityType, uint16_t start_address,
+                                                          std::span<const uint8_t> data) {
+    if (!this->token_matches_(operation_token) || start_address != oq_odu::BOTTOM_PLATE_START_ADDRESS) return;
+    oq_odu::BottomPlateSettings actual;
+    if (!oq_odu::decode_bottom_plate_settings(data.data(), data.size(), actual) ||
+        !oq_odu::bottom_plate_settings_match(actual, this->desired_)) {
+      this->fail_operation_("VERIFY_FAILED", operation_token);
+      return;
+    }
+    portENTER_CRITICAL(&this->state_mux_);
+    if (!this->identity_ready_.load(std::memory_order_acquire) || !this->identity_matches_profile_() ||
+        !oq_odu::valid_bottom_plate_settings(actual, this->variant_)) {
+      portEXIT_CRITICAL(&this->state_mux_);
+      this->fail_operation_("IDENTITY_MISMATCH", operation_token);
+      return;
+    }
+    this->actual_ = actual;
+    this->loaded_.store(true, std::memory_order_release);
+    this->manual_apply_pending_.store(false, std::memory_order_release);
+    this->write_tainted_.store(false, std::memory_order_release);
+    portEXIT_CRITICAL(&this->state_mux_);
+    this->finish_operation_("IN_SYNC", operation_token, PERIODIC_RECONCILE_MS);
+  };
+  const bool accepted = this->modbus_device_.read_holding_registers(oq_odu::BOTTOM_PLATE_START_ADDRESS,
+                                                                    oq_odu::BOTTOM_PLATE_REGISTER_COUNT);
+  if (!accepted) ESP_LOGW(TAG, "HP%u settings readback not accepted", this->hp_index_);
 }
 
 void OpenQuattOduSettings::release_bus_(uint32_t request_token) {
@@ -693,6 +760,55 @@ void OpenQuattOduSettings::write_status(httpd_req_t* req) const {
   write_settings(defaults);
   writer.write_char('}');
   writer.finish();
+}
+
+void OpenQuattOduSettings::SettingsModbusDevice::on_response(std::span<const uint8_t> request_pdu,
+                                                             std::span<const uint8_t> response_pdu) {
+  if (this->parent_ == nullptr || this->parent_->controller_ == nullptr) return;
+  auto addr_opt = modbus::helpers::client_pdu_start_address(request_pdu);
+  const uint16_t start_address = addr_opt.has_value() ? *addr_opt : this->parent_->pending_modbus_start_;
+  const uint8_t fc = modbus::helpers::pdu_function_code(request_pdu);
+  this->parent_->controller_->set_online(true, static_cast<int>(fc), static_cast<int>(start_address));
+  auto payload = modbus::helpers::server_pdu_payload(response_pdu);
+  if (this->parent_->pending_modbus_handler_) {
+    this->parent_->pending_modbus_handler_(this->parent_->pending_modbus_type_, start_address, payload);
+  }
+}
+
+void OpenQuattOduSettings::SettingsModbusDevice::on_error(std::span<const uint8_t> request_pdu,
+                                                          modbus::ExceptionCode ec) {
+  if (this->parent_ == nullptr || this->parent_->controller_ == nullptr) return;
+  auto addr_opt = modbus::helpers::client_pdu_start_address(request_pdu);
+  const uint16_t start_address = addr_opt.has_value() ? *addr_opt : this->parent_->pending_modbus_start_;
+  const uint8_t fc = modbus::helpers::pdu_function_code(request_pdu);
+  this->parent_->controller_->set_online(true, static_cast<int>(fc), static_cast<int>(start_address));
+  ESP_LOGW(TAG, "HP%u settings Modbus exception %u", this->parent_->hp_index_, static_cast<uint8_t>(ec));
+  if (this->parent_->pending_modbus_is_write_) {
+    this->parent_->fail_operation_("Verification failed: ODU rejected the write", this->parent_->pending_modbus_token_);
+    return;
+  }
+  if (this->parent_->pending_modbus_handler_) {
+    this->parent_->pending_modbus_handler_(this->parent_->pending_modbus_type_, start_address,
+                                           std::span<const uint8_t>{});
+  }
+}
+
+bool OpenQuattOduSettings::SettingsModbusDevice::on_no_response(std::span<const uint8_t> request_pdu) {
+  if (this->parent_ == nullptr || this->parent_->controller_ == nullptr) return false;
+  auto addr_opt = modbus::helpers::client_pdu_start_address(request_pdu);
+  const uint16_t start_address = addr_opt.has_value() ? *addr_opt : this->parent_->pending_modbus_start_;
+  const uint8_t fc = modbus::helpers::pdu_function_code(request_pdu);
+  auto* ctrl = this->parent_->controller_;
+  ctrl->increment_non_response_count();
+  if (ctrl->can_send()) return true;
+  ctrl->set_online(false, static_cast<int>(fc), static_cast<int>(start_address));
+  ESP_LOGW(TAG, "HP%u settings Modbus no response", this->parent_->hp_index_);
+  return false;
+}
+
+void OpenQuattOduSettings::SettingsModbusDevice::on_not_sent(std::span<const uint8_t> request_pdu) {
+  if (this->parent_ == nullptr) return;
+  ESP_LOGW(TAG, "HP%u settings Modbus not sent", this->parent_->hp_index_);
 }
 
 }  // namespace openquatt_odu_settings

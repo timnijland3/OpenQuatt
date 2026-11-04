@@ -1,7 +1,9 @@
-import { FREQUENCY_MINIMUM_KEYS } from "./config.js";
+import { syncPerformanceTelemetryPrompt } from "../features/performance-telemetry-prompt.js";
+import { FREQUENCY_MINIMUM_KEYS, HP_PANEL_CONFIGS } from "./config.js";
 import { patchFrequencyLimitWarnings } from "../features/frequency-limits.js";
+import { t } from "../i18n/index.js";
 import { getSetupCompleteState, isTrendHistoryEnabled, renderAppSummary } from "./app-shared.js";
-import { AUX_RELAY_SETTING_KEYS, AUX_RELAY_STATE_KEYS, BOILER_DIAGNOSTIC_KEYS, BOILER_SETTING_KEYS, BOILER_SUPPORT_SWITCHING_KEYS, BULK_POLL_INTERVAL_MS, CIC_COMPATIBILITY_KEYS, CIC_POLLING_DIAGNOSTIC_KEYS, CIC_POLLING_SETTING_KEYS, COMMISSIONING_STATE_KEYS, COMPRESSOR_SETTING_KEYS, CONNECTIVITY_PROBE_SUCCESS_TTL_MS, CONNECTIVITY_PROBE_TIMEOUT_MS, CONTROL_REPLAY_STATE_KEYS, COOLING_SCHEDULE_EFFECTIVE_SOURCE_KEY, COOLING_SCHEDULE_SOURCE_KEY, COOLING_SCHEDULE_TIME_KEYS, COOLING_SCHEDULE_VALID_KEY, COOLING_SETTING_KEYS, CURVE_POINTS, CURVE_SETTING_KEYS, ENTITY_DEFS, ENTITY_REFRESH_CONCURRENCY, FAST_OVERVIEW_KEYS, FAST_VIEW_ENTITY_REFRESH_CONCURRENCY, FIRMWARE_ENTITY_KEYS, FIRMWARE_MODAL_KEYS, FLOW_SETTING_KEYS, FLOW_TUNING_KEYS, FREQUENCY_CAP_KEYS, HEADER_ENTITY_KEYS, HIDDEN_POLL_INTERVAL_MS, INSTALLATION_MONITORING_STATE_KEYS, LIMIT_KEYS, OPENTHERM_DIAGNOSTIC_KEYS, OPENTHERM_SETTING_KEYS, OTB_DIAGNOSTIC_KEYS, OVERVIEW_ENERGY_COLUMN_CONFIGS, OVERVIEW_KEYS, OVERVIEW_METADATA_KEYS, POWER_HOUSE_KEYS, QUICK_START_FLOW_SOURCE_KEYS, QUICK_START_THERMOSTAT_SOURCE_KEYS, SENSOR_CALIBRATION_KEYS, SENSOR_CALIBRATION_STATE_KEYS, SENSOR_SELECTION_KEYS, SENSOR_SELECTION_STATE_KEYS, SERVICE_CONTROL_KEYS, SERVICE_STATUS_ENTITY_KEYS, SETTINGS_GROUP_IDS, SETTINGS_GROUPS, SETTINGS_KEYS, SILENT_SETTING_KEYS, STATIC_POLL_INTERVAL_MS } from "./config.js";
+import { AUX_RELAY_SETTING_KEYS, AUX_RELAY_STATE_KEYS, BOILER_DIAGNOSTIC_KEYS, BOILER_SETTING_KEYS, BOILER_SUPPORT_SWITCHING_KEYS, BULK_POLL_INTERVAL_MS, CIC_COMPATIBILITY_KEYS, CIC_POLLING_DIAGNOSTIC_KEYS, CIC_POLLING_SETTING_KEYS, COMMISSIONING_STATE_KEYS, COMPRESSOR_SETTING_KEYS, CONNECTIVITY_PROBE_SUCCESS_TTL_MS, CONNECTIVITY_PROBE_TIMEOUT_MS, CONTROL_REPLAY_STATE_KEYS, COOLING_SCHEDULE_EFFECTIVE_SOURCE_KEY, COOLING_SCHEDULE_SOURCE_KEY, COOLING_SCHEDULE_TIME_KEYS, COOLING_SCHEDULE_VALID_KEY, COOLING_SETTING_KEYS, CURVE_POINTS, CURVE_SETTING_KEYS, ENTITY_DEFS, ENTITY_REFRESH_CONCURRENCY, FAST_OVERVIEW_KEYS, FAST_VIEW_ENTITY_REFRESH_CONCURRENCY, FIRMWARE_ENTITY_KEYS, FIRMWARE_MODAL_KEYS, FLOW_SETTING_KEYS, FLOW_TUNING_KEYS, FREQUENCY_CAP_KEYS, HEADER_ENTITY_KEYS, HIDDEN_POLL_INTERVAL_MS, INSTALLATION_MONITORING_STATE_KEYS, LIMIT_KEYS, OPENTHERM_DIAGNOSTIC_KEYS, OPENTHERM_SETTING_KEYS, OTB_DIAGNOSTIC_KEYS, OVERVIEW_ENERGY_COLUMN_CONFIGS, OVERVIEW_KEYS, OVERVIEW_METADATA_KEYS, POWER_HOUSE_KEYS, QUICK_START_FLOW_SOURCE_KEYS, QUICK_START_THERMOSTAT_SOURCE_KEYS, SENSOR_CALIBRATION_KEYS, SENSOR_CALIBRATION_STATE_KEYS, SENSOR_SELECTION_KEYS, SENSOR_SELECTION_STATE_KEYS, SERVICE_CONTROL_KEYS, SERVICE_STATUS_ENTITY_KEYS, SETTINGS_GROUP_IDS, SETTINGS_GROUPS, SETTINGS_KEYS, SILENT_SETTING_KEYS, STATIC_POLL_INTERVAL_MS, WARMUP_SETTING_KEYS, WARMUP_STATE_KEYS } from "./config.js";
 import { buildEntityPath, isCurveMode } from "./domain-helpers.js";
 import { getEntityValue, parseLooseNumber } from "./entity-store.js";
 import { state } from "./state.js";
@@ -21,9 +23,11 @@ import { refreshEnergyHistoryData, refreshSettingsStorageState, refreshTrendHist
 import { patchControlReplayDom, patchDiagnosisDom, patchEnergyDom, patchOverviewDom, patchResultsDom } from "./view-patch-controls.js";
 import { clearWebServerLogOutput, closeWebServerLogStream, resetWebServerLogRecoveryState } from "./webserver-log-controls.js";
 import { getMqttSensorsModalRenderSignature, refreshMqttStatus, shouldRefreshMqttStatusForCurrentSurface } from "../features/mqtt-actions.js";
-import { getApiSecurityStatusSignature, refreshApiSecurityStatus, refreshAuthStatus, shouldRefreshApiSecurityStatusForCurrentSurface, shouldRefreshAuthStatusForCurrentSurface } from "../features/security-actions.js";
+import { refreshApiSecurityStatus, refreshAuthStatus, shouldRefreshApiSecurityStatusForCurrentSurface, shouldRefreshAuthStatusForCurrentSurface } from "../features/security-actions.js";
 import { refreshOduEepromDumpStatuses, shouldRefreshOduEepromDumpSurface } from "../features/odu-eeprom-dump.js";
+import { refreshOduDefrostStatuses, shouldRefreshOduDefrostSurface } from "../features/odu-defrost.js";
 import { refreshOduRuntimeFrequencyStatuses, shouldRefreshOduRuntimeFrequencySurface } from "../features/odu-runtime-frequency.js";
+import { refreshHouseLearningStatus, shouldRefreshHouseLearningStatusSurface } from "../features/house-learning.js";
 import { refreshOduSettingsStatuses, shouldRefreshOduSettingsSurface } from "../features/odu-settings.js";
 import {
   captureUsageTelemetryPreview,
@@ -161,6 +165,9 @@ import { fetchWithTimeout } from "./browser-utils.js";
           ? refreshIncidentMonitoringData({ force: true })
           : false,
       ]);
+      if (shouldRefreshHouseLearningStatusSurface()) {
+        void refreshHouseLearningStatus({ force: true });
+      }
       if (state.appView === "settings") {
         await waitForInitialSettingsReady();
       } else {
@@ -187,6 +194,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
       "otbLinkAvailable",
       "otbConnectionAutoSelected",
       "otbConnectionMismatch",
+      "otbConnectionState",
       "auxRelayFunction",
       "flowControlMode",
       "flowSetpoint",
@@ -207,7 +215,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
       "commissioningStatus",
       "cm100Active",
     ],
-    heating: ["strategy"],
+    heating: ["strategy", "maxWater"],
     cooling: [
       "manualCoolingEnable",
       "coolingWithoutDewPointMode",
@@ -216,8 +224,8 @@ import { fetchWithTimeout } from "./browser-utils.js";
       COOLING_SCHEDULE_VALID_KEY,
       COOLING_SCHEDULE_EFFECTIVE_SOURCE_KEY,
     ],
-    integrations: ["otEnabled", "cicPollingEnabled", "flowSource", "boilerConnection", "boilerCommandValid", "otbLinkAvailable"],
-    system: ["setupComplete", "projectVersionText", "releaseChannelText", "firmwareUpdateChannel", "statusLedsEnabled", "usageTelemetryEnabled", "usageTelemetryChoiceConfigured", "usageTelemetryInstallationId"],
+    integrations: ["otEnabled", "cicPollingEnabled", "flowSource", "boilerConnection", "boilerCommandValid", "otbLinkAvailable", "otbConnectionState"],
+    system: ["setupComplete", "projectVersionText", "releaseChannelText", "firmwareUpdateChannel", "statusLedsEnabled", "usageTelemetryEnabled", "usageTelemetryChoiceConfigured", "usageTelemetryInstallationId", "performanceTelemetryEnabled"],
   };
 
   export const SETTINGS_GROUP_KEY_MAP = {
@@ -235,6 +243,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
       "otbLinkAvailable",
       "otbConnectionAutoSelected",
       "otbConnectionMismatch",
+      "otbConnectionState",
       ...BOILER_SUPPORT_SWITCHING_KEYS,
       ...AUX_RELAY_SETTING_KEYS,
       ...AUX_RELAY_STATE_KEYS,
@@ -263,8 +272,19 @@ import { fetchWithTimeout } from "./browser-utils.js";
       ...SERVICE_CONTROL_KEYS,
     ],
     heating: [
+      "roomTemp",
+      "roomSetpoint",
+      ...WARMUP_SETTING_KEYS,
+      ...WARMUP_STATE_KEYS,
       "strategy",
+      "maxWater",
       ...POWER_HOUSE_KEYS,
+      "houseLearningEnabled",
+      "houseLearningReset",
+      "hp1WaterIn",
+      "hp1WaterOut",
+      "hp2WaterIn",
+      "hp2WaterOut",
       ...CURVE_SETTING_KEYS,
       ...FREQUENCY_CAP_KEYS,
       ...FREQUENCY_MINIMUM_KEYS,
@@ -311,6 +331,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
       "usageTelemetryEnabled",
       "usageTelemetryChoiceConfigured",
       "usageTelemetryInstallationId",
+      "performanceTelemetryEnabled",
       ...SETTINGS_STORAGE_KEYS,
       "debugLevel",
     ],
@@ -385,7 +406,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
   }
 
   export function getEnergyViewEntityKeys() {
-    const keys = new Set();
+    const keys = new Set(["controlModeLabel", "auxHeatSourcePresent", "boilerCvAssistEnabled", ...HP_PANEL_CONFIGS.flatMap(({ keys }) => [keys.mode, keys.freq, keys.defrost])]);
     OVERVIEW_ENERGY_COLUMN_CONFIGS.forEach((column) => {
       if (column.counterResetKey) {
         keys.add(column.counterResetKey);
@@ -968,6 +989,9 @@ import { fetchWithTimeout } from "./browser-utils.js";
 
   export function mergeServiceStatusPayload(payload = {}) {
     const entities = payload?.entities && typeof payload.entities === "object" ? payload.entities : {};
+    // Old firmware and failed requests must not leave a stale session timer.
+    delete state.entities.warmupStatus;
+    delete state.entities.warmupElapsed;
     Object.entries(entities).forEach(([key, entity]) => {
       if (!SERVICE_STATUS_ENTITY_KEYS.has(key)) {
         return;
@@ -989,6 +1013,8 @@ import { fetchWithTimeout } from "./browser-utils.js";
       state.lastEntityResponseAt = Date.now();
       return { ok: true, message: "" };
     } catch (error) {
+      delete state.entities.warmupStatus;
+      delete state.entities.warmupElapsed;
       return { ok: false, message: error.message || String(error) };
     }
   }
@@ -996,6 +1022,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
   export async function refreshEntities(keys, detail = "state", options = {}) {
     const now = Date.now();
     const timeWriteRevision = state.timeWriteRevision;
+    const performancePromptWriteRevision = state.performanceTelemetryPromptWriteRevision;
     const forceMissing = options.forceMissing === true;
     const refreshKeys = keys.filter((key) =>
       forceMissing || SERVICE_STATUS_ENTITY_KEYS.has(key) || !isKnownOptionalMissingEntity(key, now)
@@ -1053,6 +1080,9 @@ import { fetchWithTimeout } from "./browser-utils.js";
       const missing = new Set(Array.isArray(payload?.missing) ? payload.missing : []);
 
       chunk.keys.forEach((key) => {
+        // A poll started before/during a prompt write must not restore unhandled consent.
+        if (["performanceTelemetryEnabled", "performanceTelemetryChoiceConfigured", "performanceTelemetryPromptHandled"].includes(key)
+            && (state.performanceTelemetryPromptBusy || state.performanceTelemetryPromptWriteRevision !== performancePromptWriteRevision)) return;
         // A poll started before/during a time write must not restore the old time.
         if (ENTITY_DEFS[key]?.domain === "time"
             && (state.savingTimeFields.has(key) || state.timeWriteRevision !== timeWriteRevision)) return;
@@ -1070,7 +1100,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
             markOptionalMissingEntity(key, now);
           }
         } else if (!firstError) {
-          firstError = `${entity?.name || key} ontbreekt in bulk response`;
+          firstError = t("entitySync.missingBulkField", { name: entity?.name || key });
         }
       });
     });
@@ -1082,7 +1112,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
       if (state.deviceReconnectMode) {
         state.controlError = "";
       } else {
-        state.controlError = `Niet alle helpervelden konden worden ververst. ${firstError}`;
+        state.controlError = t("entitySync.refreshIncomplete", { error: firstError });
       }
     } else if (!state.busyAction) {
       noteEntityRefreshSuccess();
@@ -1095,6 +1125,10 @@ import { fetchWithTimeout } from "./browser-utils.js";
       ...(previous || {}),
       ...(payload || {}),
     };
+    if (key === "firmwareUpdate") {
+      // Revision is live confirmation metadata, never a cached capability from older firmware.
+      next.manifest_revision = payload?.manifest_revision;
+    }
     const isSelect = ENTITY_DEFS[key]?.domain === "select";
     if (!isSelect) {
       return next;
@@ -1117,7 +1151,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
 
   export function applyDerivedState() {
     state.complete = getSetupCompleteState();
-    state.stage = state.complete === true ? "Gereed" : state.complete === false ? "Quick Start" : "Laden...";
+    state.stage = state.complete === true ? t("common.done") : state.complete === false ? "Quick Start" : t("common.loading");
     state.summary = renderAppSummary();
     if (state.appView === "diagnosis" && !isTrendHistoryEnabled()) {
       setAppView(getDefaultAppView(), { syncMode: "replace", forceSync: true });
@@ -1261,6 +1295,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
     try {
       let usageTelemetryPreviewChanged = false;
       const reconnectModeBefore = state.deviceReconnectMode;
+      const systemModalBefore = state.systemModal;
       const probe = shouldRefreshConnectivityProbe(now, options)
         ? await refreshConnectivityProbe()
         : { ok: true, message: "" };
@@ -1336,11 +1371,22 @@ import { fetchWithTimeout } from "./browser-utils.js";
       if (!shouldDeferSupplementary && shouldRefreshOduEepromDumpSurface()) {
         await refreshOduEepromDumpStatuses();
       }
+      if (!shouldDeferSupplementary && shouldRefreshOduDefrostSurface()) {
+        await refreshOduDefrostStatuses();
+      }
       if (!shouldDeferSupplementary && shouldRefreshOduRuntimeFrequencySurface()) {
         await refreshOduRuntimeFrequencyStatuses();
       }
+      if (!shouldDeferSupplementary && shouldRefreshHouseLearningStatusSurface()) {
+        await refreshHouseLearningStatus();
+      }
       if (!shouldDeferSupplementary && shouldRefreshOduSettingsSurface()) {
         await refreshOduSettingsStatuses();
+      }
+      syncPerformanceTelemetryPrompt();
+      if (systemModalBefore !== state.systemModal) {
+        render();
+        return;
       }
       const nextHeaderSignature = getHeaderRenderSignature();
       if (shouldDeferSupplementary && !state.nativeOpen) {
@@ -1430,6 +1476,8 @@ import { fetchWithTimeout } from "./browser-utils.js";
         return;
       }
       if (state.appView === "settings") {
+        if (state.warmupSettingsRenderPending
+            && (state.warmupSettingsPointerActive || document.activeElement?.closest?.("button, [data-oq-action]"))) return;
         const nextSettingsSignature = getSettingsRenderSignature();
         if (nextSettingsSignature !== state.settingsRenderSignature) {
           if (!state.focusedField) {
@@ -1443,7 +1491,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
           }
           return;
         }
-        if (state.focusedField) {
+        if (state.focusedField && !state.warmupSettingsRenderPending) {
           state.settingsRenderSignature = nextSettingsSignature;
         }
         return;
@@ -1477,7 +1525,7 @@ import { fetchWithTimeout } from "./browser-utils.js";
       }
     } catch (error) {
       if (!isPrefetchOverview) {
-        state.controlError = `Helperstatus kon niet worden geladen. ${error.message}`;
+        state.controlError = t("entitySync.statusLoadFailed", { error: error.message });
         render();
       }
     } finally {

@@ -5,8 +5,6 @@ const FALLBACK_RELEASE_URL = "https://github.com/OpenQuatt/OpenQuatt/releases/la
 const FALLBACK_DEVICE_URL = "http://openquatt.local";
 
 const HARDWARE_LABELS = {
-  waveshare: "Waveshare ESP32-S3-Relay-1CH",
-  heatpump_listener: "Electropaultje Heatpump Listener",
   heatpump_controller_q: "Electropaultje Heatpump Controller Q-edition",
 };
 
@@ -19,28 +17,6 @@ const CONNECTION_LABELS = {
 const PROFILES = {
   duo: {
     label: "Duo",
-    waveshare: {
-      wifi: {
-        title: "OpenQuatt Duo / Waveshare / Wi-Fi",
-        chipFamily: "ESP32-S3",
-        hardwareLabel: HARDWARE_LABELS.waveshare,
-        connectionLabel: CONNECTION_LABELS.wifi,
-        fileName: "openquatt-waveshare-duo-wifi.firmware.factory.bin",
-        legacyFileNames: ["openquatt-duo-waveshare.firmware.factory.bin"],
-        releaseFallback: true,
-      },
-    },
-    heatpump_listener: {
-      wifi: {
-        title: "OpenQuatt Duo / Heatpump Listener / Wi-Fi",
-        chipFamily: "ESP32",
-        hardwareLabel: HARDWARE_LABELS.heatpump_listener,
-        connectionLabel: CONNECTION_LABELS.wifi,
-        fileName: "openquatt-heatpump-listener-duo-wifi.firmware.factory.bin",
-        legacyFileNames: ["openquatt-duo-heatpump-listener.firmware.factory.bin"],
-        releaseFallback: true,
-      },
-    },
     heatpump_controller_q: {
       auto: {
         title: "OpenQuatt Duo / Heatpump Controller Q / Automatisch",
@@ -55,28 +31,6 @@ const PROFILES = {
   },
   single: {
     label: "Single",
-    waveshare: {
-      wifi: {
-        title: "OpenQuatt Single / Waveshare / Wi-Fi",
-        chipFamily: "ESP32-S3",
-        hardwareLabel: HARDWARE_LABELS.waveshare,
-        connectionLabel: CONNECTION_LABELS.wifi,
-        fileName: "openquatt-waveshare-single-wifi.firmware.factory.bin",
-        legacyFileNames: ["openquatt-single-waveshare.firmware.factory.bin"],
-        releaseFallback: true,
-      },
-    },
-    heatpump_listener: {
-      wifi: {
-        title: "OpenQuatt Single / Heatpump Listener / Wi-Fi",
-        chipFamily: "ESP32",
-        hardwareLabel: HARDWARE_LABELS.heatpump_listener,
-        connectionLabel: CONNECTION_LABELS.wifi,
-        fileName: "openquatt-heatpump-listener-single-wifi.firmware.factory.bin",
-        legacyFileNames: ["openquatt-single-heatpump-listener.firmware.factory.bin"],
-        releaseFallback: true,
-      },
-    },
     heatpump_controller_q: {
       auto: {
         title: "OpenQuatt Single / Heatpump Controller Q / Automatisch",

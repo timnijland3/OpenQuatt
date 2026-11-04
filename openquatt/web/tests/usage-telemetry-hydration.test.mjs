@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { setLocale, t } from "../js/src/i18n/index.js";
 
 import { DEBUG_RECORDING_KEYS, ENTITY_DEFS, FAST_OVERVIEW_KEYS, HEADER_ENTITY_KEYS, OVERVIEW_KEYS, QUICK_STEPS, SETTINGS_KEYS } from "../js/src/core/config.js";
 
@@ -18,6 +19,7 @@ const {
   flowSourceConfigWireValue,
   loadUsageTelemetryPreviewMqttEnabled,
   USAGE_TELEMETRY_PREVIEW_ENTITY_KEYS,
+  waterSupplySourceWireValue,
 } = await import("../js/src/core/usage-telemetry-preview.js");
 
 test("usage telemetry is hydrated before Quick Start filters optional steps", () => {
@@ -41,10 +43,13 @@ test("usage telemetry preview maps live entity values to the wire contract", () 
     releaseChannelText: "dev",
     hardwareProfileText: "heatpump_controller_q",
     hardwareRevisionText: "1.0 (batch 42)",
+    hardwareSerial: 137,
     installationTopology: "duo",
     connectionText: "WiFi",
     preferredConnection: "Automatic",
     hpGeneration: "V1.5",
+    waterSupplySource: "Local",
+    localWaterSupplyTempSource: "PT1000",
     flowSource: "Outdoor unit",
     qFlowSource: "Local",
     strategy: "Power House",
@@ -88,10 +93,12 @@ test("usage telemetry preview maps live entity values to the wire contract", () 
     release_channel: "dev",
     hardware_profile: "heatpump_controller_q",
     hardware_revision: "1.0 (batch 42)",
+    hardware_serial: 137,
     topology: "duo",
     connection: "wifi",
     connection_preference: "auto",
     quatt_hybrid_generation_config: "v1_5",
+    water_supply_source: "pt1000",
     flow_source_config: "controller_local",
     heating_strategy: "power_house",
     room_temperature_source: "opentherm",
@@ -102,6 +109,10 @@ test("usage telemetry preview maps live entity values to the wire contract", () 
     cooling_dew_point_source: "mqtt",
     external_heat_demand_source: "api_input",
     heating_supply_target_source: "heating_curve",
+    modbus_partial_response_count: null,
+    modbus_parse_failed_count: null,
+    modbus_recovered_response_count: null,
+    modbus_offline_count: null,
     heap_free_b: 178432,
     heap_min_free_b: 151008,
     heap_largest_block_b: 98304,
@@ -120,13 +131,70 @@ test("usage telemetry preview maps live entity values to the wire contract", () 
     trend_flash_enabled: false,
     decision_log_flash_enabled: false,
     energy_history_flash_enabled: true,
+    house_learning_enabled: null,
     ram_log_history_enabled: true,
   });
+  const largeCounterPayload = {
+    ...preview,
+    message_id: "12345678-1234-1234-1234-123456789abc",
+    house_learning_enabled: false,
+    modbus_partial_response_count: 4294967295,
+    modbus_parse_failed_count: 4294967295,
+    modbus_recovered_response_count: 4294967295,
+    modbus_offline_count: 4294967295,
+  };
+  assert.ok(Buffer.byteLength(JSON.stringify(largeCounterPayload)) < 2048);
   assert.equal(flowSourceConfigWireValue("Outdoor unit", "Auto", true), "outdoor_unit");
   assert.equal(flowSourceConfigWireValue("Outdoor unit", undefined, false), "outdoor_unit");
+  assert.equal(waterSupplySourceWireValue("Local", "DS18B20", true, true), "ds18b20");
+  assert.equal(waterSupplySourceWireValue("Local", undefined, false, false), "ds18b20");
+  assert.equal(waterSupplySourceWireValue("Local", undefined, false, true), null);
+  assert.equal(waterSupplySourceWireValue("CIC", undefined, false, false), "cic");
+  assert.equal(waterSupplySourceWireValue("HA input", undefined, false, false), "home_assistant");
+  assert.equal(waterSupplySourceWireValue("unknown", undefined, false, false), null);
   assert.equal(configuredSourceWireValue("Schedule"), "schedule");
   assert.ok(USAGE_TELEMETRY_PREVIEW_ENTITY_KEYS.includes("psramFree"));
+  assert.ok(USAGE_TELEMETRY_PREVIEW_ENTITY_KEYS.includes("waterSupplySource"));
+  assert.ok(USAGE_TELEMETRY_PREVIEW_ENTITY_KEYS.includes("localWaterSupplyTempSource"));
+  assert.ok(!USAGE_TELEMETRY_PREVIEW_ENTITY_KEYS.includes("modbusPartialResponseCount"));
+  assert.ok(!USAGE_TELEMETRY_PREVIEW_ENTITY_KEYS.includes("modbusRecoveredResponseCount"));
+  assert.ok(!USAGE_TELEMETRY_PREVIEW_ENTITY_KEYS.includes("modbusOfflineCount"));
   assert.ok(!USAGE_TELEMETRY_PREVIEW_ENTITY_KEYS.includes("webServerLogHistoryEnabled"));
+});
+
+test("Q-board serial preview uses null for unknown, invalid or unsupported hardware", () => {
+  for (const [hardwareSerial, expected] of [
+    [1, 1], [137, 137], ["1023", 1023], [0, null], ["0", null],
+    [undefined, null], [null, null], [NaN, null], ["unknown", null],
+    [-1, null], [1024, null], [1.5, null],
+  ]) {
+    const preview = createUsageTelemetryPreview({ hardwareProfileText: "heatpump_controller_q", hardwareSerial });
+    assert.equal(preview.hardware_serial, expected);
+  }
+  assert.equal(createUsageTelemetryPreview({ hardwareProfileText: "ci_c", hardwareSerial: 137 }).hardware_serial, null);
+  assert.ok(USAGE_TELEMETRY_PREVIEW_ENTITY_KEYS.includes("hardwareSerial"));
+  assert.equal(ENTITY_DEFS.hardwareSerial.name, "OpenQuatt Hardware Serial");
+  for (const locale of ["nl", "en"]) {
+    setLocale(locale, { persist: false });
+    assert.match(t("usage.inPlatformCopy"), locale === "nl" ? /printserienummer binnen de batch/ : /serial number within its batch/);
+  }
+  setLocale("nl", { persist: false });
+});
+
+test("passive learning telemetry contains only the optional switch state", () => {
+  for (const [value, expected] of [["ON", true], ["OFF", false], [undefined, null]]) {
+    const payload = createUsageTelemetryPreview({ houseLearningEnabled: value });
+    assert.equal(payload.house_learning_enabled, expected);
+    for (const key of ["h_batch", "t0_batch", "u_rls", "c_rls_wh_per_k", "records"]) {
+      assert.ok(!(key in payload));
+    }
+  }
+  assert.ok(USAGE_TELEMETRY_PREVIEW_ENTITY_KEYS.includes("houseLearningEnabled"));
+  for (const locale of ["nl", "en"]) {
+    setLocale(locale, { persist: false });
+    assert.match(t("usage.inFeaturesCopy"), locale === "nl" ? /passief leren/ : /passive learning/);
+  }
+  setLocale("nl", { persist: false });
 });
 
 test("time validity is derived from the device clock text entity", () => {
@@ -345,23 +413,23 @@ test("usage telemetry disclosure matches the hourly payload scope", async () => 
   assert.match(telemetryYaml, /name: "Usage statistics installation ID"[\s\S]*internal: true/);
   assert.match(disclosureSource, /settings && enabled && hasEntity\("usageTelemetryInstallationId"\)/);
   assert.match(disclosureSource, /oq-usage-consent-installation-id/);
-  assert.match(disclosureSource, /vrijwel direct en daarna ongeveer elk uur/);
-  assert.match(disclosureSource, /OpenQuatt-loggingserver/);
-  assert.match(disclosureSource, /actieve verbinding, verbindingsmodus/);
-  assert.match(disclosureSource, /wifi-signaal/);
-  assert.match(disclosureSource, /Quatt Hybrid-versie, verwarmingsstrategie, flowbron en regelbronnen/);
-  assert.match(disclosureSource, /Aan\/uit-status van CiC, OpenTherm-thermostaat, ketelondersteuning, MQTT-inputs en lokale historie/);
-  assert.match(disclosureSource, /ketelaansluiting \(aan\/uit of OpenTherm\)/);
-  assert.match(disclosureSource, /Geen gemeten of ingestelde temperaturen, grenzen, MQTT-topics of logs/);
-  assert.match(disclosureSource, /Nooit een wifi-netwerknaam, wifi-wachtwoord, gebruikersnaam, ander wachtwoord of inloggegevens/);
-  assert.match(disclosureSource, /Voorbeeld van het verzonden bericht \(JSON\)/);
-  assert.match(disclosureSource, /Live momentopname bij het openen van deze pagina/);
+  for (const key of ["oftenCopy", "networkNote", "inStatusCopy", "inFeaturesCopy", "inPlatformCopy", "inCrashCopy", "exLocalCopy", "exIdentityCopy", "exampleTitle", "exampleLive", "exampleCounters"]) {
+    assert.match(disclosureSource, new RegExp(`usage\\.${key}`));
+  }
+  setLocale("nl", { persist: false, notify: false });
+  assert.match(t("usage.oftenCopy"), /vrijwel direct en daarna ongeveer elk uur/);
+  assert.match(t("usage.networkNote"), /OpenQuatt-loggingserver/);
+  setLocale("en", { persist: false, notify: false });
+  assert.match(t("usage.oftenCopy"), /almost immediately and then about every hour/);
+  assert.match(t("usage.networkNote"), /OpenQuatt logging server/);
+  setLocale("nl", { persist: false, notify: false });
   assert.match(previewSource, /captureUsageTelemetryPreview/);
   assert.match(previewSource, /schema_version/);
   assert.match(previewSource, /timestamp_s/);
   assert.match(entitySyncSource, /shouldCaptureUsageTelemetryPreview/);
   const configFields = [
     "quatt_hybrid_generation_config",
+    "water_supply_source",
     "flow_source_config",
     "heating_strategy",
     "room_temperature_source",
@@ -372,14 +440,20 @@ test("usage telemetry disclosure matches the hourly payload scope", async () => 
     "cooling_dew_point_source",
     "external_heat_demand_source",
     "heating_supply_target_source",
+    "modbus_partial_response_count",
+    "modbus_parse_failed_count",
+    "modbus_recovered_response_count",
+    "modbus_offline_count",
   ];
   for (const field of configFields) {
     assert.match(previewSource, new RegExp(field));
     assert.match(telemetryCpp, new RegExp(`"${field}"`));
   }
-  assert.match(disclosureSource, /oq-usage-disclosure--collapsible/);
+  assert.match(disclosureSource, /oq-usage-consent-details/);
   assert.match(disclosureSource, /data-oq-action="toggle-usage-telemetry-details"/);
-  assert.match(disclosureSource, /technisch wel het bron-IP-adres zien/);
-  assert.match(disclosureSource, /OpenQuatt slaat dit IP-adres niet op/);
+  assert.match(disclosureSource, /usage\.networkNote/);
+  setLocale("nl", { persist: false, notify: false });
+  assert.match(t("usage.networkNote"), /technisch wel het bron-IP-adres zien/);
+  assert.match(t("usage.networkNote"), /OpenQuatt slaat dit IP-adres niet op/);
   assert.doesNotMatch(disclosureSource, /poort 1883|brokercredential|MQTT-broker|startvertraging|jitter/);
 });

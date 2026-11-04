@@ -18,7 +18,13 @@ Lukt `.local` niet, gebruik dan het IP-adres van de controller:
 http://<ip-adres>
 ```
 
-Als web-login aan staat, gebruik dan dezelfde gebruikersnaam en hetzelfde wachtwoord als voor de web-app. De webserver gebruikt lokale HTTP op poort 80.
+## Authenticatie
+
+Als je een gebruikersnaam en wachtwoord voor de webinterface hebt ingesteld, gebruiken HTTP-clients dezelfde gegevens. De webserver gebruikt lokale HTTP op poort 80.
+
+Vanaf de ESPHome 2026.7-build gebruikt OpenQuatt **HTTP Digest-authenticatie**. Eigen HTTP- en REST-clients moeten Digest ondersteunen; aanmelden met alleen Basic-authenticatie werkt niet. Dit staat los van de encryptiesleutel voor de native ESPHome-verbinding met Home Assistant.
+
+Voor het beheren van toegang zie [Toegang en beveiliging](web-app/instellingen.md#toegang-en-beveiliging). Ben je het wachtwoord vergeten, gebruik dan de [herstelpagina](web-app/herstel.md).
 
 ## Endpoints
 
@@ -34,6 +40,7 @@ Sommige `curl`-versies vereisen bij `POST` een expliciete `Content-Length`. Gebr
 | Kamer-setpoint | `/number/api_input_room_setpoint/set?value=<temperatuur>` | `5..35` graden Celsius |
 | Warmtevraag | `/number/api_input_external_heat_demand/set?value=<vermogen>` | `0..15000` watt |
 | Aanvoertarget | `/number/api_input_heating_supply_target/set?value=<temperatuur>` | `20..70` graden Celsius |
+| Stooklijn-offset | `/number/api_input_heating_curve_modifier/set?value=<delta>` | `-5..+5` °C aanvoercorrectie |
 
 Toestemmingssignalen zijn `switch`-entiteiten. Zet ze met een `POST` naar `/turn_on` of `/turn_off`.
 
@@ -78,7 +85,7 @@ curl --digest -u "gebruikersnaam:wachtwoord" -X POST -H "Content-Length: 0" "htt
 
 Een API-inputbron wordt pas geldig nadat je de bijbehorende endpoint hebt aangeroepen. Template-startwaarden na boot tellen niet mee als echte input.
 
-De geldigheidsduur is:
+De standaardgeldigheidsduur vanaf de laatste API-invoer is:
 
 - koelingsdauwpunt: 15 minuten;
 - buitentemperatuur: 30 minuten;
@@ -86,10 +93,13 @@ De geldigheidsduur is:
 - kamer-setpoint: blijft geldig tot herstart of nieuwe waarde;
 - warmtevraag: 15 minuten;
 - aanvoertarget: 15 minuten;
+- stooklijn-offset: 15 minuten (daarna 0 °C correctie);
 - warmtetoestemming: blijft geldig tot herstart of nieuwe waarde;
 - koeltoestemming: blijft geldig tot herstart of nieuwe waarde.
 
-Stuur temperatuurwaarden daarom periodiek opnieuw, bijvoorbeeld elke minuut of telkens wanneer de bronwaarde verandert. Waarden buiten de geldige range worden niet als bruikbare bron gebruikt.
+Stuur waarden met een vervaltijd periodiek opnieuw, bijvoorbeeld elke minuut, en zodra de bronwaarde verandert. Alleen bij een wijziging versturen is niet genoeg: ook een ongewijzigde waarde moet opnieuw binnenkomen om geldig te blijven. Elke nieuwe invoer van dezelfde geldige waarde start de timer opnieuw, zonder het target of de offset te veranderen. Zo kan een aanvoertarget of stooklijn-offset langdurig gelijk blijven.
+
+API-invoer heeft geen aparte heartbeat. De centrale Home Assistant-heartbeat houdt API-invoer niet geldig. Waarden buiten de geldige range worden niet als bruikbare bron gebruikt.
 
 ## Bronselectie
 
@@ -104,7 +114,9 @@ Bij `Buitentemperatuur` gebruikt `Auto` de laagste geldige waarde uit buitenunit
 
 Bij `Warmtevraag` is `Disabled` de standaard. Kies je `API input`, dan gebruikt `Power House` jouw waarde in plaats van de eigen vermogensschatting, zolang die geldig is. Verloopt de waarde, dan valt de regeling terug op het huismodel en niet op nul.
 
-Bij `Aanvoertarget` is `Heating curve` de standaard. Kies je `API input`, dan gebruikt de stooklijnregeling jouw aanvoertemperatuur in plaats van het eigen stooklijntarget (inclusief kamertrim), zolang die geldig is. Verloopt de waarde, dan valt de regeling terug op de stooklijn. Zie [Water Temperature Control](water-temperature-control.md#extern-aanvoertarget-optioneel).
+Bij `Aanvoertarget` is `Heating curve` de standaard. Kies je `API input`, dan gebruikt de stooklijnregeling jouw aanvoertemperatuur in plaats van het eigen stooklijntarget (inclusief kamertrim), zolang die geldig is. Verloopt de waarde, dan valt de regeling automatisch terug op de lokale stooklijn inclusief kamertrim. Hiervoor is geen `Auto`-optie nodig. Zie [Water Temperature Control](water-temperature-control.md#extern-aanvoertarget-optioneel).
+
+Bij `Stooklijn-offset` vervalt de API-correctie na 15 minuten zonder nieuwe invoer en geldt weer 0 °C correctie. De lokale stooklijn blijft actief; een absoluut extern aanvoertarget heeft voorrang op de stooklijn inclusief offset.
 
 Bij `Warmtetoestemming` en `Koeltoestemming` telt API-invoer alleen mee als de waarde geldig is. Handmatige koeltoestemming blijft daarnaast een override.
 

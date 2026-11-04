@@ -3,18 +3,18 @@
   width: min(1440px, calc(100vw - 32px));
   margin: 18px auto 0;
   color: var(--oq-helper-ink);
-  font-family: "Inter", "Segoe UI", sans-serif;
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --oq-brand-neutral: #0f1724;
+  --oq-brand-accent: #ea580c;
 }
 
 html.oq-page-dark {
   color-scheme: dark;
-  background: #101925;
+  background: #0f1724;
 }
 
 body.oq-page-dark {
-  background:
-    radial-gradient(circle at top center, rgba(249, 115, 22, 0.08), transparent 28%),
-    linear-gradient(180deg, #0f1724 0%, #111b28 100%);
+  background: #0f1724;
 }
 
 html.oq-page-light {
@@ -39,9 +39,11 @@ body.oq-surface-native {
 
 .oq-helper-shell--dark,
 .oq-helper-modal-backdrop--dark {
-  --oq-helper-bg: #202d3f;
-  --oq-helper-card: #26364a;
-  --oq-helper-card-muted: #304155;
+  --oq-helper-bg: #162131;
+  --oq-helper-card: #1c2a3d;
+  --oq-helper-card-muted: #243449;
+  --oq-brand-neutral: #f8fafc;
+  --oq-brand-accent: #f97316;
   --oq-helper-line: rgba(148, 163, 184, 0.24);
   --oq-helper-ink: #f8fafc;
   --oq-helper-soft: #dbe4ef;
@@ -123,14 +125,11 @@ body.oq-surface-native {
 }
 
 .oq-helper-logo-mark {
-  width: clamp(116px, 12vw, 132px);
+  width: clamp(220px, 24vw, 280px);
+  max-width: 100%;
   height: auto;
   flex: 0 0 auto;
   display: block;
-}
-
-.oq-helper-brand-copy {
-  min-width: 0;
 }
 
 .oq-helper-kicker,
@@ -146,9 +145,9 @@ body.oq-surface-native {
 .oq-helper-head h1 {
   margin: 0;
   color: var(--oq-helper-ink);
-  font-size: clamp(2rem, 3.6vw, 3rem);
+  font-size: 1.1rem;
   line-height: 1.05;
-  letter-spacing: -0.04em;
+  letter-spacing: 0.03em;
 }
 
 .oq-helper-lead,

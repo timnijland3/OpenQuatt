@@ -1,8 +1,11 @@
 import { getEntityStateText, hasEntity, isEntityActive } from "./app-shared.js";
-import { getEntityValue } from "./entity-store.js";
+import { getEntityValue, parseLooseNumber } from "./entity-store.js";
 import { formatFailures, formatWarningFailures } from "./failure-format.js";
+import { formatNumericState } from "./formatting.js";
 import { combineInstallationMonitoringModel } from "./incident-monitoring.js";
 import { state } from "./state.js";
+import { getInstallationTopology } from "../features/device-context.js";
+import { getLocale, t } from "../i18n/index.js";
 
 export function isInstallationMonitoringBinaryActive(key) {
   return hasEntity(key) && isEntityActive(key);
@@ -28,10 +31,11 @@ export function getInstallationMonitoringWarningFailureText(key) {
 
 export function isInstallationMonitoringFailureActive(key) {
   const normalized = getInstallationMonitoringWarningFailureText(key).trim().toLowerCase();
-  return Boolean(normalized) && normalized !== "geen actieve storingen";
+  return Boolean(normalized) && normalized !== t("failures.none").toLowerCase();
 }
 
 export function getInstallationMonitoringModel() {
+  const hasHp2 = getInstallationTopology() === "duo";
   const problems = [];
   const incidentMonitoringStale = Boolean(state.incidentMonitoringError);
   const structuredIncidentMonitoringAvailable = Boolean(
@@ -39,7 +43,7 @@ export function getInstallationMonitoringModel() {
   );
   const cyclingActive = isInstallationMonitoringBinaryActive("compressorCyclingWarning2h")
     || isInstallationMonitoringBinaryActive("compressorCyclingWarning72h")
-    || isInstallationMonitoringBinaryActive("alternatingCompressorStartsWarning");
+    || (hasHp2 && isInstallationMonitoringBinaryActive("alternatingCompressorStartsWarning"));
   const cyclingAlertLatched = isInstallationMonitoringBinaryActive("compressorCyclingAlertLatched");
   const cicPollingEnabled = isInstallationMonitoringIntegrationEnabled("cicPollingEnabled");
   const otEnabled = isInstallationMonitoringIntegrationEnabled("otEnabled");
@@ -56,43 +60,68 @@ export function getInstallationMonitoringModel() {
       problems.push({ key, label });
     }
   };
-  addBinaryProblem("compressorCyclingWarning2h", "Te veel compressorstarts in 2 uur");
-  addBinaryProblem("compressorCyclingWarning72h", "Te veel compressorstarts in 72 uur");
-  addBinaryProblem("alternatingCompressorStartsWarning", "Warmtepompen starten opvallend vaak om en om");
-  addBinaryProblem("lowflowFaultActive", "Te lage flow");
-  addBinaryProblem("pt1000ReadProblem", "PT1000-aanvoersensor geeft geen geldige meting");
-  addBinaryProblem("waterSupplyTempFallbackActive", "Aanvoertemperatuur gebruikt de warmtepompuitlaat als fallback");
-  addBinaryProblem("flowMismatch", "Flowverschil tussen warmtepomp 1 en 2");
+  addBinaryProblem("compressorCyclingWarning2h", t("monitoring.cycling2h"));
+  addBinaryProblem("compressorCyclingWarning72h", t("monitoring.cycling72h"));
+  if (hasHp2) addBinaryProblem("alternatingCompressorStartsWarning", t("monitoring.alternating"));
+  addBinaryProblem("lowflowFaultActive", t("monitoring.lowflow"));
+  addBinaryProblem("pt1000ReadProblem", t("monitoring.pt1000"));
+  addBinaryProblem("waterSupplyTempFallbackActive", t("monitoring.supplyFallback"));
+  if (hasHp2) addBinaryProblem("flowMismatch", t("monitoring.flowMismatch"));
+  const otbState = String(getEntityValue("otbConnectionState") || "");
+  if (isInstallationMonitoringBinaryActive("auxHeatSourcePresent")
+      && getEntityValue("boilerConnection") === "OpenTherm"
+      && (otbState === "ot_no_response" || otbState === "ot_link_lost")) {
+    problems.push({
+      key: "otbConnectionState",
+      label: otbState === "ot_no_response" ? t("monitoring.otbNoResponse") : t("monitoring.otbLost"),
+    });
+  }
+  const otbBoilerSelected = getEntityValue("boilerConnection") === "OpenTherm";
+  const otbBoilerLinkAvailable = otbBoilerSelected && isInstallationMonitoringBinaryActive("otbLinkAvailable");
+  if (otbBoilerLinkAvailable && isInstallationMonitoringBinaryActive("otbLowWaterPressure")) {
+    const chPressure = hasEntity("otbChPressure") ? parseLooseNumber(getEntityValue("otbChPressure")) : NaN;
+    problems.push({
+      key: "otbLowWaterPressure",
+      label: Number.isFinite(chPressure)
+        ? t("monitoring.lowWaterPressureWithValue", { pressure: formatNumericState(chPressure, 1, "bar") })
+        : t("monitoring.lowWaterPressure"),
+      copy: t("monitoring.lowWaterPressureCopy"),
+    });
+  }
   if (cicPollingEnabled) {
-    addBinaryProblem("cicDataStale", "CIC-data is verouderd");
+    addBinaryProblem("cicDataStale", t("monitoring.cicStale"));
   }
   if (otEnabled && isInstallationMonitoringBinaryActive("otLinkProblem")) {
     problems.push({
       key: "otLinkProblem",
-      label: "OpenTherm-verbinding meldt een probleem",
+      label: t("monitoring.otProblem"),
     });
   } else if (otThermostatStatusInvalid) {
     const label = heatingEnableFromOt && coolingEnableFromOt
-      ? "Geen actuele verwarmings- en koeltoestemming van OpenTherm-thermostaat"
+      ? t("monitoring.otInvalidBoth")
       : heatingEnableFromOt
-        ? "Geen actuele warmtetoestemming van OpenTherm-thermostaat"
-        : "Geen actuele koeltoestemming van OpenTherm-thermostaat";
+        ? t("monitoring.otInvalidHeat")
+        : t("monitoring.otInvalidCool");
     problems.push({ key: "otThermostatStatusInvalid", label });
   }
   if (!structuredIncidentMonitoringAvailable && isInstallationMonitoringFailureActive("hp1Failures")) {
-    problems.push({ key: "hp1Failures", label: `Warmtepomp 1: ${getInstallationMonitoringWarningFailureText("hp1Failures")}` });
+    problems.push({ key: "hp1Failures", label: t("monitoring.hpFailurePrefix", { label: t("incidents.hp1Label"), text: getInstallationMonitoringWarningFailureText("hp1Failures") }) });
   }
-  if (!structuredIncidentMonitoringAvailable && isInstallationMonitoringFailureActive("hp2Failures")) {
-    problems.push({ key: "hp2Failures", label: `Warmtepomp 2: ${getInstallationMonitoringWarningFailureText("hp2Failures")}` });
+  if (hasHp2 && !structuredIncidentMonitoringAvailable && isInstallationMonitoringFailureActive("hp2Failures")) {
+    problems.push({ key: "hp2Failures", label: t("monitoring.hpFailurePrefix", { label: t("incidents.hp2Label"), text: getInstallationMonitoringWarningFailureText("hp2Failures") }) });
   }
   const activeProblemCount = problems.length;
   if (cyclingAlertLatched && !cyclingActive) {
     problems.unshift({
       key: "compressorCyclingAlertLatched",
-      label: "Pendelen eerder gedetecteerd; melding nog niet bevestigd",
+      label: t("monitoring.cycleLatched"),
     });
   }
 
+  const pluralize = (count) => {
+    if (getLocale() === "en") return count === 1 ? "" : "s";
+    return count === 1 ? "" : "en";
+  };
   const baseModel = {
     problems,
     active: problems.length > 0,
@@ -100,13 +129,13 @@ export function getInstallationMonitoringModel() {
     cyclingAlertActive: cyclingActive,
     cyclingAlertRecovered: cyclingAlertLatched && !cyclingActive,
     title: activeProblemCount > 0
-      ? "Aandacht nodig"
-      : cyclingAlertLatched ? "Eerdere waarschuwing nog niet bevestigd" : "Geen bijzonderheden",
+      ? t("monitoring.titleAttention")
+      : cyclingAlertLatched ? t("monitoring.titleLatched") : t("monitoring.titleClear"),
     copy: activeProblemCount > 0
-      ? `${problems.length} aandachtspunt${problems.length === 1 ? "" : "en"} zichtbaar. Bekijk hieronder de details.`
+      ? t("monitoring.copyActive", { count: problems.length, plural: pluralize(problems.length) })
       : cyclingAlertLatched
-        ? "Het pendelen is hersteld. De melding blijft zichtbaar totdat je haar bevestigt."
-        : "OpenQuatt ziet op dit moment geen actieve aandachtspunten in de bewaakte signalen.",
+        ? t("monitoring.copyLatched")
+        : t("monitoring.copyClear"),
   };
   const combined = structuredIncidentMonitoringAvailable
     ? combineInstallationMonitoringModel(baseModel, state.incidentMonitoringSnapshot)
@@ -117,7 +146,7 @@ export function getInstallationMonitoringModel() {
 
   const monitoringProblem = {
     key: "incident-monitoring-stale",
-    label: "Warmtepompstatus wordt opnieuw opgehaald",
+    label: t("monitoring.staleProblem"),
     severity: "attention",
     source: "incident_manager",
   };
@@ -129,10 +158,10 @@ export function getInstallationMonitoringModel() {
     active: true,
     severity: combined.severity === "fault" ? "fault" : "attention",
     problems: staleProblems,
-    title: combined.active ? combined.title : "Warmtepompstatus wordt vernieuwd",
+    title: combined.active ? combined.title : t("monitoring.staleTitle"),
     copy: combined.active
-      ? `${combined.copy} De warmtepompstatus wordt opnieuw opgehaald en oude incidentgegevens worden niet als actueel getoond. Ververs de pagina als dit na een controllerherstart blijft staan.`
-      : "OpenQuatt haalt de actuele warmtepompstatus opnieuw op. Oude incidentgegevens worden niet als actueel getoond. Ververs de pagina als dit na een controllerherstart blijft staan.",
+      ? t("monitoring.staleCopyWithActive", { copy: combined.copy })
+      : t("monitoring.staleCopy"),
     incidentMonitoringStale: true,
   };
 }

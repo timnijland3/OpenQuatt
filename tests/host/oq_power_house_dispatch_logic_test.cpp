@@ -5,6 +5,8 @@
 #include <string.h>
 
 #include "../../openquatt/includes/control/oq_power_house_dispatch_logic.h"
+#include "../../openquatt/includes/control/oq_power_house_demand_logic.h"
+#include "../../openquatt/includes/control/oq_power_house_run_extension_logic.h"
 
 namespace {
 using namespace oq_power_house_dispatch;
@@ -12,12 +14,33 @@ static_assert(sizeof(DispatchState) <= 40);
 HpInput hp(int previous = 0, bool available = true) {
   HpInput result;
   result.candidate = {previous, available, false, false};
-  for (int level = 0; level <= kMaxLevel; ++level)
-    result.levels[level] = {true, true, true, 1000.0f * level, 100.0f * level};
+  for (int level = 0; level <= 10; ++level)
+    result.levels[level] = {true, true, true, 1000.0f * level, 100.0f * level, static_cast<uint8_t>(level * 9)};
   return result;
 }
 DispatchInput input(bool duo = false) { return {60000, 3, 3000.0f, duo, true, true, hp(), hp()}; }
 DispatchTuning tuning() { return {9000.0f, 10000.0f, 5.0f, 150.0f, 450.0f, 6, 1}; }
+void test_cold_weather_request_reaches_dispatch_and_deficit() {
+  const oq_power_house::DemandInput demand_input{60000U, -15, -10, 16, 7020, 20, 20, NAN, 1, false};
+  const oq_power_house::DemandTuning demand_tuning{0.5f, 3000, 0.1f, 0.3f, 10, 5, 20};
+  const auto demand = oq_power_house::decide_demand(demand_input, demand_tuning, {});
+  for (bool duo : {false, true}) {
+    auto in = input(duo);
+    in.demand_level = demand.raw_demand;
+    in.requested_w = oq_power_house::power_capped_request_w(demand.requested_w, in.demand_level, 20, 7020);
+    assert(fabsf(in.requested_w - 8370.0f) < 0.01f);
+    auto out = decide_dispatch(in, tuning(), {});
+    assert(out.output_valid && out.expected_w > 7020.0f && out.deficit_w == 0.0f);
+    // An actual electrical constraint still limits the available candidates.
+    auto limits = tuning();
+    limits.soft_limit_w = limits.peak_limit_w = 700.0f;
+    out = decide_dispatch(in, limits, {});
+    assert(out.output_valid && out.capacity_w == 7000.0f && fabsf(out.deficit_w - 1370.0f) < 0.01f);
+    const float deficit = oq_power_house_run_extension::compute_house_deficit_w(in.requested_w, out.capacity_w,
+                                                                                out.output_valid, out.deficit_w);
+    assert(fabsf(deficit - 1370.0f) < 0.01f);
+  }
+}
 void expect_safe(const DispatchDecision& out, const DispatchInput& in, const DispatchTuning& cfg) {
   assert(out.hp1_level >= 0 && out.hp1_level <= kMaxLevel && out.hp2_level >= 0 && out.hp2_level <= kMaxLevel);
   assert((in.duo || out.hp2_level == 0) && out.owner_hp == owner(out.hp1_level, out.hp2_level));
@@ -39,6 +62,56 @@ void expect_safe(const DispatchDecision& out, const DispatchInput& in, const Dis
     electrical_w += estimate.electrical_w;
   }
   assert(isfinite(cfg.peak_limit_w) && electrical_w <= cfg.peak_limit_w);
+}
+void test_actuator_hold_constrains_owner_swap() {
+  for (bool hp1_running : {false, true}) {
+    auto in = input(true);
+    in.requested_w = 2000.0f;
+    in.hp1.levels = in.hp2.levels = {};
+    auto& running = hp1_running ? in.hp1 : in.hp2;
+    auto& idle = hp1_running ? in.hp2 : in.hp1;
+    running.candidate.previous_applied_level = 1;
+    running.levels[1] = {true, true, true, 2500.0f, 400.0f, 30};
+    idle.levels[1] = {true, true, true, 2000.0f, 200.0f, 30};
+    const int running_owner = hp1_running ? 1 : 2;
+
+    // Reproduce the restart report: the apparently better idle HP replaces
+    // a running owner that the downstream actuator will refuse to stop.
+    assert(decide_dispatch(in, tuning(), {}).owner_hp != running_owner);
+    running.stop_inhibited = true;
+    auto out = decide_dispatch(in, tuning(), {});
+    assert(out.owner_hp == running_owner && out.expected_w == 2500.0f);
+    assert(topology(out.hp1_level, out.hp2_level) == 1);
+    expect_safe(out, in, tuning());
+
+    // A real capacity deficit can still start the peer while the owner runs.
+    in.requested_w = 4500.0f;
+    out = decide_dispatch(in, tuning(), {});
+    assert(out.hp1_level == 1 && out.hp2_level == 1 && out.expected_w == 4500.0f);
+    expect_safe(out, in, tuning());
+
+    // A safety stop overrides the hold; removing demand never starts a unit.
+    in.requested_w = 2000.0f;
+    running.candidate.must_stop = true;
+    out = decide_dispatch(in, tuning(), {});
+    assert(out.owner_hp != running_owner && topology(out.hp1_level, out.hp2_level) == 1);
+    expect_safe(out, in, tuning());
+    running.candidate.must_stop = false;
+    in.demand_level = 0;
+    out = decide_dispatch(in, tuning(), {});
+    assert(out.hp1_level == 0 && out.hp2_level == 0);
+
+    // Expiry restores the existing optimizer without a new timer or latch.
+    in.demand_level = 3;
+    running.stop_inhibited = false;
+    assert(decide_dispatch(in, tuning(), {}).owner_hp != running_owner);
+
+    // A stale hold flag cannot turn a stopped HP into a mandatory start.
+    running.candidate.previous_applied_level = 0;
+    running.stop_inhibited = true;
+    out = decide_dispatch(in, tuning(), {});
+    assert(out.owner_hp != running_owner && topology(out.hp1_level, out.hp2_level) == 1);
+  }
 }
 void test_timing_and_matrix() {
   auto state = observe_protection({}, {UINT32_MAX - 4U, true, false, false, 3, 0});
@@ -73,6 +146,76 @@ void test_timing_and_matrix() {
             expect_safe(decide_dispatch(in, cfg, {}), in, cfg);
           }
 }
+void test_extension_uses_only_active_units() {
+  for (bool first_running : {false, true}) {
+    auto in = input(true);
+    auto& running = first_running ? in.hp1 : in.hp2;
+    auto& idle = first_running ? in.hp2 : in.hp1;
+    running.candidate.previous_applied_level = 3;
+    running.stop_inhibited = true;
+    running.levels[1].allowed = running.levels[2].allowed = false;
+    auto minimum = minimum_active_candidate(in, tuning());
+    assert(minimum.valid && minimum.thermal_w == 3000);
+    assert((first_running ? minimum.hp1_level : minimum.hp2_level) == 3);
+    assert((first_running ? minimum.hp2_level : minimum.hp1_level) == 0);
+    idle.candidate.minimum_off_ready = false;
+    assert(minimum_active_candidate(in, tuning()).thermal_w == 3000);
+    running.stop_inhibited = false;
+    assert(minimum_active_candidate(in, tuning()).thermal_w == 3000);
+    running.fixed_level = 4;
+    assert(minimum_active_candidate(in, tuning()).thermal_w == 4000);
+    running.candidate.must_stop = true;
+    assert(!minimum_active_candidate(in, tuning()).valid);
+  }
+  auto in = input(true);
+  assert(!minimum_active_candidate(in, tuning()).valid);
+  in.hp1.candidate.previous_applied_level = in.hp2.candidate.previous_applied_level = 3;
+  in.hp1.levels[1].allowed = in.hp1.levels[2].allowed = false;
+  in.hp1.stop_inhibited = in.hp2.stop_inhibited = true;
+  assert(minimum_active_candidate(in, tuning()).thermal_w == 4000);
+  in.hp1.stop_inhibited = false;
+  assert(minimum_active_candidate(in, tuning()).thermal_w == 1000);
+  in.hp2.stop_inhibited = false;
+  in.hp1.candidate.link_suspect = true;
+  assert(minimum_active_candidate(in, tuning()).thermal_w == 4000);
+  in.hp1.candidate.must_stop = true;
+  assert(minimum_active_candidate(in, tuning()).thermal_w == 1000);
+  in.hp1.candidate.must_stop = in.hp1.candidate.link_suspect = false;
+  in.hp2.stop_inhibited = true;
+  in.hp1.stop_inhibited = true;
+  in.pair_power = [](const void*, int first, int second) -> std::array<float, 2> {
+    return {1000.0f * first + 800.0f * second, 100.0f * (first + second)};
+  };
+  assert(minimum_active_candidate(in, tuning()).thermal_w == 3800);
+  assert(!minimum_active_candidate(in, {200, 300}).valid);
+}
+void test_performance_supply_fallback() {
+  using oq_power_house_dispatch::PerformanceSupplyRoute;
+  using oq_power_house_dispatch::select_performance_supply;
+
+  // The shared system supply stays authoritative whenever it is valid.
+  auto selected = select_performance_supply({30.0f, 31.0f, 32.0f, true, false});
+  assert(selected.valid && selected.route == PerformanceSupplyRoute::SYSTEM && selected.supply_c == 30.0f);
+
+  // Issue #713: if only HP1 can serve, its own fresh outlet may be used for
+  // Power House performance estimation without changing the shared safety signal.
+  selected = select_performance_supply({NAN, 31.0f, NAN, true, false});
+  assert(selected.valid && selected.route == PerformanceSupplyRoute::HP1_OUTLET && selected.supply_c == 31.0f);
+
+  // Mirror path for the one remaining HP2 candidate.
+  selected = select_performance_supply({NAN, NAN, 32.0f, false, true});
+  assert(selected.valid && selected.route == PerformanceSupplyRoute::HP2_OUTLET && selected.supply_c == 32.0f);
+
+  // Never substitute an outlet when both HPs are serveable; normal Duo
+  // optimization requires the shared system-supply measurement.
+  selected = select_performance_supply({NAN, 31.0f, 32.0f, true, true});
+  assert(!selected.valid && selected.route == PerformanceSupplyRoute::NONE && isnan(selected.supply_c));
+
+  // Missing/stale/non-finite outlet data remains fail-closed for the model.
+  assert(!select_performance_supply({NAN, NAN, NAN, true, false}).valid);
+  assert(!select_performance_supply({NAN, 31.0f, 32.0f, false, false}).valid);
+}
+
 void test_single_and_failures() {
   auto cfg = tuning();
   auto in = input(true);
@@ -89,7 +232,7 @@ void test_single_and_failures() {
   in.hp1.candidate.must_stop = true;
   assert(decide_dispatch(in, cfg, {}).reason == Reason::FALLBACK_IDLE);
   in.hp2.candidate = {};
-  for (int previous : {-1, 11, 20}) {
+  for (int previous : {-1, 21, 99}) {
     in.hp1.candidate = {previous, true, false, false};
     assert(decide_dispatch(in, cfg, {}).reason == Reason::FALLBACK_IDLE);
   }
@@ -102,7 +245,7 @@ void test_single_and_failures() {
   in.performance_valid = false;
   assert(!decide_dispatch(in, cfg, {}).output_valid);
   in = input(true);
-  in.hp1.candidate = {11, false, false, true};
+  in.hp1.candidate = {21, false, false, true};
   out = decide_dispatch(in, cfg, {});
   assert(out.hp1_level == 0 && out.hp2_level > 0);
   in = input(true);
@@ -159,6 +302,13 @@ void test_duo_holds_and_boost() {
   assert(out.hp2_level == 3 && out.reason == Reason::RUNTIME_LEAD);
   in.hp2.candidate.available_for_start = false;
   assert(decide_dispatch(in, cfg, {}).hp1_level > 0);
+
+  // Exact #713 dispatch boundary: once performance input is valid, an HP2
+  // must-stop condition must still leave HP1 as a valid single-HP candidate.
+  in = input(true);
+  in.hp2.candidate.must_stop = true;
+  out = decide_dispatch(in, cfg, {});
+  assert(out.hp1_level > 0 && out.hp2_level == 0 && out.owner_hp == 1);
   in = input(true);
   in.hp1.candidate.previous_applied_level = 3;
   for (int level = 1; level <= kMaxLevel; ++level) {
@@ -213,7 +363,11 @@ void test_duo_holds_and_boost() {
 }
 }  // namespace
 int main() {
+  test_cold_weather_request_reaches_dispatch_and_deficit();
+  test_extension_uses_only_active_units();
+  test_actuator_hold_constrains_owner_swap();
   test_timing_and_matrix();
+  test_performance_supply_fallback();
   test_single_and_failures();
   test_duo_holds_and_boost();
   return 0;

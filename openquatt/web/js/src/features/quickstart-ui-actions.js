@@ -7,13 +7,16 @@ import {
   applyQuickStartFlowSourceConfiguration,
   applyQuickStartHeatingEnableSource,
   applyQuickStartThermostatSourceConfiguration,
+  initializeQuickStartPerformanceTelemetryChoice,
   initializeQuickStartUsageTelemetryChoice,
   refreshQuickStartFlowSignal,
   refreshQuickStartStepHydration,
   startQuickStartFlowTest,
 } from "./quickstart-actions.js";
 import { isQuickStartStepSelectionAllowed, selectQuickStepByOffset } from "./quickstart.js";
-import { installQuickStartSetupSwitch } from "./firmware-actions.js";
+import { t } from "../i18n/index.js";
+import { installQuickStartSetupSwitch, keepCurrentQuickStartSetup } from "./firmware-actions.js";
+import { getFirmwareBuildConnection, getInstallationTopology } from "./device-context.js";
 import {
   captureUsageTelemetryPreview,
   loadUsageTelemetryPreviewMqttEnabled,
@@ -22,10 +25,21 @@ import {
 const USAGE_TELEMETRY_PREPARATION_ACTION = "quickstart-usage-telemetry-prepare";
 let quickStartPreparationId = 0;
 
+export function confirmQuickStartSetup(confirmed) {
+  if (confirmed && !state.quickStartSetupDraft) {
+    const topology = getInstallationTopology();
+    const connection = getFirmwareBuildConnection();
+    state.quickStartSetupDraft = topology && connection ? `${topology}:${connection}` : "";
+  }
+  state.quickStartSetupConfirmed = Boolean(confirmed) && Boolean(state.quickStartSetupDraft);
+}
+
 async function prepareQuickStartStep(stepId) {
   const preparationId = ++quickStartPreparationId;
   const preparesUsageTelemetry = stepId === "usage-telemetry";
-  if (preparesUsageTelemetry) {
+  const preparesPerformanceTelemetry = stepId === "performance-telemetry";
+  const preparesTelemetry = preparesUsageTelemetry || preparesPerformanceTelemetry;
+  if (preparesTelemetry) {
     if (state.busyAction && state.busyAction !== USAGE_TELEMETRY_PREPARATION_ACTION) {
       return;
     }
@@ -52,6 +66,9 @@ async function prepareQuickStartStep(stepId) {
       }
       captureUsageTelemetryPreview("quickstart", { mqttEnabled });
     }
+    if (preparesPerformanceTelemetry) {
+      await initializeQuickStartPerformanceTelemetryChoice();
+    }
   } finally {
     if (preparationId === quickStartPreparationId
       && state.busyAction === USAGE_TELEMETRY_PREPARATION_ACTION) {
@@ -63,11 +80,11 @@ async function prepareQuickStartStep(stepId) {
 
 function moveQuickStartStep(offset) {
   if (!selectQuickStepByOffset(offset)) {
-    state.controlError = "Rond eerst de configuratie en software-update af.";
+    state.controlError = t("quickStartUi.completeSetupFirst");
     render();
     return;
   }
-  if (state.currentStep === "usage-telemetry") {
+  if (state.currentStep === "usage-telemetry" || state.currentStep === "performance-telemetry") {
     state.controlError = "";
     state.controlNotice = "";
   }
@@ -86,6 +103,8 @@ const quickStartActionHandlers = {
   },
   "open-quickstart-modal": () => {
     state.currentStep = "setup";
+    state.quickStartSetupDraft = "";
+    state.quickStartSetupConfirmed = false;
     state.quickStartModalMode = "wizard";
     state.quickStartModalOpen = true;
     render();
@@ -95,7 +114,7 @@ const quickStartActionHandlers = {
       state.currentStep = "setup";
       state.quickStartModalMode = "wizard";
       state.quickStartModalOpen = true;
-      state.controlError = "Rond eerst de configuratie en software-update af.";
+      state.controlError = t("quickStartUi.completeSetupFirst");
       render();
       return;
     }
@@ -107,12 +126,12 @@ const quickStartActionHandlers = {
   "select-step": (button) => {
     const stepId = button.dataset.stepId || "generation";
     if (!isQuickStartStepSelectionAllowed(stepId)) {
-      state.controlError = "Rond eerst de configuratie en software-update af.";
+      state.controlError = t("quickStartUi.completeSetupFirst");
       render();
       return;
     }
     state.currentStep = stepId;
-    if (state.currentStep === "usage-telemetry") {
+    if (state.currentStep === "usage-telemetry" || state.currentStep === "performance-telemetry") {
       state.controlError = "";
       state.controlNotice = "";
     }
@@ -135,6 +154,7 @@ const quickStartActionHandlers = {
     void refreshQuickStartStepHydration("setup");
   },
   "install-quickstart-setup": () => installQuickStartSetupSwitch(),
+  "keep-current-quickstart-setup": () => keepCurrentQuickStartSetup(),
   "apply-quickstart-flow-source": () => applyQuickStartFlowSourceConfiguration(),
   "refresh-quickstart-flow-signal": () => refreshQuickStartFlowSignal(),
   "start-quickstart-flow-test": () => startQuickStartFlowTest(),
@@ -143,6 +163,8 @@ const quickStartActionHandlers = {
   "apply-quickstart-heating-enable": (button) => applyQuickStartHeatingEnableSource(button?.dataset?.heatingEnableTarget || null),
   "retry-usage-telemetry-choice": () => prepareQuickStartStep("usage-telemetry"),
   "confirm-no-usage-telemetry": () => commitSwitch("usageTelemetryEnabled", false),
+  "retry-performance-telemetry-choice": () => prepareQuickStartStep("performance-telemetry"),
+  "confirm-no-performance-telemetry": () => commitSwitch("performanceTelemetryEnabled", false),
   "previous-step": () => moveQuickStartStep(-1),
   "next-step": () => moveQuickStartStep(1),
 };

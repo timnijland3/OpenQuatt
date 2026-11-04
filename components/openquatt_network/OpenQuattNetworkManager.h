@@ -82,6 +82,7 @@ class OpenQuattNetworkManager : public Component {
   static constexpr uint32_t INTERFACE_ACTION_RETRY_MS = 5000;
 
   void update_connection_stability_(uint32_t now);
+  void restore_default_dns_(uint32_t now);
   void handle_startup_(uint32_t now);
   void handle_steady_(uint32_t now);
   void handle_recovery_(uint32_t now);
@@ -128,6 +129,7 @@ class OpenQuattNetworkManager : public Component {
   uint32_t wifi_connected_since_ms_{0};
   uint32_t ethernet_connected_since_ms_{0};
   uint32_t last_interface_action_ms_{0};
+  uint32_t last_dns_check_ms_{0};
   uint32_t detection_timeout_ms_{10000};
   uint32_t loss_timeout_ms_{30000};
   uint32_t stable_time_ms_{2000};
@@ -137,6 +139,7 @@ class OpenQuattNetworkManager : public Component {
   bool active_published_{false};
   bool ethernet_prepared_{false};
   bool w5500_powered_down_{false};
+  bool provisioning_override_{false};
 };
 
 }  // namespace openquatt_network

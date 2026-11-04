@@ -26,6 +26,27 @@ inline float finite_clamp(float value, float fallback, float minimum, float maxi
   return std::clamp(std::isfinite(value) ? value : fallback, minimum, maximum);
 }
 
+// A normal compressor rest must not expire the last valid low-load estimate.
+// Keep the extension bounded and restore the normal deadline when the rest ends.
+inline uint32_t low_load_cache_duration_ms(uint32_t cache_ms, uint32_t minimum_off_ms, bool minimum_off_active,
+                                           bool any_compressor_active) {
+  if (!minimum_off_active || any_compressor_active) return cache_ms;
+  return cache_ms + std::min(minimum_off_ms, std::numeric_limits<uint32_t>::max() - cache_ms);
+}
+
+template <typename IncidentOutputs>
+inline bool low_load_minimum_off_active(const IncidentOutputs& outputs, int applied_level, uint32_t remaining_ms) {
+  using LinkState = decltype(outputs.link_state);
+  using ProtectionState = decltype(outputs.protection_state);
+  using RunState = decltype(outputs.run_state);
+  // An invalidated restart guard also reports a full wait while running or
+  // offline. Only a healthy, confirmed stop may extend the low-load cache.
+  return applied_level <= 0 && remaining_ms > 0 && outputs.run_state == RunState::STOPPED && outputs.stop_confirmed &&
+         !outputs.running_confirmed && !outputs.stop_confirmation_pending && !outputs.stop_unconfirmed &&
+         !outputs.must_stop && !outputs.fault_active && outputs.link_state == LinkState::HEALTHY &&
+         (outputs.protection_state == ProtectionState::CLEAR || outputs.protection_state == ProtectionState::LIMITED);
+}
+
 struct LowLoadState {
   bool heat_latched = false;
   float cached_minimum_power_w = NAN;
@@ -275,9 +296,11 @@ inline bool flow_guard_required(bool thermal_request, bool compressor_active, bo
   return thermal_request || compressor_active || actuator_request_active;
 }
 
-inline bool hold_cm1_until_hp_idle(bool in_cm1, bool thermal_request, int base_target, bool hp_active) {
-  return in_cm1 && !thermal_request && (base_target == 0 || base_target == 98) && hp_active;
+inline bool hold_cm1_until_hp_idle(bool in_cm1, int desired_mode, bool hp_active) {
+  return in_cm1 && (desired_mode == 0 || desired_mode == 98) && hp_active;
 }
+
+inline bool standby_requires_postflow(int desired_mode, bool hp_active) { return desired_mode == 0 && hp_active; }
 
 enum class SilentOverride : uint8_t { SCHEDULE, ON, OFF };
 

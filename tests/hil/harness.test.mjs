@@ -41,7 +41,82 @@ import {
   heatingPower,
   v2PowerInput,
 } from './scenarios/v2-performance.mjs';
+import { runInputSourceScenarios } from './scenarios/input-sources.mjs';
 import { waitNumber } from '../../scripts/hil/wait.mjs';
+
+test('the setpoint-validity stage receives the simulator client it drives', async () => {
+  // Regression guard for a stage that was registered and documented but could
+  // never run: runInputSourceScenarios forwarded `simulator` to
+  // testRoomSetpointValidity without destructuring it, so both
+  // --stage setpoint-validity and --stage all died with a ReferenceError
+  // before a single assertion ran. Identifier greps cannot catch that, so
+  // this drives the real stage with stub clients and asserts the injected
+  // values actually reach the simulator.
+  const setpoints = [];
+  const temperatures = [];
+  const selects = [];
+  const switches = [];
+  const rejectedReads = [];
+  // Mirrors what the firmware reports back: raw OpenTherm keeps every value,
+  // while Room Setpoint (Selected) rejects anything outside 5..35 degrees.
+  const usable = (value) => value >= 5 && value <= 35;
+  let setpoint = 21;
+  let temperature = 20;
+  const controller = {
+    setSelect: async (name, option) => { selects.push([name, option]); },
+    setSwitch: async (name, value) => { switches.push([name, value]); },
+    value: async (domain, name) => {
+      if (domain !== 'sensor') {
+        if (name === 'OT - Link Problem') return false;
+        return null;
+      }
+      if (name === 'Room Setpoint (Selected)' && !usable(setpoint)) {
+        rejectedReads.push(setpoint);
+        return null;
+      }
+      if (name === 'OT - Room Setpoint') return setpoint;
+      if (name === 'OT - Room Temperature') return temperature;
+      if (name === 'Room Setpoint (Selected)') return setpoint;
+      if (name === 'Room Temperature (Selected)') return temperature;
+      return null;
+    },
+  };
+  const simulator = {
+    setNumber: async (name, value) => {
+      if (name === 'Thermostat room setpoint') {
+        setpoint = value;
+        setpoints.push(value);
+      } else if (name === 'Thermostat room temperature') {
+        temperature = value;
+        temperatures.push(value);
+      } else {
+        throw new Error(`unexpected simulator number: ${name}`);
+      }
+    },
+  };
+
+  await runInputSourceScenarios({
+    stage: 'setpoint-validity',
+    controller,
+    simulator,
+    interrupted: () => false,
+    waitForProfile: async () => 'input-sources-fast-v1',
+  });
+
+  assert.deepEqual(setpoints, [21, 0, 4.5, 5, 35, 35.5, 21]);
+  assert.deepEqual(temperatures, [20, 0, 20]);
+  assert.ok(
+    switches.some(([name, value]) => name === 'OpenTherm Enabled' && value === true),
+    'the stage must enable OpenTherm before driving TrSet',
+  );
+  assert.ok(
+    selects.some(([name, option]) => name === 'Room Setpoint Source' && option === 'OT thermostat'),
+    'the stage must select the OT thermostat setpoint source',
+  );
+  // Proves the rejection assertions really ran against out-of-range values
+  // instead of the stage returning early.
+  assert.deepEqual([...new Set(rejectedReads)].sort((a, b) => a - b), [0, 4.5, 35.5]);
+});
 
 test('target lock excludes runs and recovery, reclaims stale owner, and releases by token', async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'openquatt-hil-lock-'));
@@ -333,7 +408,7 @@ test('issue 667 golden vectors keep auxiliary loads and defrost distinct', () =>
   const fixture = { voltageV: 230, currentA: 1.3, fanSpeed: 200, pumpPowerW: 30 };
   const base = v2PowerInput(fixture);
   assert.ok(Math.abs(base - 309.97883) < 0.0001);
-  assert.ok(Math.abs(v2PowerInput({ ...fixture, status2108: 0x0004 }) - (base + 140)) < 0.0001);
+  assert.ok(Math.abs(v2PowerInput({ ...fixture, status2108: 0x0004 }) - (base + 280)) < 0.0001);
   assert.ok(Math.abs(v2PowerInput({ ...fixture, status2108: 0x0008 }) - (base + 33.62)) < 0.0001);
   assert.ok(Math.abs(v2PowerInput({ ...fixture, status2108: 0x0800 }) - (base + 30)) < 0.0001);
   assert.equal(v2PowerInput({ ...fixture, status2108: 0x0010 }), base);
@@ -531,6 +606,52 @@ test('pre-OTA restore keeps CM0 until normal firmware is confirmed', async () =>
     await controller.value('select', 'Room Temperature Source'),
     snapshot.controller.roomSource,
   );
+});
+
+test('schema 3 recovery restores captured fields and leaves uncaptured fields alone', async () => {
+  // Fixed historical field lists: do not derive this fixture from today's settings.
+  const controllerKeys = 'cmOverride cicPolling otEnabled waterSupplySource outsideSource roomSource setpointSource externalSource heatingEnableSource coolingEnableSource coolingDewPointSource manualCooling heatingMode phReaction phRise flowSource outdoorFlowMode flowMode flowSetpoint'.split(' ');
+  const simulatorKeys = 'thermostatRoomSetpoint thermostatRoomTemp hp1Profile hp2Profile hp1Address hp2Address externalFlow hp1NoFlow hp2NoFlow hp1Defrost hp2Defrost hp1ManualTelemetry hp2ManualTelemetry hp1ManualWorkingMode hp2ManualWorkingMode hp1ManualFrequency hp2ManualFrequency hp1ManualVoltage hp2ManualVoltage hp1ManualCurrent hp2ManualCurrent hp1ManualFan hp2ManualFan hp1ManualStatus hp2ManualStatus hp1ManualPumpFeedback hp2ManualPumpFeedback hp1ManualWaterIn hp2ManualWaterIn hp1ManualWaterOut hp2ManualWaterOut hp1ManualFlow hp2ManualFlow'.split(' ');
+  for (const expanded of [false, true]) {
+    const controller = new FakeClient(controllerSettings);
+    const simulator = new FakeClient(simulatorSettings);
+    const full = await snapshotSettings({ controller, simulator, targets: {}, firmware: 'baseline', scenario: 'input-sources' });
+    assert.equal(full.schema, 5);
+    const snapshot = { ...full, schema: 3,
+      controller: Object.fromEntries(controllerKeys.map((key) => [key, full.controller[key]])),
+      simulator: Object.fromEntries(simulatorKeys.map((key) => [key, full.simulator[key]])),
+    };
+    if (expanded) {
+      snapshot.controller.minimumRuntime = 150;
+      snapshot.simulator.hp1WaterIn = 27.9;
+    }
+    validateSnapshot(snapshot);
+    controller.state.set('number:Minimum runtime', 300);
+    simulator.state.set('number:ODU 1 water-in temperature', 35);
+    controller.state.set('select:Room Temperature Source', 'changed');
+    await restoreSettings({ controller, simulator, snapshot, log: () => {} });
+    await verifyRestoredSettings({ controller, simulator, snapshot });
+    assert.equal(await controller.value('select', 'Room Temperature Source'), snapshot.controller.roomSource);
+    assert.equal(await controller.value('number', 'Minimum runtime'), expanded ? 150 : 300);
+    assert.equal(await simulator.value('number', 'ODU 1 water-in temperature'), expanded ? 27.9 : 35);
+    assert.throws(() => validateSnapshot({ ...snapshot, schema: 4 }), /undefined/);
+    delete snapshot.controller.phRise;
+    assert.throws(() => validateSnapshot(snapshot), /unavailable/);
+  }
+});
+
+test('schema 4 recovery does not require or overwrite the later manual-pump setting', async () => {
+  const controller = new FakeClient(controllerSettings);
+  const simulator = new FakeClient(simulatorSettings);
+  const snapshot = await snapshotSettings({ controller, simulator, targets: {}, firmware: 'baseline', scenario: 'run-extension' });
+  snapshot.schema = 4;
+  delete snapshot.controller.manualPwm;
+  controller.state.set('number:Manual iPWM', 400);
+  validateSnapshot(snapshot);
+  await restoreSettings({ controller, simulator, snapshot, log: () => {} });
+  await verifyRestoredSettings({ controller, simulator, snapshot });
+  assert.equal(await controller.value('number', 'Manual iPWM'), 400);
+  assert.throws(() => validateSnapshot({ ...snapshot, schema: 5 }), /unavailable/);
 });
 
 test('failed safe-CM0 restore blocks firmware OTA fail-closed', async () => {

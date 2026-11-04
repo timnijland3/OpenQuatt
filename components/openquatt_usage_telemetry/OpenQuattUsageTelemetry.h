@@ -10,6 +10,10 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include "esphome/components/binary_sensor/binary_sensor.h"
+#include "esphome/components/openquatt_modbus/OpenQuattModbusClientHub.h"
+#ifdef USE_OPENQUATT_MAX31865_COUNTERS
+#include "esphome/components/max31865/max31865.h"
+#endif
 #include "esphome/components/select/select.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/switch/switch.h"
@@ -20,6 +24,7 @@
 #include "esphome/core/static_task.h"
 #include "mqtt_client.h"
 #include "OpenQuattUsageTelemetryPolicy.h"
+#include "OpenQuattExternalTelemetryTransport.h"
 #include "PsramBuffer.h"
 
 namespace esphome {
@@ -28,8 +33,12 @@ class OpenQuattMqttConfig;
 }
 namespace openquatt_usage_telemetry {
 
-class OpenQuattUsageTelemetry : public switch_::Switch, public Component {
+class OpenQuattUsageTelemetry : public switch_::Switch,
+                                public Component,
+                                public openquatt_common::OpenQuattExternalTelemetryTransport {
  public:
+  using ExternalPublishResult = openquatt_common::ExternalTelemetryPublishResult;
+
   void set_broker(const std::string& broker) { this->broker_ = broker; }
   void set_port(uint16_t port) { this->port_ = port; }
   void set_tls(bool tls) { this->tls_ = tls; }
@@ -49,6 +58,10 @@ class OpenQuattUsageTelemetry : public switch_::Switch, public Component {
   void set_active_connection_sensor(text_sensor::TextSensor* sensor) { this->active_connection_sensor_ = sensor; }
   void set_connection_preference_select(select::Select* source) { this->connection_preference_select_ = source; }
   void set_quatt_hybrid_generation_select(select::Select* source) { this->quatt_hybrid_generation_select_ = source; }
+  void set_water_supply_source_select(select::Select* source) { this->water_supply_source_select_ = source; }
+  void set_local_water_supply_temp_source_select(select::Select* source) {
+    this->local_water_supply_temp_source_select_ = source;
+  }
   void set_flow_source_select(select::Select* source) { this->flow_source_select_ = source; }
   void set_q_flow_source_select(select::Select* source) { this->q_flow_source_select_ = source; }
   void set_heating_strategy_select(select::Select* source) { this->heating_strategy_select_ = source; }
@@ -87,6 +100,21 @@ class OpenQuattUsageTelemetry : public switch_::Switch, public Component {
   void set_energy_history_flash_switch(switch_::Switch* feature_switch) {
     this->energy_history_flash_switch_ = feature_switch;
   }
+  void set_house_learning_switch(switch_::Switch* feature_switch) { this->house_learning_switch_ = feature_switch; }
+  void set_modbus_hub(openquatt_modbus::OpenQuattModbusClientHub* hub) { this->modbus_hub_ = hub; }
+#ifdef USE_OPENQUATT_MAX31865_COUNTERS
+  void set_max31865_sensor(max31865::MAX31865Sensor* sensor) { this->max31865_sensor_ = sensor; }
+#endif
+
+  // A second opt-in telemetry feature may reuse this outbound-only client.
+  // Its payload stays separate from usage statistics and is protected by its
+  // own fail-closed gate. The caller owns retry policy and logical message ID.
+  bool ensure_installation_id_for_external() override;
+  const char* external_installation_id() const override { return this->installation_id_.c_str(); }
+  bool request_external_publish(const char* suffix, const char* payload, size_t payload_size) override;
+  int64_t external_publish_next_allowed_us() const override { return this->external_next_publish_allowed_us_; }
+  void cancel_external_publish() override;
+  ExternalPublishResult take_external_publish_result() override;
   void setup() override;
   void loop() override;
   void dump_config() override;
@@ -103,22 +131,24 @@ class OpenQuattUsageTelemetry : public switch_::Switch, public Component {
   static constexpr uint32_t SESSION_TIMEOUT_MS = 30000;
   static constexpr uint32_t RETRY_MIN_MS = 5UL * 60UL * 1000UL;
   static constexpr uint32_t RETRY_MAX_MS = 60UL * 60UL * 1000UL;
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
-  // PSRAM is abundant, so keep a conservative stack until HIL watermarks
-  // demonstrate that this can safely be reduced.
+  static constexpr size_t EXTERNAL_PAYLOAD_MAX = 4096U;
+  static constexpr int64_t EXTERNAL_PUBLISH_INTERVAL_US = 15LL * 60LL * 1000000LL;
+  // Q-edition workers use PSRAM-backed stacks. Keep this conservative until
+  // HIL watermarks demonstrate that it can safely be reduced.
   static constexpr uint32_t MQTT_WORKER_TASK_STACK_SIZE = 16384;
   static constexpr bool MQTT_WORKER_STACK_IN_PSRAM = true;
-#else
-  // Classic ESP32 cannot safely run Wi-Fi/ROM-using tasks from a PSRAM stack.
-  static constexpr uint32_t MQTT_WORKER_TASK_STACK_SIZE = 8192;
-  static constexpr bool MQTT_WORKER_STACK_IN_PSRAM = false;
-#endif
   static constexpr int MQTT_TASK_STACK_SIZE = 12288;
   static_assert(sizeof(StackType_t) == 1U, "ESP-IDF StaticTask stack sizes are configured in bytes");
 
   enum class WorkerCommand : uint32_t {
     START = 1U,
     CLEANUP = 2U,
+  };
+
+  enum class SessionKind : uint8_t {
+    NONE = 0U,
+    USAGE = 1U,
+    EXTERNAL = 2U,
   };
 
   struct StorageV1 {
@@ -147,13 +177,18 @@ class OpenQuattUsageTelemetry : public switch_::Switch, public Component {
   bool save_storage_(const Storage& storage);
   bool set_consent_publish_blocked_(bool blocked);
   bool ensure_installation_id_(Storage* storage);
+  bool apply_external_installation_id_(const Storage& storage);
   bool is_setup_complete_() const;
+  bool session_permitted_() const;
+  const char* active_publish_topic_() const;
+  const char* active_payload_() const;
+  size_t active_payload_size_() const;
   bool apply_storage_(const Storage& storage);
   void schedule_initial_publish_();
   void schedule_immediate_publish_();
   void schedule_regular_publish_();
   void schedule_retry_();
-  void start_publish_session_();
+  void start_publish_session_(SessionKind kind);
   bool ensure_worker_task_();
   bool notify_worker_(WorkerCommand command);
   bool start_client_();
@@ -162,7 +197,7 @@ class OpenQuattUsageTelemetry : public switch_::Switch, public Component {
   void complete_publish_session_();
   bool build_payload_();
   void clear_payload_();
-  std::string read_hardware_revision_() const;
+  std::string read_hardware_revision_(uint16_t& serial) const;
   static bool time_reached_(uint32_t now_ms, uint32_t target_ms);
   static std::string format_uuid_(const std::array<uint8_t, 16>& bytes);
   static std::string random_message_id_();
@@ -188,6 +223,8 @@ class OpenQuattUsageTelemetry : public switch_::Switch, public Component {
   text_sensor::TextSensor* active_connection_sensor_{nullptr};
   select::Select* connection_preference_select_{nullptr};
   select::Select* quatt_hybrid_generation_select_{nullptr};
+  select::Select* water_supply_source_select_{nullptr};
+  select::Select* local_water_supply_temp_source_select_{nullptr};
   select::Select* flow_source_select_{nullptr};
   select::Select* q_flow_source_select_{nullptr};
   select::Select* heating_strategy_select_{nullptr};
@@ -212,6 +249,11 @@ class OpenQuattUsageTelemetry : public switch_::Switch, public Component {
   switch_::Switch* trend_flash_switch_{nullptr};
   switch_::Switch* decision_log_flash_switch_{nullptr};
   switch_::Switch* energy_history_flash_switch_{nullptr};
+  switch_::Switch* house_learning_switch_{nullptr};
+  openquatt_modbus::OpenQuattModbusClientHub* modbus_hub_{nullptr};
+#ifdef USE_OPENQUATT_MAX31865_COUNTERS
+  max31865::MAX31865Sensor* max31865_sensor_{nullptr};
+#endif
   ESPPreferenceObject pref_;
   std::array<uint8_t, 16> installation_id_bytes_{};
   std::string installation_id_;
@@ -219,6 +261,21 @@ class OpenQuattUsageTelemetry : public switch_::Switch, public Component {
   openquatt_common::PsramBuffer<char> payload_;
   size_t payload_size_{0U};
   std::string payload_message_id_;
+  enum CounterIndex : size_t {
+    MODBUS_PARTIAL_RESPONSE,
+    MODBUS_PARSE_FAILED,
+    MODBUS_RECOVERED_RESPONSE,
+    MODBUS_OFFLINE,
+#ifdef USE_OPENQUATT_MAX31865_COUNTERS
+    MAX31865_REFIN_LOW,
+    MAX31865_RTDIN_LOW,
+#endif
+    COUNTER_COUNT,
+  };
+  TelemetryCounterSnapshot<COUNTER_COUNT> counter_snapshot_;
+  openquatt_common::PsramBuffer<char> external_publish_topic_;
+  openquatt_common::PsramBuffer<char> external_payload_;
+  size_t external_payload_size_{0U};
   esp_mqtt_client_handle_t mqtt_client_{nullptr};
   bool mqtt_client_started_{false};
   uint8_t cleanup_stop_failures_{0U};
@@ -229,6 +286,11 @@ class OpenQuattUsageTelemetry : public switch_::Switch, public Component {
   StaticTask worker_task_state_{};
   std::atomic<bool> enabled_{false};
   std::atomic<bool> consent_publish_blocked_{true};
+  std::atomic<bool> external_publish_blocked_{true};
+  std::atomic<bool> external_publish_pending_{false};
+  std::atomic<ExternalPublishResult> external_publish_result_{ExternalPublishResult::NONE};
+  // Main-loop owned; never reset by consent changes or batch cancellation.
+  int64_t external_next_publish_allowed_us_{0};
   std::atomic<bool> choice_configured_{false};
   std::atomic<bool> session_active_{false};
   std::atomic<bool> finishing_session_{false};
@@ -241,6 +303,7 @@ class OpenQuattUsageTelemetry : public switch_::Switch, public Component {
   std::atomic<bool> publish_succeeded_{false};
   std::atomic<bool> publish_failed_{false};
   std::atomic<int> pending_message_id_{-1};
+  std::atomic<SessionKind> session_kind_{SessionKind::NONE};
   uint32_t session_started_ms_{0};
   uint32_t next_publish_ms_{0};
   uint8_t consecutive_failures_{0};

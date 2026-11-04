@@ -1,5 +1,7 @@
 #include "OpenQuattDebugRecorder.h"
+#include "debug_configuration_json.h"
 
+#include "OpenQuattHttpStatus.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -30,12 +32,24 @@
 #include "esphome/components/text_sensor/text_sensor.h"
 #endif
 #include "esphome/core/application.h"
+#include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
+#include "esphome/core/preferences.h"
 
 namespace esphome {
 namespace openquatt_debug_recorder {
 
 static const char* const TAG = "openquatt.debug_recorder";
+static const uint32_t ENABLED_STORAGE_KEY = fnv1_hash("openquatt_debug_recorder_enabled");
+static constexpr uint8_t ENABLED_STORAGE_MAGIC = 0xA7;
+
+// Persistent opt-out storage. enabled==1 means the rolling recorder may run;
+// enabled==0 means the user explicitly disabled it. Absent/corrupt storage
+// (wrong magic) means "no preference yet" and defaults to enabled.
+struct RecorderEnabledStorage {
+  uint8_t magic;
+  uint8_t enabled;
+};
 
 namespace {
 
@@ -280,11 +294,14 @@ class OpenQuattDebugRecorderRequestHandler : public AsyncWebHandler {
     }
     if (url_path_matches(url_buf, "/openquatt/debug-recording/configure") ||
         url_path_matches(url_buf, "/openquatt/debug-recording/start") ||
-        url_path_matches(url_buf, "/openquatt/debug-recording/freeze") ||
-        url_path_matches(url_buf, "/openquatt/debug-recording/stop")) {
+        url_path_matches(url_buf, "/openquatt/debug-recording/stop") ||
+        url_path_matches(url_buf, "/openquatt/debug-recording/restart") ||
+        url_path_matches(url_buf, "/openquatt/debug-recording/enabled")) {
       return request->method() == HTTP_POST;
     }
-    return url_path_matches(url_buf, "/openquatt/debug-recording/download") && request->method() == HTTP_GET;
+    return (url_path_matches(url_buf, "/openquatt/debug-recording/download") ||
+            url_path_matches(url_buf, "/openquatt/debug-recording/download-range")) &&
+           request->method() == HTTP_GET;
   }
 
   void handleRequest(AsyncWebServerRequest* request) override {
@@ -292,7 +309,8 @@ class OpenQuattDebugRecorderRequestHandler : public AsyncWebHandler {
     request->url_to(url_buf);
     const bool mutation = request->method() == HTTP_POST;
     if (mutation && (!this->passes_same_origin_(request) || !this->passes_csrf_(request))) {
-      request->send(403, "application/json", R"({"ok":false,"error":"forbidden"})");
+      openquatt_common::send_http_status(*request, openquatt_common::HttpStatus::FORBIDDEN,
+                                         R"({"ok":false,"error":"forbidden"})");
       return;
     }
 
@@ -307,23 +325,22 @@ class OpenQuattDebugRecorderRequestHandler : public AsyncWebHandler {
     }
 
     if (url_path_matches(url_buf, "/openquatt/debug-recording/start")) {
-      const bool rolling = parse_uint_arg(request, "rolling", 0) != 0;
-      uint32_t duration_s = parse_uint_arg(request, "duration_s", 0);
-      if (duration_s == 0) {
-        const uint32_t minutes = parse_uint_arg(request, "minutes", 15);
-        duration_s = minutes > std::numeric_limits<uint32_t>::max() / 60U ? 0 : minutes * 60U;
+      // Explicitly reject obsolete timed clients; never turn a finite request
+      // into an unbounded recording. Custom schemas still use rolling start.
+      if (parse_uint_arg(request, "rolling", 0) != 1) {
+        openquatt_common::send_http_status(*request, openquatt_common::HttpStatus::GONE,
+                                           R"({"ok":false,"error":"timed_recording_removed"})");
+        return;
       }
-      const bool started = rolling ? this->parent_->start_rolling() : this->parent_->start(duration_s);
+      if (!this->parent_->enabled()) {
+        request->send(409, "application/json", R"({"ok":false,"error":"recorder_disabled"})");
+        return;
+      }
+      const bool started = this->parent_->start_rolling();
       if (!started) {
         request->send(409, "application/json", R"({"ok":false,"error":"recorder_not_configured"})");
         return;
       }
-      this->parent_->write_status(*request);
-      return;
-    }
-
-    if (url_path_matches(url_buf, "/openquatt/debug-recording/freeze")) {
-      this->parent_->freeze();
       this->parent_->write_status(*request);
       return;
     }
@@ -334,8 +351,30 @@ class OpenQuattDebugRecorderRequestHandler : public AsyncWebHandler {
       return;
     }
 
+    if (url_path_matches(url_buf, "/openquatt/debug-recording/restart")) {
+      if (!this->parent_->restart_rolling()) {
+        request->send(409, "application/json", R"({"ok":false,"error":"recorder_not_available"})");
+        return;
+      }
+      this->parent_->write_status(*request);
+      return;
+    }
+
+    if (url_path_matches(url_buf, "/openquatt/debug-recording/enabled")) {
+      // Persistent user opt-out. Only this path writes the preference, and a
+      // persistence failure is reported instead of a silent success.
+      if (!this->parent_->set_enabled(parse_uint_arg(request, "enabled", 0) != 0)) {
+        request->send(500, "application/json", R"({"ok":false,"error":"persistence_failed"})");
+        return;
+      }
+      this->parent_->write_status(*request);
+      return;
+    }
+
     if (url_path_matches(url_buf, "/openquatt/debug-recording/download")) {
-      this->parent_->write_recording(*request);
+      this->parent_->write_recording(*request, 0);
+    } else if (url_path_matches(url_buf, "/openquatt/debug-recording/download-range")) {
+      this->parent_->write_recording(*request, parse_uint_arg(request, "last_minutes", 0));
     } else {
       this->parent_->write_status(*request);
     }
@@ -365,10 +404,14 @@ class OpenQuattDebugRecorderRequestHandler : public AsyncWebHandler {
 
 }  // namespace
 
-bool OpenQuattDebugRecorder::RecordingSnapshot::allocate() {
-  return this->samples.allocate_external(BUFFER_BYTES) && this->fields.allocate_external(FIELD_CAPACITY) &&
-         this->string_entries.allocate_external(STRING_ENTRY_CAPACITY) &&
-         this->string_data.allocate_external(STRING_DATA_BYTES);
+bool OpenQuattDebugRecorder::RecordingSnapshot::allocate(size_t sample_bytes, size_t fields_count,
+                                                         size_t string_bytes) {
+  // Retries reuse buffers of the same size; zero-byte empty windows are valid.
+  return (this->samples.size() == sample_bytes || this->samples.allocate_external(sample_bytes)) &&
+         (this->fields.size() == fields_count || this->fields.allocate_external(fields_count)) &&
+         (this->string_entries.size() == STRING_ENTRY_CAPACITY ||
+          this->string_entries.allocate_external(STRING_ENTRY_CAPACITY)) &&
+         (this->string_data.size() == string_bytes || this->string_data.allocate_external(string_bytes));
 }
 
 const uint8_t* OpenQuattDebugRecorder::RecordingSnapshot::sample_at(size_t index) const {
@@ -422,43 +465,60 @@ uint64_t OpenQuattDebugRecorder::current_time_ms_() const {
   if (this->time_is_valid_()) {
     return static_cast<uint64_t>(this->clock_->now().timestamp) * 1000ULL;
   }
-  return static_cast<uint64_t>(millis());
+  // Without valid RTC time the wall-clock reconstruction still needs a
+  // wrap-safe base: a bare millis() would collapse started/ended metadata
+  // after the ~49.7 day wrap.
+  return this->extend_millis_(millis());
+}
+
+uint64_t OpenQuattDebugRecorder::extend_millis_(uint32_t now_ms) const {
+  uint64_t extended = (static_cast<uint64_t>(this->millis_wrap_count_) << 32) | now_ms;
+  if (now_ms < this->last_millis_32_) {
+    // A wrap happened since the last tracking update; account for it here
+    // without mutating state.
+    extended += (static_cast<uint64_t>(1) << 32);
+  }
+  return extended;
+}
+
+void OpenQuattDebugRecorder::track_millis_(uint32_t now_ms) {
+  if (now_ms < this->last_millis_32_) {
+    this->millis_wrap_count_++;
+  }
+  this->last_millis_32_ = now_ms;
+}
+
+uint64_t OpenQuattDebugRecorder::monotonic_ms_(uint32_t now_ms) {
+  this->track_millis_(now_ms);
+  return this->extend_millis_(now_ms);
 }
 
 uint64_t OpenQuattDebugRecorder::started_time_ms_() const {
-  if (this->started_ms_ == 0) {
+  if (this->started_monotonic_ms_ == 0) {
     return 0;
   }
-  const uint32_t now_ms = millis();
   const uint64_t now_time_ms = this->current_time_ms_();
-  const uint32_t elapsed_ms = now_ms - this->started_ms_;
+  const uint64_t elapsed_ms = this->extend_millis_(millis()) - this->started_monotonic_ms_;
   return now_time_ms >= elapsed_ms ? now_time_ms - elapsed_ms : 0;
 }
 
 uint64_t OpenQuattDebugRecorder::ended_time_ms_() const {
-  if (this->started_ms_ == 0) {
+  if (this->started_monotonic_ms_ == 0) {
     return 0;
   }
   if (this->active_) {
     return this->current_time_ms_();
   }
-  return this->started_time_ms_() + static_cast<uint64_t>(this->stopped_ms_ - this->started_ms_);
+  return this->started_time_ms_() + (this->stopped_monotonic_ms_ - this->started_monotonic_ms_);
 }
 
 uint32_t OpenQuattDebugRecorder::elapsed_s_() const {
-  if (this->started_ms_ == 0) {
+  if (this->started_monotonic_ms_ == 0) {
     return 0;
   }
-  const uint32_t end_ms = this->active_ ? millis() : this->stopped_ms_;
-  return (end_ms - this->started_ms_) / 1000U;
-}
-
-uint32_t OpenQuattDebugRecorder::remaining_s_() const {
-  if (!this->active_ || this->rolling_) {
-    return 0;
-  }
-  const uint32_t elapsed = this->elapsed_s_();
-  return elapsed >= this->duration_s_ ? 0 : this->duration_s_ - elapsed;
+  const uint64_t end_ms = this->active_ ? this->extend_millis_(millis()) : this->stopped_monotonic_ms_;
+  const uint64_t elapsed_ms = end_ms >= this->started_monotonic_ms_ ? end_ms - this->started_monotonic_ms_ : 0;
+  return static_cast<uint32_t>(std::min<uint64_t>(elapsed_ms / 1000U, std::numeric_limits<uint32_t>::max()));
 }
 
 uint32_t OpenQuattDebugRecorder::retained_duration_s_() const {
@@ -485,13 +545,6 @@ uint32_t OpenQuattDebugRecorder::estimated_size_() const {
   return static_cast<uint32_t>(std::min<uint64_t>(estimate, std::numeric_limits<uint32_t>::max()));
 }
 
-uint32_t OpenQuattDebugRecorder::sanitize_duration_s_(uint32_t duration_s) const {
-  if (duration_s == 0) {
-    duration_s = DEFAULT_DURATION_S;
-  }
-  return std::max(MIN_DURATION_S, std::min(MAX_DURATION_S, duration_s));
-}
-
 uint8_t OpenQuattDebugRecorder::value_size_for_type_(FieldType type) {
   switch (type) {
     case FieldType::BINARY_SENSOR:
@@ -499,6 +552,8 @@ uint8_t OpenQuattDebugRecorder::value_size_for_type_(FieldType type) {
       return 1;
     case FieldType::TEXT_SENSOR:
     case FieldType::SELECT:
+    case FieldType::CONFIGURATION_SNAPSHOT:
+    case FieldType::TIME_HHMM:
       return 2;
     default:
       return 4;
@@ -507,7 +562,11 @@ uint8_t OpenQuattDebugRecorder::value_size_for_type_(FieldType type) {
 
 bool OpenQuattDebugRecorder::event_type_(FieldType type) {
   return type == FieldType::BINARY_SENSOR || type == FieldType::SWITCH || type == FieldType::TEXT_SENSOR ||
-         type == FieldType::SELECT;
+         type == FieldType::SELECT || type == FieldType::WARMUP_STATUS || type == FieldType::WARMUP_PATH;
+}
+
+bool OpenQuattDebugRecorder::string_type_(FieldType type) {
+  return type == FieldType::TEXT_SENSOR || type == FieldType::SELECT || type == FieldType::CONFIGURATION_SNAPSHOT;
 }
 
 uint32_t OpenQuattDebugRecorder::read_value_(const uint8_t* sample, const DebugField& field) {
@@ -548,6 +607,14 @@ uint32_t OpenQuattDebugRecorder::sample_offset_(const uint8_t* sample) {
     std::memcpy(&value, sample, sizeof(value));
   }
   return value;
+}
+
+uint32_t OpenQuattDebugRecorder::sample_offset_s_(uint64_t now_ms) const {
+  if (now_ms < this->started_monotonic_ms_) {
+    return 0;
+  }
+  const uint64_t offset_s = (now_ms - this->started_monotonic_ms_) / 1000U;
+  return static_cast<uint32_t>(std::min<uint64_t>(offset_s, std::numeric_limits<uint32_t>::max()));
 }
 
 uint16_t OpenQuattDebugRecorder::sample_change_count_(const uint8_t* sample) {
@@ -602,9 +669,10 @@ void OpenQuattDebugRecorder::clear_strings_() {
 void OpenQuattDebugRecorder::clear_() {
   this->count_ = 0;
   this->write_index_ = 0;
-  this->last_sample_ms_ = 0;
+  this->last_sample_monotonic_ms_ = 0;
   this->total_change_count_ = 0;
   this->total_event_count_ = 0;
+  this->configuration_snapshot_overflow_ = false;
   this->clear_strings_();
 }
 
@@ -739,7 +807,7 @@ void OpenQuattDebugRecorder::release_sample_strings_(const uint8_t* sample) {
   }
   for (size_t field_index = 0; field_index < this->field_count_; ++field_index) {
     const DebugField& field = this->fields_[field_index];
-    if (field.type != FieldType::TEXT_SENSOR && field.type != FieldType::SELECT) {
+    if (!string_type_(field.type)) {
       continue;
     }
     const uint32_t value = read_value_(sample, field);
@@ -749,8 +817,33 @@ void OpenQuattDebugRecorder::release_sample_strings_(const uint8_t* sample) {
   }
 }
 
-uint32_t OpenQuattDebugRecorder::capture_value_(const DebugField& field) {
+uint32_t OpenQuattDebugRecorder::capture_value_(const DebugField& field, uint32_t warmup_progress,
+                                                const WarmupPowerSnapshot& warmup_power) {
+  const auto encoded_float = [](float number) -> uint32_t {
+    if (!std::isfinite(number)) return MISSING_VALUE;
+    uint32_t value;
+    std::memcpy(&value, &number, sizeof(value));
+    return value;
+  };
   switch (field.type) {
+    case FieldType::CONFIGURATION_SNAPSHOT:
+      return this->capture_configuration_();
+    case FieldType::WARMUP_STATUS:
+      return warmup_progress == UINT32_MAX ? MISSING_VALUE : warmup_progress >> 24U;
+    case FieldType::WARMUP_ELAPSED:
+      return warmup_progress == UINT32_MAX ? MISSING_VALUE : warmup_progress & 0x00ffffffU;
+    case FieldType::WARMUP_BASE_W:
+      return encoded_float(warmup_power.base_w);
+    case FieldType::WARMUP_MINIMUM_W:
+      return encoded_float(warmup_power.minimum_w);
+    case FieldType::WARMUP_EXTRA_W:
+      return encoded_float(warmup_power.extra_w);
+    case FieldType::WARMUP_BEFORE_CAPS_W:
+      return encoded_float(warmup_power.before_caps_w);
+    case FieldType::WARMUP_AFTER_CAPS_W:
+      return encoded_float(warmup_power.after_caps_w);
+    case FieldType::WARMUP_PATH:
+      return static_cast<uint32_t>(warmup_power.path);
     case FieldType::SYSTEM_UPTIME_MS:
       return millis();
     case FieldType::SYSTEM_FREE_HEAP:
@@ -792,6 +885,17 @@ uint32_t OpenQuattDebugRecorder::capture_value_(const DebugField& field) {
     }
 #endif
 #ifdef USE_TEXT_SENSOR
+    case FieldType::TIME_HHMM: {
+      auto* entity = static_cast<text_sensor::TextSensor*>(field.source);
+      if (entity == nullptr || !entity->has_state()) return MISSING_VALUE;
+      const auto& text = entity->state;
+      if (text.size() != 5 || text[2] != ':' || text[0] < '0' || text[0] > '2' || text[1] < '0' || text[1] > '9' ||
+          text[3] < '0' || text[3] > '5' || text[4] < '0' || text[4] > '9') {
+        return MISSING_VALUE;
+      }
+      const uint32_t hour = (text[0] - '0') * 10U + text[1] - '0';
+      return hour < 24 ? hour * 60U + (text[3] - '0') * 10U + text[4] - '0' : MISSING_VALUE;
+    }
     case FieldType::TEXT_SENSOR: {
       auto* entity = static_cast<text_sensor::TextSensor*>(field.source);
       if (entity == nullptr || !entity->has_state()) return MISSING_VALUE;
@@ -811,6 +915,109 @@ uint32_t OpenQuattDebugRecorder::capture_value_(const DebugField& field) {
     default:
       return MISSING_VALUE;
   }
+}
+
+bool OpenQuattDebugRecorder::configure_configuration_fields_() {
+  struct ConfigurationField {
+    const char* key;
+    const char* domain;
+    const char* name;
+  };
+  static constexpr ConfigurationField kConfigurationFields[] = {
+#define OQ_DEBUG_RECORDER_CONFIGURATION_FIELD(key, domain, name) {key, domain, name},
+#include "debug_recorder_default_fields.h"
+#undef OQ_DEBUG_RECORDER_CONFIGURATION_FIELD
+  };
+  static_assert(sizeof(kConfigurationFields) / sizeof(kConfigurationFields[0]) <= CONFIGURATION_FIELD_CAPACITY);
+  this->configuration_field_count_ = 0;
+  for (const auto& entry : kConfigurationFields) {
+    DebugField& field = this->configuration_fields_[this->configuration_field_count_++];
+    field = DebugField{};
+    if (!copy_text(field.key, sizeof(field.key), entry.key, std::strlen(entry.key)) ||
+        !copy_text(field.name, sizeof(field.name), entry.name, std::strlen(entry.name))) {
+      return false;
+    }
+    // Shared HP2 settings can exist on Single, but they do not describe a
+    // physical HP2 there. Export the capability explicitly rather than defaults.
+#if !OQ_TOPOLOGY_DUO
+    if (std::strncmp(entry.key, "hp2", 3) == 0) continue;
+#endif
+    if (std::strcmp(entry.domain, "number") == 0) {
+      field.type = FieldType::NUMBER;
+#ifdef USE_NUMBER
+      field.source = find_entity_in(App.get_numbers(), entry.name);
+#endif
+    } else if (std::strcmp(entry.domain, "switch") == 0) {
+      field.type = FieldType::SWITCH;
+#ifdef USE_SWITCH
+      field.source = find_entity_in(App.get_switches(), entry.name);
+#endif
+    } else if (std::strcmp(entry.domain, "select") == 0) {
+      field.type = FieldType::SELECT;
+#ifdef USE_SELECT
+      field.source = find_entity_in(App.get_selects(), entry.name);
+#endif
+    } else {
+      return false;
+    }
+  }
+  return this->configuration_field_count_ > 0;
+}
+
+uint32_t OpenQuattDebugRecorder::capture_configuration_() {
+  ConfigurationJsonWriter writer(this->configuration_scratch_.data(), this->configuration_scratch_.size());
+  writer.write_literal("{\"v\":1,\"values\":{");
+  for (size_t index = 0; index < this->configuration_field_count_; ++index) {
+    const DebugField& field = this->configuration_fields_[index];
+    if (index > 0) writer.write_char(',');
+    writer.write_string(field.key, std::strlen(field.key));
+    writer.write_char(':');
+    bool written = false;
+    if (field.source != nullptr) {
+      switch (field.type) {
+#ifdef USE_NUMBER
+        case FieldType::NUMBER: {
+          auto* entity = static_cast<number::Number*>(field.source);
+          written = writer.write_float(entity->has_state() ? entity->state : NAN);
+          break;
+        }
+#endif
+#ifdef USE_SWITCH
+        case FieldType::SWITCH:
+          written = writer.write_bool(static_cast<switch_::Switch*>(field.source)->state);
+          break;
+#endif
+#ifdef USE_SELECT
+        case FieldType::SELECT: {
+          auto* entity = static_cast<select::Select*>(field.source);
+          if (entity->has_state()) {
+            const StringRef option = entity->current_option();
+            written = writer.write_string(option.c_str(), option.size());
+          }
+          break;
+        }
+#endif
+        default:
+          break;
+      }
+    }
+    if (!written && writer.ok()) writer.write_literal("null");
+  }
+  writer.write_literal("},\"unavailable\":[");
+  bool first = true;
+  for (size_t index = 0; index < this->configuration_field_count_; ++index) {
+    const DebugField& field = this->configuration_fields_[index];
+    if (field.source != nullptr) continue;
+    if (!first) writer.write_char(',');
+    writer.write_string(field.key, std::strlen(field.key));
+    first = false;
+  }
+  writer.write_literal("]}");
+  if (!writer.ok()) {
+    this->configuration_snapshot_overflow_ = true;
+    return MISSING_VALUE;
+  }
+  return this->intern_string_(this->configuration_scratch_.data(), writer.size());
 }
 
 bool OpenQuattDebugRecorder::configure(const std::string& entities, bool reset) {
@@ -842,7 +1049,16 @@ bool OpenQuattDebugRecorder::configure(const std::string& entities, bool reset) 
         !add_system_field("freeHeap", "B", FieldType::SYSTEM_FREE_HEAP) ||
         !add_system_field("freePsram", "B", FieldType::SYSTEM_FREE_PSRAM) ||
         !add_system_field("minFreeHeap", "B", FieldType::SYSTEM_MIN_FREE_HEAP) ||
-        !add_system_field("largestFreeHeapBlock", "B", FieldType::SYSTEM_LARGEST_FREE_HEAP_BLOCK)) {
+        !add_system_field("largestFreeHeapBlock", "B", FieldType::SYSTEM_LARGEST_FREE_HEAP_BLOCK) ||
+        !add_system_field("configurationSnapshot", "", FieldType::CONFIGURATION_SNAPSHOT) ||
+        !add_system_field("warmupStatus", "", FieldType::WARMUP_STATUS) ||
+        !add_system_field("warmupElapsed", "s", FieldType::WARMUP_ELAPSED) ||
+        !add_system_field("warmupBasePower", "W", FieldType::WARMUP_BASE_W) ||
+        !add_system_field("warmupMinimumPower", "W", FieldType::WARMUP_MINIMUM_W) ||
+        !add_system_field("warmupExtraPower", "W", FieldType::WARMUP_EXTRA_W) ||
+        !add_system_field("warmupBeforeCapsPower", "W", FieldType::WARMUP_BEFORE_CAPS_W) ||
+        !add_system_field("warmupAfterCapsPower", "W", FieldType::WARMUP_AFTER_CAPS_W) ||
+        !add_system_field("warmupPowerPath", "", FieldType::WARMUP_PATH)) {
       return fail();
     }
   } else if (!this->configuration_pending_) {
@@ -901,7 +1117,7 @@ bool OpenQuattDebugRecorder::configure(const std::string& entities, bool reset) 
       field.source = find_entity_in(App.get_switches(), field.name);
 #endif
     } else if (domain == "text_sensor") {
-      field.type = FieldType::TEXT_SENSOR;
+      field.type = std::strcmp(field.name, "Time now (HH:MM)") == 0 ? FieldType::TIME_HHMM : FieldType::TEXT_SENSOR;
 #ifdef USE_TEXT_SENSOR
       field.source = find_entity_in(App.get_text_sensors(), field.name);
 #endif
@@ -942,6 +1158,146 @@ bool OpenQuattDebugRecorder::configure(const std::string& entities, bool reset) 
   return true;
 }
 
+bool OpenQuattDebugRecorder::configure_default_schema_() {
+  // Caller must hold the state lock. Builds the firmware-owned default
+  // schema from the generated field list so a cold boot without an open web
+  // app still records. Unlike configure(), this is lenient: missing entities
+  // (e.g. HP2 on single topology) are counted and skipped.
+  if (!this->available_()) {
+    return false;
+  }
+  this->abort_pending_configuration_();
+  this->configuration_pending_ = true;
+  auto add_system_field = [&](const char* key, const char* unit, FieldType type) {
+    DebugField& field = this->pending_fields_[this->pending_field_count_++];
+    field = DebugField{};
+    return copy_text(field.key, sizeof(field.key), key, std::strlen(key)) &&
+           copy_text(field.name, sizeof(field.name), key, std::strlen(key)) &&
+           copy_text(field.unit, sizeof(field.unit), unit, std::strlen(unit)) && (field.type = type, true);
+  };
+  if (!add_system_field("uptimeMs", "ms", FieldType::SYSTEM_UPTIME_MS) ||
+      !add_system_field("freeHeap", "B", FieldType::SYSTEM_FREE_HEAP) ||
+      !add_system_field("freePsram", "B", FieldType::SYSTEM_FREE_PSRAM) ||
+      !add_system_field("minFreeHeap", "B", FieldType::SYSTEM_MIN_FREE_HEAP) ||
+      !add_system_field("largestFreeHeapBlock", "B", FieldType::SYSTEM_LARGEST_FREE_HEAP_BLOCK) ||
+      !add_system_field("configurationSnapshot", "", FieldType::CONFIGURATION_SNAPSHOT) ||
+      !add_system_field("warmupStatus", "", FieldType::WARMUP_STATUS) ||
+      !add_system_field("warmupElapsed", "s", FieldType::WARMUP_ELAPSED) ||
+      !add_system_field("warmupBasePower", "W", FieldType::WARMUP_BASE_W) ||
+      !add_system_field("warmupMinimumPower", "W", FieldType::WARMUP_MINIMUM_W) ||
+      !add_system_field("warmupExtraPower", "W", FieldType::WARMUP_EXTRA_W) ||
+      !add_system_field("warmupBeforeCapsPower", "W", FieldType::WARMUP_BEFORE_CAPS_W) ||
+      !add_system_field("warmupAfterCapsPower", "W", FieldType::WARMUP_AFTER_CAPS_W) ||
+      !add_system_field("warmupPowerPath", "", FieldType::WARMUP_PATH)) {
+    this->abort_pending_configuration_();
+    return false;
+  }
+
+  struct DefaultField {
+    const char* key;
+    const char* domain;
+    const char* name;
+  };
+  static constexpr DefaultField kDefaultFields[] = {
+#define OQ_DEBUG_RECORDER_DEFAULT_FIELD(key, domain, name) {key, domain, name},
+#include "debug_recorder_default_fields.h"
+#undef OQ_DEBUG_RECORDER_DEFAULT_FIELD
+  };
+
+  auto resolve_field = [&](const DefaultField& entry, DebugField* out) -> bool {
+    if (out == nullptr) {
+      return false;
+    }
+    *out = DebugField{};
+    if (!copy_text(out->key, sizeof(out->key), entry.key, std::strlen(entry.key)) ||
+        !copy_text(out->name, sizeof(out->name), entry.name, std::strlen(entry.name))) {
+      return false;
+    }
+    if (std::strcmp(entry.domain, "sensor") == 0) {
+      out->type = FieldType::SENSOR;
+#ifdef USE_SENSOR
+      out->source = find_entity_in(App.get_sensors(), entry.name);
+#endif
+    } else if (std::strcmp(entry.domain, "number") == 0) {
+      out->type = FieldType::NUMBER;
+#ifdef USE_NUMBER
+      out->source = find_entity_in(App.get_numbers(), entry.name);
+#endif
+    } else if (std::strcmp(entry.domain, "binary_sensor") == 0) {
+      out->type = FieldType::BINARY_SENSOR;
+#ifdef USE_BINARY_SENSOR
+      out->source = find_entity_in(App.get_binary_sensors(), entry.name);
+#endif
+    } else if (std::strcmp(entry.domain, "switch") == 0) {
+      out->type = FieldType::SWITCH;
+#ifdef USE_SWITCH
+      out->source = find_entity_in(App.get_switches(), entry.name);
+#endif
+    } else if (std::strcmp(entry.domain, "text_sensor") == 0) {
+      out->type = std::strcmp(entry.name, "Time now (HH:MM)") == 0 ? FieldType::TIME_HHMM : FieldType::TEXT_SENSOR;
+#ifdef USE_TEXT_SENSOR
+      out->source = find_entity_in(App.get_text_sensors(), entry.name);
+#endif
+    } else if (std::strcmp(entry.domain, "select") == 0) {
+      out->type = FieldType::SELECT;
+#ifdef USE_SELECT
+      out->source = find_entity_in(App.get_selects(), entry.name);
+#endif
+    } else {
+      return false;
+    }
+    return true;
+  };
+
+  for (const DefaultField& entry : kDefaultFields) {
+    if (this->pending_requested_field_count_ >= FIELD_CAPACITY - SYSTEM_FIELD_COUNT) {
+      break;
+    }
+    DebugField field{};
+    if (!resolve_field(entry, &field)) {
+      continue;
+    }
+    bool duplicate = false;
+    for (size_t index = 0; index < this->pending_field_count_; ++index) {
+      if (std::strcmp(this->pending_fields_[index].key, field.key) == 0) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) {
+      continue;
+    }
+    this->pending_requested_field_count_++;
+    if (field.source == nullptr) {
+      this->pending_missing_field_count_++;
+      continue;
+    }
+    if (field.type == FieldType::SENSOR) {
+#ifdef USE_SENSOR
+      const StringRef unit = static_cast<sensor::Sensor*>(field.source)->get_unit_of_measurement_ref();
+      copy_text(field.unit, sizeof(field.unit), unit.c_str(), std::min(unit.size(), sizeof(field.unit) - 1));
+#endif
+    } else if (field.type == FieldType::NUMBER) {
+#ifdef USE_NUMBER
+      const StringRef unit = static_cast<number::Number*>(field.source)->get_unit_of_measurement_ref();
+      copy_text(field.unit, sizeof(field.unit), unit.c_str(), std::min(unit.size(), sizeof(field.unit) - 1));
+#endif
+    }
+    if (this->pending_field_count_ >= FIELD_CAPACITY) {
+      break;
+    }
+    this->pending_fields_[this->pending_field_count_++] = field;
+  }
+
+  if (!this->activate_pending_configuration_()) {
+    ESP_LOGW(TAG, "Firmware default recording schema could not be activated");
+    return false;
+  }
+  ESP_LOGI(TAG, "Firmware default recording schema active (%u fields, %u missing)",
+           static_cast<unsigned>(this->field_count_), static_cast<unsigned>(this->missing_field_count_));
+  return true;
+}
+
 bool OpenQuattDebugRecorder::activate_pending_configuration_() {
   if (!this->configuration_pending_ || this->pending_field_count_ <= SYSTEM_FIELD_COUNT) {
     return false;
@@ -977,7 +1333,7 @@ void OpenQuattDebugRecorder::capture_sample_() {
   if (!this->active_ || !this->samples_ || this->sample_capacity_ == 0) {
     return;
   }
-  const uint32_t now_ms = millis();
+  const uint64_t now_ms = this->monotonic_ms_(millis());
   const uint8_t* previous = this->count_ > 0 ? this->sample_at_(this->count_ - 1) : nullptr;
   uint8_t* sample = this->writable_sample_at_(this->write_index_);
   if (sample == nullptr) {
@@ -1001,13 +1357,18 @@ void OpenQuattDebugRecorder::capture_sample_() {
     this->release_sample_strings_(sample);
   }
 
+  // One coherent progress read per sample. Live diagnostics are loop-owned;
+  // HTTP export reads the immutable RecordingSnapshot, never these providers.
+  const uint32_t warmup_progress =
+      this->warmup_progress_provider_ != nullptr ? this->warmup_progress_provider_() : UINT32_MAX;
+  const auto warmup_power = this->warmup_power_;
   uint16_t change_count = 0;
   uint16_t event_count = 0;
   for (size_t index = 0; index < this->field_count_; ++index) {
     const DebugField& field = this->fields_[index];
-    const uint32_t value = this->capture_value_(field);
+    const uint32_t value = this->capture_value_(field, warmup_progress, warmup_power);
     write_value_(sample, field, value);
-    if ((field.type == FieldType::TEXT_SENSOR || field.type == FieldType::SELECT) && value != MISSING_VALUE) {
+    if (string_type_(field.type) && value != MISSING_VALUE) {
       this->retain_string_(value);
     }
     if (previous != nullptr && read_value_(previous, field) != value) {
@@ -1019,72 +1380,65 @@ void OpenQuattDebugRecorder::capture_sample_() {
       }
     }
   }
-  write_sample_header_(sample, (now_ms - this->started_ms_) / 1000U, change_count, event_count);
+  write_sample_header_(sample, sample_offset_s_(now_ms), change_count, event_count);
   this->total_change_count_ += change_count;
   this->total_event_count_ += event_count;
   this->write_index_ = (this->write_index_ + 1) % this->sample_capacity_;
   if (this->count_ < this->sample_capacity_) {
     this->count_++;
   }
-  this->last_sample_ms_ = now_ms;
+  this->last_sample_monotonic_ms_ = now_ms;
 }
 
-bool OpenQuattDebugRecorder::start(uint32_t duration_s) {
-  if (!this->lock_state_()) {
-    return false;
-  }
-  if (!this->available_() || this->active_ || !this->activate_pending_configuration_()) {
-    this->unlock_state_();
-    ESP_LOGW(TAG, "Debug recording unavailable or configuration not committed");
-    return false;
-  }
+void OpenQuattDebugRecorder::start_rolling_locked_() {
   this->active_ = true;
-  this->rolling_ = false;
-  this->frozen_ = false;
   const uint64_t next_recording_id = this->current_time_ms_();
   this->recording_id_ = std::max(this->recording_id_ + 1U, next_recording_id);
-  this->duration_s_ = this->sanitize_duration_s_(duration_s);
-  this->started_ms_ = millis();
-  this->stopped_ms_ = 0;
+  this->started_monotonic_ms_ = this->monotonic_ms_(millis());
+  this->stopped_monotonic_ms_ = 0;
   this->clear_();
-  this->capture_sample_();
-  this->unlock_state_();
-  return true;
+  // Initial capture belongs to loop(), including HTTP restart/enable paths.
 }
 
 bool OpenQuattDebugRecorder::start_rolling() {
   if (!this->lock_state_()) {
     return false;
   }
-  if (!this->available_() || this->active_ || !this->activate_pending_configuration_()) {
+  if (!this->available_() || this->active_ || !this->enabled_) {
     this->unlock_state_();
-    ESP_LOGW(TAG, "Rolling debug recording unavailable or configuration not committed");
+    ESP_LOGW(TAG, "Rolling debug recording unavailable, active or disabled by user preference");
     return false;
   }
-  this->active_ = true;
-  this->rolling_ = true;
-  this->frozen_ = false;
-  const uint64_t next_recording_id = this->current_time_ms_();
-  this->recording_id_ = std::max(this->recording_id_ + 1U, next_recording_id);
-  this->duration_s_ = 0;
-  this->started_ms_ = millis();
-  this->stopped_ms_ = 0;
-  this->clear_();
-  this->capture_sample_();
+  if (!this->activate_pending_configuration_()) {
+    this->unlock_state_();
+    ESP_LOGW(TAG, "Rolling debug recording configuration not committed");
+    return false;
+  }
+  this->start_rolling_locked_();
   this->unlock_state_();
   return true;
 }
 
-void OpenQuattDebugRecorder::freeze() {
+bool OpenQuattDebugRecorder::restart_rolling() {
   if (!this->lock_state_()) {
-    return;
+    return false;
   }
-  if (this->active_) {
-    this->active_ = false;
-    this->frozen_ = this->rolling_;
-    this->stopped_ms_ = millis();
+  if (!this->available_() || !this->enabled_) {
+    this->unlock_state_();
+    ESP_LOGW(TAG, "Rolling debug recording restart unavailable or disabled by user preference");
+    return false;
   }
+  // Restart reuses the active (or firmware default) schema; it never needs a
+  // new browser configuration. If no schema was ever activated, fall back to
+  // the firmware-owned default schema.
+  if (this->field_count_ == 0 && !this->configure_default_schema_()) {
+    this->unlock_state_();
+    ESP_LOGW(TAG, "Rolling debug recording restart could not configure default schema");
+    return false;
+  }
+  this->start_rolling_locked_();
   this->unlock_state_();
+  return true;
 }
 
 void OpenQuattDebugRecorder::stop() {
@@ -1093,10 +1447,108 @@ void OpenQuattDebugRecorder::stop() {
   }
   if (this->active_) {
     this->active_ = false;
-    this->frozen_ = this->rolling_;
-    this->stopped_ms_ = millis();
+    this->stopped_monotonic_ms_ = this->monotonic_ms_(millis());
   }
   this->unlock_state_();
+}
+
+bool OpenQuattDebugRecorder::initialize_enabled_preference_() {
+  if (global_preferences == nullptr) {
+    return false;
+  }
+  // ESP32 make_preference allocates a backend that ESPPreferenceObject only
+  // borrows. Reuse one handle, including when PSRAM setup could not load it.
+  if (!this->enabled_preference_initialized_) {
+    this->enabled_pref_ = global_preferences->make_preference<RecorderEnabledStorage>(ENABLED_STORAGE_KEY, true);
+    this->enabled_preference_initialized_ = true;
+  }
+  return true;
+}
+
+bool OpenQuattDebugRecorder::load_enabled_preference_() {
+  if (!this->initialize_enabled_preference_()) {
+    this->enabled_preference_dirty_ = true;
+    return true;
+  }
+  RecorderEnabledStorage stored{};
+  if (!this->enabled_pref_.load(&stored) || stored.magic != ENABLED_STORAGE_MAGIC) {
+    // First boot / no preference yet: default on, without writing to flash.
+    // A failed read also cannot confirm storage, so an explicit unchanged
+    // request must persist that default before acknowledging it.
+    this->enabled_preference_dirty_ = true;
+    return true;
+  }
+  this->enabled_preference_dirty_ = false;
+  return stored.enabled != 0;
+}
+
+bool OpenQuattDebugRecorder::save_enabled_preference_() {
+  // ESP32 sync can partially write this key before another key fails. Until
+  // save AND sync succeed, even an unchanged retry must persist the value.
+  this->enabled_preference_dirty_ = true;
+  if (!this->initialize_enabled_preference_()) {
+    return false;
+  }
+  RecorderEnabledStorage stored{};
+  stored.magic = ENABLED_STORAGE_MAGIC;
+  stored.enabled = this->enabled_ ? 1 : 0;
+  if (!this->enabled_pref_.save(&stored)) {
+    ESP_LOGW(TAG, "Failed to save systeemrecorder preference");
+    return false;
+  }
+  // A successful save without sync may still lose the opt-out on reboot,
+  // while the UI promises persistence and never retries an unchanged value.
+  if (!global_preferences->sync()) {
+    ESP_LOGW(TAG, "Failed to sync systeemrecorder preference");
+    return false;
+  }
+  this->enabled_preference_dirty_ = false;
+  return true;
+}
+
+bool OpenQuattDebugRecorder::set_enabled(bool enabled) {
+  if (!this->lock_state_()) {
+    return false;
+  }
+  if (enabled == this->enabled_) {
+    // Idempotent: repeating the current value must never wipe the buffer.
+    // A fresh recording is only started by an explicit restart or by the
+    // Uit → Aan transition below. A prior persistence failure may have
+    // changed flash, so only a confirmed retry can acknowledge this value.
+    const bool saved = !this->enabled_preference_dirty_ || this->save_enabled_preference_();
+    this->unlock_state_();
+    return saved;
+  }
+  const bool previous = this->enabled_;
+  this->enabled_ = enabled;
+  if (!this->save_enabled_preference_()) {
+    this->enabled_ = previous;
+    this->unlock_state_();
+    return false;
+  }
+  if (!this->available_()) {
+    this->unlock_state_();
+    return true;
+  }
+  if (!enabled) {
+    // Opt-out: stop sampling, but keep the current buffer downloadable until
+    // reboot or the next start.
+    if (this->active_) {
+      this->active_ = false;
+      this->stopped_monotonic_ms_ = this->monotonic_ms_(millis());
+    }
+  } else {
+    if (this->field_count_ == 0 && !this->configure_default_schema_()) {
+      this->enabled_ = previous;
+      this->save_enabled_preference_();
+      this->unlock_state_();
+      ESP_LOGW(TAG, "Systeemrecorder could not configure default schema on enable");
+      return false;
+    }
+    this->start_rolling_locked_();
+  }
+  this->unlock_state_();
+  return true;
 }
 
 void OpenQuattDebugRecorder::rotate_csrf_token_() {
@@ -1123,14 +1575,19 @@ void OpenQuattDebugRecorder::setup() {
     return;
   }
 
+  // The user's preference also governs status and explicit retries when
+  // recording storage is unavailable; load it independently of PSRAM setup.
+  this->enabled_ = this->load_enabled_preference_();
   const bool allocated = this->samples_.allocate_external(BUFFER_BYTES) &&
                          this->fields_.allocate_external(FIELD_CAPACITY) &&
                          this->pending_fields_.allocate_external(FIELD_CAPACITY) &&
                          this->string_entries_.allocate_external(STRING_ENTRY_CAPACITY) &&
                          this->string_buckets_.allocate_external(STRING_BUCKET_CAPACITY) &&
                          this->string_compaction_order_.allocate_external(STRING_ENTRY_CAPACITY) &&
-                         this->string_data_.allocate_external(STRING_DATA_BYTES);
-  if (!allocated || !this->available_()) {
+                         this->string_data_.allocate_external(STRING_DATA_BYTES) &&
+                         this->configuration_fields_.allocate_external(CONFIGURATION_FIELD_CAPACITY) &&
+                         this->configuration_scratch_.allocate_external(CONFIGURATION_SCRATCH_BYTES);
+  if (!allocated || !this->available_() || !this->configure_configuration_fields_()) {
     this->samples_.release();
     this->fields_.release();
     this->pending_fields_.release();
@@ -1138,9 +1595,30 @@ void OpenQuattDebugRecorder::setup() {
     this->string_buckets_.release();
     this->string_compaction_order_.release();
     this->string_data_.release();
+    this->configuration_fields_.release();
+    this->configuration_scratch_.release();
     ESP_LOGE(TAG, "Failed to allocate debug recording storage in PSRAM");
   } else {
     this->clear_strings_();
+    // Firmware-owned always-on rolling recorder: configure the default schema
+    // and start rolling without any web app involvement, unless the user
+    // explicitly opted out. A recorder failure must never block the normal
+    // controller operation.
+    if (!this->lock_state_()) {
+      ESP_LOGW(TAG, "Systeemrecorder synchronization unavailable; recorder idle");
+    } else {
+      if (this->enabled_) {
+        if (this->configure_default_schema_()) {
+          this->start_rolling_locked_();
+          ESP_LOGI(TAG, "Systeemrecorder auto-started rolling recording");
+        } else {
+          ESP_LOGW(TAG, "Systeemrecorder available but default schema failed; recorder idle");
+        }
+      } else {
+        ESP_LOGI(TAG, "Systeemrecorder disabled by user preference; not starting");
+      }
+      this->unlock_state_();
+    }
   }
   this->rotate_csrf_token_();
   web_server_base::global_web_server_base->add_handler(new OpenQuattDebugRecorderRequestHandler(this));
@@ -1150,19 +1628,15 @@ void OpenQuattDebugRecorder::loop() {
   if (!this->lock_state_(0)) {
     return;
   }
+  // Track every iteration, even while disabled: a missed wrap would corrupt
+  // the monotonic clock used for all recording timing.
+  this->track_millis_(millis());
   if (!this->active_) {
     this->unlock_state_();
     return;
   }
-  const uint32_t now_ms = millis();
-  if (!this->rolling_ && now_ms - this->started_ms_ >= this->duration_s_ * 1000U) {
-    if (this->last_sample_ms_ != now_ms) {
-      this->capture_sample_();
-    }
-    this->active_ = false;
-    this->frozen_ = false;
-    this->stopped_ms_ = now_ms;
-  } else if (this->last_sample_ms_ == 0 || now_ms - this->last_sample_ms_ >= SAMPLE_INTERVAL_MS) {
+  const uint64_t now_ms = this->monotonic_ms_(millis());
+  if (this->count_ == 0 || now_ms - this->last_sample_monotonic_ms_ >= SAMPLE_INTERVAL_MS) {
     this->capture_sample_();
   }
   this->unlock_state_();
@@ -1185,59 +1659,84 @@ void OpenQuattDebugRecorder::dump_config() {
   this->unlock_state_();
 }
 
-bool OpenQuattDebugRecorder::capture_snapshot_(RecordingSnapshot* snapshot) const {
-  if (snapshot == nullptr || !snapshot->allocate() || !this->lock_state_()) {
-    return false;
-  }
-  if (!this->available_() || this->sample_stride_ == 0 ||
-      this->count_ * this->sample_stride_ > snapshot->samples.size()) {
+bool OpenQuattDebugRecorder::capture_snapshot_(RecordingSnapshot* snapshot, uint32_t last_minutes) const {
+  if (snapshot == nullptr) return false;
+  // Select under the state lock, allocate outside it, then verify the plan.
+  // Restarts or eviction during allocation must never mix recordings/strings.
+  for (unsigned attempt = 0; attempt < 3; ++attempt) {
+    if (!this->lock_state_()) return false;
+    if (!this->available_() || this->sample_stride_ == 0) {
+      this->unlock_state_();
+      return false;
+    }
+    size_t export_start_index = 0;
+    if (last_minutes > 0 && this->count_ > 0) {
+      const uint64_t window_s = static_cast<uint64_t>(last_minutes) * 60U;
+      const uint32_t last_offset = sample_offset_(this->sample_at_(this->count_ - 1));
+      const uint32_t cutoff_s = window_s >= last_offset ? 0 : last_offset - static_cast<uint32_t>(window_s);
+      while (export_start_index < this->count_ && sample_offset_(this->sample_at_(export_start_index)) < cutoff_s) {
+        ++export_start_index;
+      }
+    }
+    const uint64_t recording_id = this->recording_id_;
+    const uint64_t last_sample_ms = this->last_sample_monotonic_ms_;
+    const size_t count = this->count_;
+    const size_t stride = this->sample_stride_;
+    const size_t field_count = this->field_count_;
+    const size_t string_bytes = this->string_data_used_;
+    const size_t export_count = count - export_start_index;
     this->unlock_state_();
-    return false;
+    if (!snapshot->allocate(export_count * stride, field_count, string_bytes) || !this->lock_state_()) {
+      return false;
+    }
+    if (this->recording_id_ != recording_id || this->count_ != count ||
+        this->last_sample_monotonic_ms_ != last_sample_ms || this->sample_stride_ != stride ||
+        this->field_count_ != field_count || this->string_data_used_ != string_bytes) {
+      this->unlock_state_();
+      continue;
+    }
+    snapshot->available = true;
+    snapshot->active = this->active_;
+    snapshot->string_overflow = this->string_overflow_;
+    snapshot->configuration_snapshot_overflow = this->configuration_snapshot_overflow_;
+    snapshot->recording_id = recording_id;
+    snapshot->exported_at_ms = this->current_time_ms_();
+    snapshot->started_at_ms = this->started_time_ms_();
+    snapshot->ended_at_ms = this->ended_time_ms_();
+    snapshot->retention_capacity_s = this->retention_capacity_s_();
+    snapshot->event_count = 0;
+    snapshot->count = export_count;
+    snapshot->sample_capacity = this->sample_capacity_;
+    snapshot->sample_stride = stride;
+    snapshot->field_count = field_count;
+    snapshot->missing_field_count = this->missing_field_count_;
+    snapshot->string_data_used = string_bytes;
+    std::memcpy(snapshot->fields.data(), this->fields_.data(), field_count * sizeof(DebugField));
+    std::memcpy(snapshot->string_entries.data(), this->string_entries_.data(),
+                STRING_ENTRY_CAPACITY * sizeof(StringEntry));
+    if (string_bytes > 0) std::memcpy(snapshot->string_data.data(), this->string_data_.data(), string_bytes);
+    for (size_t index = 0; index < export_count; ++index) {
+      const uint8_t* sample = this->sample_at_(export_start_index + index);
+      std::memcpy(snapshot->samples.data() + index * stride, sample, stride);
+      // The first sample is the new initial; its pre-window transition drops out.
+      if (index > 0) snapshot->event_count += sample_event_count_(sample);
+    }
+    this->unlock_state_();
+    return true;
   }
-
-  snapshot->available = true;
-  snapshot->active = this->active_;
-  snapshot->rolling = this->rolling_;
-  snapshot->frozen = this->frozen_;
-  snapshot->string_overflow = this->string_overflow_;
-  snapshot->recording_id = this->recording_id_;
-  snapshot->exported_at_ms = this->current_time_ms_();
-  snapshot->started_at_ms = this->started_time_ms_();
-  snapshot->ended_at_ms = this->ended_time_ms_();
-  snapshot->duration_s = this->elapsed_s_();
-  snapshot->retained_duration_s = this->retained_duration_s_();
-  snapshot->retention_capacity_s = this->retention_capacity_s_();
-  snapshot->event_count = this->total_event_count_;
-  snapshot->count = this->count_;
-  snapshot->sample_capacity = this->sample_capacity_;
-  snapshot->sample_stride = this->sample_stride_;
-  snapshot->field_count = this->field_count_;
-  snapshot->missing_field_count = this->missing_field_count_;
-  snapshot->string_data_used = this->string_data_used_;
-
-  std::memcpy(snapshot->fields.data(), this->fields_.data(), this->field_count_ * sizeof(DebugField));
-  std::memcpy(snapshot->string_entries.data(), this->string_entries_.data(),
-              STRING_ENTRY_CAPACITY * sizeof(StringEntry));
-  std::memcpy(snapshot->string_data.data(), this->string_data_.data(), this->string_data_used_);
-  for (size_t index = 0; index < this->count_; ++index) {
-    std::memcpy(snapshot->samples.data() + index * this->sample_stride_, this->sample_at_(index), this->sample_stride_);
-  }
-  this->unlock_state_();
-  return true;
+  return false;
 }
 
 void OpenQuattDebugRecorder::write_status(httpd_req_t* req) const {
   struct Status {
     bool available{false};
+    bool enabled{false};
     bool active{false};
-    bool rolling{false};
-    bool frozen{false};
     bool configuration_pending{false};
     bool string_overflow{false};
+    bool configuration_snapshot_overflow{false};
     uint64_t recording_id{0};
-    uint32_t duration_s{0};
     uint32_t elapsed_s{0};
-    uint32_t remaining_s{0};
     uint32_t retained_duration_s{0};
     uint32_t retention_capacity_s{0};
     uint32_t event_count{0};
@@ -1260,15 +1759,13 @@ void OpenQuattDebugRecorder::write_status(httpd_req_t* req) const {
     return;
   }
   status.available = this->available_();
+  status.enabled = this->enabled_;
   status.active = this->active_;
-  status.rolling = this->rolling_;
-  status.frozen = this->frozen_;
   status.configuration_pending = this->configuration_pending_;
   status.string_overflow = this->string_overflow_;
+  status.configuration_snapshot_overflow = this->configuration_snapshot_overflow_;
   status.recording_id = this->recording_id_;
-  status.duration_s = this->duration_s_;
   status.elapsed_s = this->elapsed_s_();
-  status.remaining_s = this->remaining_s_();
   status.retained_duration_s = this->retained_duration_s_();
   status.retention_capacity_s = this->retention_capacity_s_();
   status.event_count = this->total_event_count_;
@@ -1296,19 +1793,18 @@ void OpenQuattDebugRecorder::write_status(httpd_req_t* req) const {
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
   constexpr size_t persistent_storage_bytes =
       BUFFER_BYTES + 2U * FIELD_CAPACITY * sizeof(DebugField) + STRING_ENTRY_CAPACITY * sizeof(StringEntry) +
-      STRING_BUCKET_CAPACITY * sizeof(uint16_t) + STRING_ENTRY_CAPACITY * sizeof(uint16_t) + STRING_DATA_BYTES;
+      STRING_BUCKET_CAPACITY * sizeof(uint16_t) + STRING_ENTRY_CAPACITY * sizeof(uint16_t) + STRING_DATA_BYTES +
+      CONFIGURATION_FIELD_CAPACITY * sizeof(DebugField) + CONFIGURATION_SCRATCH_BYTES;
   const bool ok =
       writer.write_literal(R"({"ok":true,"available":)") && writer.write_bool(status.available) &&
+      writer.write_literal(R"(,"enabled":)") && writer.write_bool(status.enabled) &&
       writer.write_literal(R"(,"active":)") && writer.write_bool(status.active) &&
-      writer.write_literal(R"(,"mode":")") && writer.write_literal(status.rolling ? "rolling" : "manual") &&
-      writer.write_literal(R"(","rolling":)") && writer.write_bool(status.rolling) &&
-      writer.write_literal(R"(,"frozen":)") && writer.write_bool(status.frozen) &&
+      writer.write_literal(R"(,"mode":")") && writer.write_literal("rolling") &&
+      writer.write_literal(R"(","rolling":)") && writer.write_bool(true) &&
       writer.write_literal(R"(,"recording_id":)") && writer.write_uint64(status.recording_id) &&
       writer.write_literal(R"(,"storage":")") && writer.write_literal(status.available ? "psram" : "unavailable") &&
       writer.write_literal(R"(","interval_s":)") && writer.write_uint32(SAMPLE_INTERVAL_MS / 1000U) &&
-      writer.write_literal(R"(,"duration_s":)") && writer.write_uint32(status.duration_s) &&
       writer.write_literal(R"(,"elapsed_s":)") && writer.write_uint32(status.elapsed_s) &&
-      writer.write_literal(R"(,"remaining_s":)") && writer.write_uint32(status.remaining_s) &&
       writer.write_literal(R"(,"retained_duration_s":)") && writer.write_uint32(status.retained_duration_s) &&
       writer.write_literal(R"(,"retention_capacity_s":)") && writer.write_uint32(status.retention_capacity_s) &&
       writer.write_literal(R"(,"sample_count":)") && writer.write_uint32(static_cast<uint32_t>(status.count)) &&
@@ -1332,9 +1828,10 @@ void OpenQuattDebugRecorder::write_status(httpd_req_t* req) const {
       writer.write_uint32(static_cast<uint32_t>(status.pending_missing_field_count)) &&
       writer.write_literal(R"(,"string_count":)") && writer.write_uint32(static_cast<uint32_t>(status.string_count)) &&
       writer.write_literal(R"(,"string_overflow":)") && writer.write_bool(status.string_overflow) &&
-      writer.write_literal(R"(,"event_count":)") && writer.write_uint32(status.event_count) &&
-      writer.write_literal(R"(,"buffer_size":)") && writer.write_uint32(static_cast<uint32_t>(BUFFER_BYTES)) &&
-      writer.write_literal(R"(,"storage_size":)") &&
+      writer.write_literal(R"(,"configuration_snapshot_overflow":)") &&
+      writer.write_bool(status.configuration_snapshot_overflow) && writer.write_literal(R"(,"event_count":)") &&
+      writer.write_uint32(status.event_count) && writer.write_literal(R"(,"buffer_size":)") &&
+      writer.write_uint32(static_cast<uint32_t>(BUFFER_BYTES)) && writer.write_literal(R"(,"storage_size":)") &&
       writer.write_uint32(static_cast<uint32_t>(persistent_storage_bytes)) &&
       writer.write_literal(R"(,"estimated_size":)") && writer.write_uint32(status.estimated_size) &&
       writer.write_literal(R"(,"buffer":")") && writer.write_literal(status.available ? "psram" : "unavailable") &&
@@ -1347,20 +1844,20 @@ void OpenQuattDebugRecorder::write_status(httpd_req_t* req) const {
   httpd_resp_send_chunk(req, nullptr, 0);
 }
 
-void OpenQuattDebugRecorder::write_recording(httpd_req_t* req) const {
+void OpenQuattDebugRecorder::write_recording(httpd_req_t* req, uint32_t last_minutes) const {
   if (!this->begin_export_()) {
     httpd_resp_set_status(req, "503 Service Unavailable");
     httpd_resp_set_type(req, "application/json; charset=utf-8");
     httpd_resp_sendstr(req, R"({"ok":false,"error":"snapshot_unavailable"})");
     return;
   }
-  this->write_recording_export_(req);
+  this->write_recording_export_(req, last_minutes);
   this->end_export_();
 }
 
-void OpenQuattDebugRecorder::write_recording_export_(httpd_req_t* req) const {
+void OpenQuattDebugRecorder::write_recording_export_(httpd_req_t* req, uint32_t last_minutes) const {
   RecordingSnapshot snapshot;
-  if (!this->capture_snapshot_(&snapshot)) {
+  if (!this->capture_snapshot_(&snapshot, last_minutes)) {
     ESP_LOGW(TAG, "Failed to allocate or capture immutable debug recording snapshot");
     httpd_resp_set_status(req, "503 Service Unavailable");
     httpd_resp_set_type(req, "application/json; charset=utf-8");
@@ -1378,14 +1875,33 @@ void OpenQuattDebugRecorder::write_recording_export_(httpd_req_t* req) const {
   httpd_resp_set_type(req, "application/json; charset=utf-8");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
-  const uint8_t* initial = snapshot.sample_at(0);
+  // The immutable snapshot already contains only the requested time window.
+  const size_t export_count = snapshot.count;
+  // The window start becomes the new initial state; offsets are rebased so
+  // the partial export is a self-contained, decodable .oqdebug.json.
+  const uint8_t* initial = export_count > 0 ? snapshot.sample_at(0) : nullptr;
+  const uint32_t first_offset = initial != nullptr ? sample_offset_(initial) : 0;
+  const uint32_t last_offset = export_count > 0 ? sample_offset_(snapshot.sample_at(snapshot.count - 1)) : 0;
+  const uint64_t range_started_at_ms = snapshot.started_at_ms + static_cast<uint64_t>(first_offset) * 1000U;
+  // Export metadata always describes the exported window, never the total
+  // recorder runtime: once the ring buffer has wrapped, those differ and the
+  // runtime figure would misdescribe the file contents.
+  const uint32_t window_duration_s = export_count > 0 && last_offset >= first_offset ? last_offset - first_offset : 0;
+  const uint32_t export_duration_s = window_duration_s;
+  const uint32_t export_retained_s = window_duration_s;
+  const uint32_t export_event_count = snapshot.event_count;
   auto write_field_value = [&](const DebugField& field, uint32_t value) -> bool {
     if (value == MISSING_VALUE) {
       return writer.write_literal("null");
     }
     switch (field.type) {
       case FieldType::SENSOR:
-      case FieldType::NUMBER: {
+      case FieldType::NUMBER:
+      case FieldType::WARMUP_BASE_W:
+      case FieldType::WARMUP_MINIMUM_W:
+      case FieldType::WARMUP_EXTRA_W:
+      case FieldType::WARMUP_BEFORE_CAPS_W:
+      case FieldType::WARMUP_AFTER_CAPS_W: {
         float numeric;
         std::memcpy(&numeric, &value, sizeof(numeric));
         return writer.write_float(numeric);
@@ -1393,8 +1909,16 @@ void OpenQuattDebugRecorder::write_recording_export_(httpd_req_t* req) const {
       case FieldType::BINARY_SENSOR:
       case FieldType::SWITCH:
         return writer.write_bool(value != 0);
+      case FieldType::TIME_HHMM: {
+        if (value >= 24U * 60U) return writer.write_literal("null");
+        char text[6];
+        std::snprintf(text, sizeof(text), "%02u:%02u", static_cast<unsigned>((value / 60U) % 24U),
+                      static_cast<unsigned>(value % 60U));
+        return writer.write_json_string(text, 5);
+      }
       case FieldType::TEXT_SENSOR:
-      case FieldType::SELECT: {
+      case FieldType::SELECT:
+      case FieldType::CONFIGURATION_SNAPSHOT: {
         const StringEntry* entry = snapshot.string_at(value);
         return entry != nullptr && writer.write_json_string(snapshot.string_data.data() + entry->offset, entry->length);
       }
@@ -1403,34 +1927,34 @@ void OpenQuattDebugRecorder::write_recording_export_(httpd_req_t* req) const {
     }
   };
 
-  bool ok = writer.write_literal(R"({"format":"openquatt-debug-device-v1","schema_version":1)") &&
-            writer.write_literal(R"(,"kind":"openquatt_debug_recording","encoding":"device-psram-delta-json-v1")") &&
-            writer.write_literal(R"(,"exported_at_ms":)") && writer.write_uint64(snapshot.exported_at_ms) &&
-            writer.write_literal(R"(,"source":{"device":"OpenQuatt","storage":"psram"})") &&
-            writer.write_literal(R"(,"recording":{"started_at_ms":)") && writer.write_uint64(snapshot.started_at_ms) &&
-            writer.write_literal(R"(,"recording_id":)") && writer.write_uint64(snapshot.recording_id) &&
-            writer.write_literal(R"(,"ended_at_ms":)") && writer.write_uint64(snapshot.ended_at_ms) &&
-            writer.write_literal(R"(,"active":)") && writer.write_bool(snapshot.active) &&
-            writer.write_literal(R"(,"mode":")") && writer.write_literal(snapshot.rolling ? "rolling" : "manual") &&
-            writer.write_literal(R"(","rolling":)") && writer.write_bool(snapshot.rolling) &&
-            writer.write_literal(R"(,"frozen":)") && writer.write_bool(snapshot.frozen) &&
-            writer.write_literal(R"(,"duration_s":)") && writer.write_uint32(snapshot.duration_s) &&
-            writer.write_literal(R"(,"retained_duration_s":)") && writer.write_uint32(snapshot.retained_duration_s) &&
-            writer.write_literal(R"(,"retention_capacity_s":)") && writer.write_uint32(snapshot.retention_capacity_s) &&
-            writer.write_literal(R"(,"interval_s":)") && writer.write_uint32(SAMPLE_INTERVAL_MS / 1000U) &&
-            writer.write_literal(R"(,"sample_count":)") && writer.write_uint32(static_cast<uint32_t>(snapshot.count)) &&
-            writer.write_literal(R"(,"sample_capacity":)") &&
-            writer.write_uint32(static_cast<uint32_t>(snapshot.sample_capacity)) &&
-            writer.write_literal(R"(,"sample_row_bytes":)") &&
-            writer.write_uint32(static_cast<uint32_t>(snapshot.sample_stride)) &&
-            writer.write_literal(R"(,"buffer_size":)") && writer.write_uint32(static_cast<uint32_t>(BUFFER_BYTES)) &&
-            writer.write_literal(R"(,"column_count":)") &&
-            writer.write_uint32(static_cast<uint32_t>(snapshot.field_count)) &&
-            writer.write_literal(R"(,"missing_field_count":)") &&
-            writer.write_uint32(static_cast<uint32_t>(snapshot.missing_field_count)) &&
-            writer.write_literal(R"(,"event_count":)") && writer.write_uint32(snapshot.event_count) &&
-            writer.write_literal(R"(,"string_overflow":)") && writer.write_bool(snapshot.string_overflow) &&
-            writer.write_literal(R"(,"storage":"psram"},"columns":[)");
+  bool ok =
+      writer.write_literal(R"({"format":"openquatt-debug-device-v1","schema_version":1)") &&
+      writer.write_literal(R"(,"kind":"openquatt_debug_recording","encoding":"device-psram-delta-json-v1")") &&
+      writer.write_literal(R"(,"exported_at_ms":)") && writer.write_uint64(snapshot.exported_at_ms) &&
+      writer.write_literal(R"(,"source":{"device":"OpenQuatt","storage":"psram"})") &&
+      writer.write_literal(R"(,"recording":{"started_at_ms":)") && writer.write_uint64(range_started_at_ms) &&
+      writer.write_literal(R"(,"recording_id":)") && writer.write_uint64(snapshot.recording_id) &&
+      writer.write_literal(R"(,"ended_at_ms":)") && writer.write_uint64(snapshot.ended_at_ms) &&
+      writer.write_literal(R"(,"active":)") && writer.write_bool(snapshot.active) &&
+      writer.write_literal(R"(,"mode":")") && writer.write_literal("rolling") &&
+      writer.write_literal(R"(","rolling":)") && writer.write_bool(true) && writer.write_literal(R"(,"duration_s":)") &&
+      writer.write_uint32(export_duration_s) && writer.write_literal(R"(,"retained_duration_s":)") &&
+      writer.write_uint32(export_retained_s) && writer.write_literal(R"(,"retention_capacity_s":)") &&
+      writer.write_uint32(snapshot.retention_capacity_s) && writer.write_literal(R"(,"interval_s":)") &&
+      writer.write_uint32(SAMPLE_INTERVAL_MS / 1000U) && writer.write_literal(R"(,"sample_count":)") &&
+      writer.write_uint32(static_cast<uint32_t>(export_count)) && writer.write_literal(R"(,"sample_capacity":)") &&
+      writer.write_uint32(static_cast<uint32_t>(snapshot.sample_capacity)) &&
+      writer.write_literal(R"(,"sample_row_bytes":)") &&
+      writer.write_uint32(static_cast<uint32_t>(snapshot.sample_stride)) &&
+      writer.write_literal(R"(,"buffer_size":)") && writer.write_uint32(static_cast<uint32_t>(BUFFER_BYTES)) &&
+      writer.write_literal(R"(,"column_count":)") && writer.write_uint32(static_cast<uint32_t>(snapshot.field_count)) &&
+      writer.write_literal(R"(,"missing_field_count":)") &&
+      writer.write_uint32(static_cast<uint32_t>(snapshot.missing_field_count)) &&
+      writer.write_literal(R"(,"event_count":)") && writer.write_uint32(export_event_count) &&
+      writer.write_literal(R"(,"string_overflow":)") && writer.write_bool(snapshot.string_overflow) &&
+      writer.write_literal(R"(,"configuration_snapshot_overflow":)") &&
+      writer.write_bool(snapshot.configuration_snapshot_overflow) &&
+      writer.write_literal(R"(,"storage":"psram"},"columns":[)");
   if (!ok) {
     ESP_LOGW(TAG, "Failed to start debug recording response");
     httpd_resp_send_chunk(req, nullptr, 0);
@@ -1469,11 +1993,14 @@ void OpenQuattDebugRecorder::write_recording_export_(httpd_req_t* req) const {
   }
 
   ok = ok && writer.write_literal(R"(],"samples":[)");
-  for (size_t sample_index = 0; ok && sample_index < snapshot.count; ++sample_index) {
-    const uint8_t* sample = snapshot.sample_at(sample_index);
-    const uint8_t* previous = sample_index > 0 ? snapshot.sample_at(sample_index - 1) : initial;
+  for (size_t sample_index = 0; ok && sample_index < export_count; ++sample_index) {
+    const size_t absolute_index = sample_index;
+    const uint8_t* sample = snapshot.sample_at(absolute_index);
+    // The first sample of the window carries no deltas: its full state is the
+    // new initial above. Later samples delta against their window predecessor.
+    const uint8_t* previous = sample_index > 0 ? snapshot.sample_at(absolute_index - 1) : nullptr;
     ok = (sample_index == 0 || writer.write_char(',')) && writer.write_char('[') &&
-         writer.write_uint32(sample_offset_(sample)) && writer.write_literal(",[");
+         writer.write_uint32(sample_offset_(sample) - first_offset) && writer.write_literal(",[");
     bool first_delta = true;
     for (size_t field_index = 0; ok && previous != nullptr && field_index < snapshot.field_count; ++field_index) {
       const DebugField& field = snapshot.fields[field_index];

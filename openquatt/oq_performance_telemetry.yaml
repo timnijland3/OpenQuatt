@@ -1,0 +1,56 @@
+# ==============================================================================
+# OpenQuatt - Optional Performance Model Validation
+# ==============================================================================
+# Separate opt-in for compact, anonymous heating measurements used to validate
+# performance maps. It deliberately reuses the outbound-only usage telemetry
+# transport without enabling ESPHome's global MQTT integration.
+# Payload schema v1 contains only outside-unit performance-map inputs and
+# measurements; it intentionally excludes global supply and power-model context.
+# Batches are published every 15 minutes from device boot using monotonic
+# uptime; `ws` is the UTC start timestamp of the first complete minute in the
+# batch and is informational, not a UTC-quarter-hour schedule anchor.
+# ==============================================================================
+
+openquatt_performance_telemetry:
+  id: oq_performance_telemetry
+  name: "Performance model validation"
+  transport: oq_usage_telemetry
+  clock: oq_time
+  setup_complete_sensor: oq_setup_complete_sensor
+  choice_configured:
+    id: oq_performance_telemetry_choice_configured
+    name: "Performance model validation choice configured"
+    internal: true
+  prompt_handled:
+    id: oq_performance_telemetry_prompt_handled
+    name: "Performance model validation prompt handled"
+    internal: true
+  generation_select: hp_generation
+  outside_temp_sensor: outside_temp_selected
+  flow_sensor: flow_rate_selected
+  firmware_version: "${project_version}"
+  topology: "${oq_topology}"
+  hp1_working_mode: hp1_working_mode
+  hp1_frequency: hp1_compressor_frequency
+  hp1_level: oq_hp1_applied_control_level_sensor
+  hp1_input_power: hp1_power_input
+  hp1_heat_power: hp1_heat_power
+  hp1_pump_power: hp1_pump_power
+  hp1_water_in: hp1_water_in_temp
+  hp1_water_out: hp1_water_out_temp
+  hp1_defrost: hp1_defrost
+  hp1_oil_return: hp1_prot_oil_return
+  hp1_four_way_valve: hp1_4_way_valve
+  hp1_bottom_plate_heater: hp1_bottom_plate_heater
+  hp2_working_mode: ${secondary_hp_id}_working_mode
+  hp2_frequency: ${secondary_hp_id}_compressor_frequency
+  hp2_level: oq_hp2_applied_control_level_sensor
+  hp2_input_power: ${secondary_hp_id}_power_input
+  hp2_heat_power: ${secondary_hp_id}_heat_power
+  hp2_pump_power: ${secondary_hp_id}_pump_power
+  hp2_water_in: ${secondary_hp_id}_water_in_temp
+  hp2_water_out: ${secondary_hp_id}_water_out_temp
+  hp2_defrost: ${secondary_hp_id}_defrost
+  hp2_oil_return: ${secondary_hp_id}_prot_oil_return
+  hp2_four_way_valve: ${secondary_hp_id}_4_way_valve
+  hp2_bottom_plate_heater: ${secondary_hp_id}_bottom_plate_heater

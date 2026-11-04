@@ -22,7 +22,7 @@
   <circle cx="35" cy="442" r="12" fill="#dcfce7"/><path d="M29 442l5 5 9-11" fill="none" stroke="#15803d" stroke-width="3"/>
   <text x="57" y="448" class="item">Q en alle overige stekkers zitten stevig vast.</text>
   <circle cx="35" cy="488" r="12" fill="#dcfce7"/><path d="M29 488l5 5 9-11" fill="none" stroke="#15803d" stroke-width="3"/>
-  <text x="57" y="494" class="item">M2 is alleen aangesloten voor CiC-compatibiliteit.</text>
+  <text x="57" y="494" class="item">M2 is alleen voor Quatt-app via CiC aangesloten.</text>
   <rect x="20" y="536" width="390" height="88" rx="14" fill="#166534"/>
   <text x="215" y="571" text-anchor="middle" class="finish">Voed de HCQ via USB.</text>
   <text x="215" y="598" text-anchor="middle" class="finish">Schakel daarna de Quatt-buitenunit(s) in.</text>

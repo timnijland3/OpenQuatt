@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include <string>
 
+#include "oq_compressor_movement_logic.h"
+
 namespace oq_curve {
 
 struct ControlProfileTuning {
@@ -91,6 +93,7 @@ struct DispatchCandidate {
   float error_w = 1.0e9f;
   int active_hp_count = 0;
   int balance_gap = 0;
+  int modulation_hz = -1;
 };
 
 struct OutsideEmaState {
@@ -107,6 +110,13 @@ struct OutsideEmaDecision {
 struct CurvePoint {
   float outside_c = NAN;
   float target_c = NAN;
+};
+
+struct TargetBreakdown {
+  float base_c = NAN;
+  float modifier_c = 0.0f;
+  float room_trim_c = 0.0f;
+  float selected_c = NAN;
 };
 
 inline ControlProfileTuning control_profile(const std::string& profile_option) {
@@ -220,34 +230,45 @@ inline OutsideEmaDecision update_outside_ema(uint32_t now_ms, float outside_c, f
   return out;
 }
 
-inline float supply_target(float outside_c, float fallback_c, const std::array<CurvePoint, 6>& points, float room_c,
-                           float room_setpoint_c, const ControlProfileTuning& tuning, float max_water_c) {
-  float target_c = fallback_c;
+inline TargetBreakdown target_breakdown(float outside_c, float fallback_c, const std::array<CurvePoint, 6>& points,
+                                        float modifier_c, float room_c, float room_setpoint_c,
+                                        const ControlProfileTuning& tuning, float max_water_c) {
+  TargetBreakdown result;
+  result.base_c = fallback_c;
   if (isfinite(outside_c)) {
     if (outside_c <= points.front().outside_c)
-      target_c = points.front().target_c;
+      result.base_c = points.front().target_c;
     else if (outside_c >= points.back().outside_c)
-      target_c = points.back().target_c;
+      result.base_c = points.back().target_c;
     else
       for (size_t i = 0; i + 1 < points.size(); ++i)
         if (outside_c >= points[i].outside_c && outside_c <= points[i + 1].outside_c) {
           const float fraction = (outside_c - points[i].outside_c) / (points[i + 1].outside_c - points[i].outside_c);
-          target_c = points[i].target_c + fraction * (points[i + 1].target_c - points[i].target_c);
+          result.base_c = points[i].target_c + fraction * (points[i + 1].target_c - points[i].target_c);
           break;
         }
   }
+  result.modifier_c = isfinite(modifier_c) ? std::max(-5.0f, std::min(5.0f, modifier_c)) : 0.0f;
+  float target_c = result.base_c + result.modifier_c;
+  if (result.modifier_c != 0.0f && isfinite(target_c)) target_c = fmaxf(target_c, 20.0f);
   if (isfinite(target_c) && isfinite(room_c) && isfinite(room_setpoint_c)) {
     const float warm_error_c = room_c - room_setpoint_c;
     if (warm_error_c > tuning.trim_start_c) {
-      const float trim_c =
+      result.room_trim_c =
           std::max(0.0f, std::min(tuning.trim_max_c, (warm_error_c - tuning.trim_start_c) * tuning.trim_gain));
-      target_c -= trim_c;
+      target_c -= result.room_trim_c;
     }
   }
   if (isfinite(target_c) && tuning.quant_step_c > 0.0f)
     target_c = roundf(target_c / tuning.quant_step_c) * tuning.quant_step_c;
   if (isfinite(target_c) && isfinite(max_water_c)) target_c = fminf(target_c, max_water_c);
-  return target_c;
+  result.selected_c = target_c;
+  return result;
+}
+
+inline float supply_target(float outside_c, float fallback_c, const std::array<CurvePoint, 6>& points, float room_c,
+                           float room_setpoint_c, const ControlProfileTuning& tuning, float max_water_c) {
+  return target_breakdown(outside_c, fallback_c, points, 0.0f, room_c, room_setpoint_c, tuning, max_water_c).selected_c;
 }
 
 inline bool cadence_due(uint32_t now_ms, uint32_t last_ms, uint32_t target_ms) {
@@ -408,6 +429,12 @@ inline float power_capped_demand_u(float demand, int cap_f, int max_f) {
   return std::max(0.0f, std::min({demand, (float)cap_f, (float)max_f})) / (float)max_f;
 }
 
+inline bool update_demand_rundown(int capped, int& previous_capped) {
+  const bool decreasing = capped < previous_capped;
+  previous_capped = capped;
+  return decreasing;
+}
+
 inline float phase_target_power_w(bool heat_phase, float capped_demand_u, float single_cap_w, float duo_cap_w) {
   if (!isfinite(capped_demand_u) || capped_demand_u <= 0.0f) return 0.0f;
   const float single_target_w = isfinite(single_cap_w) ? (single_cap_w * capped_demand_u) : 0.0f;
@@ -478,7 +505,7 @@ inline DuoEnableThresholds duo_enable_thresholds(DuoDispatchMode mode, int owner
 }
 
 inline bool better_dispatch_candidate(const DispatchCandidate& candidate, const DispatchCandidate& best,
-                                      int prev_hp1_level, int prev_hp2_level) {
+                                      int prev_hp1_level, int prev_hp2_level, bool use_frequency_movement = false) {
   if (!candidate.valid) return false;
   if (!best.valid) return true;
   if (fabsf(candidate.error_w - best.error_w) > 50.0f) return candidate.error_w < best.error_w;
@@ -489,9 +516,19 @@ inline bool better_dispatch_candidate(const DispatchCandidate& candidate, const 
       ((prev_hp1_level == 0) && (best.hp1_level > 0) ? 1 : 0) + ((prev_hp2_level == 0) && (best.hp2_level > 0) ? 1 : 0);
   if (candidate_starts != best_starts) return candidate_starts < best_starts;
 
-  const int candidate_moves = abs(candidate.hp1_level - prev_hp1_level) + abs(candidate.hp2_level - prev_hp2_level);
-  const int best_moves = abs(best.hp1_level - prev_hp1_level) + abs(best.hp2_level - prev_hp2_level);
-  if (candidate_moves != best_moves) return candidate_moves < best_moves;
+  if (!use_frequency_movement) {
+    const int candidate_moves = abs(candidate.hp1_level - prev_hp1_level) + abs(candidate.hp2_level - prev_hp2_level);
+    const int best_moves = abs(best.hp1_level - prev_hp1_level) + abs(best.hp2_level - prev_hp2_level);
+    if (candidate_moves != best_moves) return candidate_moves < best_moves;
+  } else {
+    const int candidate_stops = ((prev_hp1_level > 0) && (candidate.hp1_level == 0) ? 1 : 0) +
+                                ((prev_hp2_level > 0) && (candidate.hp2_level == 0) ? 1 : 0);
+    const int best_stops = ((prev_hp1_level > 0) && (best.hp1_level == 0) ? 1 : 0) +
+                           ((prev_hp2_level > 0) && (best.hp2_level == 0) ? 1 : 0);
+    if (candidate_stops != best_stops) return candidate_stops < best_stops;
+    if (candidate.modulation_hz >= 0 && best.modulation_hz >= 0 && candidate.modulation_hz != best.modulation_hz)
+      return candidate.modulation_hz < best.modulation_hz;
+  }
 
   if (candidate.active_hp_count != best.active_hp_count) {
     return candidate.active_hp_count < best.active_hp_count;

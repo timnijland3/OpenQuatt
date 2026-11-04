@@ -53,8 +53,6 @@ body:
       label: Hardware
       options:
         - Heatpump Controller Q
-        - Waveshare
-        - Heatpump Listener
         - Niet hardware-specifiek
         - Anders/onbekend
     validations:

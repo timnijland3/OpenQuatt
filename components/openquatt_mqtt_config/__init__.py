@@ -4,11 +4,9 @@ from esphome.core import CORE
 from esphome.components import binary_sensor, psram, sensor, socket
 from esphome.components.esp32 import (
     add_idf_component,
-    get_esp32_variant,
     idf_version,
     include_builtin_idf_component,
 )
-from esphome.components.esp32.const import VARIANT_ESP32S3
 from esphome.const import CONF_ID
 
 CONF_BOOTSTRAP_BROKER = "bootstrap_broker"
@@ -40,6 +38,11 @@ CONF_HEATING_SUPPLY_TARGET_STALE = "heating_supply_target_stale"
 CONF_HEATING_SUPPLY_TARGET_SENSOR = "heating_supply_target_sensor"
 CONF_HEATING_SUPPLY_TARGET_AGE_SENSOR = "heating_supply_target_age_sensor"
 CONF_HEATING_SUPPLY_TARGET_VALID_BINARY_SENSOR = "heating_supply_target_valid_binary_sensor"
+CONF_HEATING_CURVE_MODIFIER_TOPIC = "heating_curve_modifier_topic"
+CONF_HEATING_CURVE_MODIFIER_STALE = "heating_curve_modifier_stale"
+CONF_HEATING_CURVE_MODIFIER_SENSOR = "heating_curve_modifier_sensor"
+CONF_HEATING_CURVE_MODIFIER_AGE_SENSOR = "heating_curve_modifier_age_sensor"
+CONF_HEATING_CURVE_MODIFIER_VALID_BINARY_SENSOR = "heating_curve_modifier_valid_binary_sensor"
 CONF_HEATING_ENABLE_TOPIC = "heating_enable_topic"
 CONF_HEATING_ENABLE_STALE = "heating_enable_stale"
 CONF_HEATING_ENABLE_BINARY_SENSOR = "heating_enable_binary_sensor"
@@ -92,6 +95,11 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_HEATING_SUPPLY_TARGET_AGE_SENSOR): cv.use_id(sensor.Sensor),
         cv.Required(CONF_HEATING_SUPPLY_TARGET_VALID_BINARY_SENSOR): cv.use_id(binary_sensor.BinarySensor),
         cv.Optional(CONF_HEATING_SUPPLY_TARGET_STALE, default="900s"): cv.positive_time_period_milliseconds,
+        cv.Required(CONF_HEATING_CURVE_MODIFIER_TOPIC): cv.All(cv.subscribe_topic, cv.Length(max=96)),
+        cv.Required(CONF_HEATING_CURVE_MODIFIER_SENSOR): cv.use_id(sensor.Sensor),
+        cv.Required(CONF_HEATING_CURVE_MODIFIER_AGE_SENSOR): cv.use_id(sensor.Sensor),
+        cv.Required(CONF_HEATING_CURVE_MODIFIER_VALID_BINARY_SENSOR): cv.use_id(binary_sensor.BinarySensor),
+        cv.Optional(CONF_HEATING_CURVE_MODIFIER_STALE, default="900s"): cv.positive_time_period_milliseconds,
         cv.Required(CONF_HEATING_ENABLE_TOPIC): cv.All(cv.subscribe_topic, cv.Length(max=96)),
         cv.Required(CONF_HEATING_ENABLE_BINARY_SENSOR): cv.use_id(binary_sensor.BinarySensor),
         cv.Required(CONF_HEATING_ENABLE_AGE_SENSOR): cv.use_id(sensor.Sensor),
@@ -113,8 +121,7 @@ CONFIG_SCHEMA = cv.All(
 
 async def to_code(config):
     if CORE.is_esp32:
-        if get_esp32_variant() == VARIANT_ESP32S3:
-            psram.request_external_task_stack()
+        psram.request_external_task_stack()
         if idf_version() >= cv.Version(6, 0, 0):
             add_idf_component(name="espressif/mqtt", ref="1.0.0")
         else:
@@ -173,6 +180,16 @@ async def to_code(config):
         config[CONF_HEATING_SUPPLY_TARGET_VALID_BINARY_SENSOR]
     )
     cg.add(var.set_heating_supply_target_valid_binary_sensor(heating_supply_target_valid_binary_sensor))
+    cg.add(var.set_heating_curve_modifier_topic(config[CONF_HEATING_CURVE_MODIFIER_TOPIC]))
+    cg.add(var.set_heating_curve_modifier_stale_ms(config[CONF_HEATING_CURVE_MODIFIER_STALE].total_milliseconds))
+    heating_curve_modifier_sensor = await cg.get_variable(config[CONF_HEATING_CURVE_MODIFIER_SENSOR])
+    cg.add(var.set_heating_curve_modifier_sensor(heating_curve_modifier_sensor))
+    heating_curve_modifier_age_sensor = await cg.get_variable(config[CONF_HEATING_CURVE_MODIFIER_AGE_SENSOR])
+    cg.add(var.set_heating_curve_modifier_age_sensor(heating_curve_modifier_age_sensor))
+    heating_curve_modifier_valid_binary_sensor = await cg.get_variable(
+        config[CONF_HEATING_CURVE_MODIFIER_VALID_BINARY_SENSOR]
+    )
+    cg.add(var.set_heating_curve_modifier_valid_binary_sensor(heating_curve_modifier_valid_binary_sensor))
     cg.add(var.set_heating_enable_topic(config[CONF_HEATING_ENABLE_TOPIC]))
     cg.add(var.set_heating_enable_stale_ms(config[CONF_HEATING_ENABLE_STALE].total_milliseconds))
     heating_enable_binary_sensor = await cg.get_variable(config[CONF_HEATING_ENABLE_BINARY_SENSOR])

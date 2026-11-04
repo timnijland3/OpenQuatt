@@ -1,6 +1,7 @@
 import { fetchWithTimeout } from "./browser-utils.js";
 import { getEntityValue, isDeviceTimeValid } from "./entity-store.js";
 import { state } from "./state.js";
+import { t } from "../i18n/index.js";
 
 const MQTT_STATUS_TIMEOUT_MS = 3000;
 
@@ -12,10 +13,13 @@ export const USAGE_TELEMETRY_PREVIEW_ENTITY_KEYS = [
   "releaseChannelText",
   "hardwareProfileText",
   "hardwareRevisionText",
+  "hardwareSerial",
   "installationTopology",
   "connectionText",
   "preferredConnection",
   "hpGeneration",
+  "waterSupplySource",
+  "localWaterSupplyTempSource",
   "flowSource",
   "qFlowSource",
   "strategy",
@@ -43,6 +47,7 @@ export const USAGE_TELEMETRY_PREVIEW_ENTITY_KEYS = [
   "trendHistoryFlashEnabled",
   "decisionLogHistoryEnabled",
   "lifetimeEnergyHistoryEnabled",
+  "houseLearningEnabled",
 ];
 
 const INVALID_TEXT_VALUES = new Set(["", "unknown", "unavailable", "nan"]);
@@ -126,6 +131,23 @@ export function flowSourceConfigWireValue(flowSource, qFlowSource, qSourceAvaila
   return qFlowSource === "Auto" || qFlowSource === "Outdoor unit" ? "outdoor_unit" : null;
 }
 
+export function waterSupplySourceWireValue(waterSupplySource, localWaterSupplyTempSource, localSourceAvailable, qController) {
+  const source = optionalText(waterSupplySource);
+  if (source === "CIC") {
+    return "cic";
+  }
+  if (source === "HA input") {
+    return "home_assistant";
+  }
+  if (source !== "Local") {
+    return null;
+  }
+  if (!localSourceAvailable) {
+    return qController ? null : "ds18b20";
+  }
+  return ({ PT1000: "pt1000", DS18B20: "ds18b20" })[optionalText(localWaterSupplyTempSource)] ?? null;
+}
+
 function boilerConnectionWireValue(values) {
   if (!Object.prototype.hasOwnProperty.call(values, "boilerConnection")) {
     return "on_off";
@@ -136,6 +158,11 @@ function boilerConnectionWireValue(values) {
 function hardwareRevisionValue(value) {
   const revision = optionalText(value);
   return revision === "Read error" || revision === "Not programmed" ? null : revision;
+}
+
+function hardwareSerialValue(value) {
+  const serial = Number(optionalText(value));
+  return Number.isInteger(serial) && serial >= 1 && serial <= 1023 ? serial : null;
 }
 
 function connectionWireValue(value) {
@@ -168,10 +195,17 @@ export function createUsageTelemetryPreview(values = {}, options = {}) {
     release_channel: optionalText(values.releaseChannelText),
     hardware_profile: optionalText(values.hardwareProfileText),
     hardware_revision: hardwareRevisionValue(values.hardwareRevisionText),
+    hardware_serial: values.hardwareProfileText === "heatpump_controller_q" ? hardwareSerialValue(values.hardwareSerial) : null,
     topology: optionalText(values.installationTopology),
     connection: connectionWireValue(values.connectionText),
     connection_preference: connectionWireValue(values.preferredConnection || values.connectionText),
     quatt_hybrid_generation_config: quattHybridGenerationWireValue(values.hpGeneration),
+    water_supply_source: waterSupplySourceWireValue(
+      values.waterSupplySource,
+      values.localWaterSupplyTempSource,
+      Object.prototype.hasOwnProperty.call(values, "localWaterSupplyTempSource"),
+      values.hardwareProfileText === "heatpump_controller_q",
+    ),
     flow_source_config: flowSourceConfigWireValue(values.flowSource, values.qFlowSource, qSourceAvailable),
     heating_strategy: heatingStrategyWireValue(values.strategy),
     room_temperature_source: configuredSourceWireValue(values.roomTempSource),
@@ -182,6 +216,10 @@ export function createUsageTelemetryPreview(values = {}, options = {}) {
     cooling_dew_point_source: configuredSourceWireValue(values.coolingDewPointSource),
     external_heat_demand_source: configuredSourceWireValue(values.externalHeatDemandSource),
     heating_supply_target_source: configuredSourceWireValue(values.heatingSupplyTargetSource),
+    modbus_partial_response_count: null,
+    modbus_parse_failed_count: null,
+    modbus_recovered_response_count: null,
+    modbus_offline_count: null,
     heap_free_b: optionalNumber(values.heapFree),
     heap_min_free_b: optionalNumber(values.heapMinFree),
     heap_largest_block_b: optionalNumber(values.heapLargestBlock),
@@ -200,6 +238,7 @@ export function createUsageTelemetryPreview(values = {}, options = {}) {
     trend_flash_enabled: optionalBoolean(values.trendHistoryFlashEnabled),
     decision_log_flash_enabled: optionalBoolean(values.decisionLogHistoryEnabled),
     energy_history_flash_enabled: optionalBoolean(values.lifetimeEnergyHistoryEnabled),
+    house_learning_enabled: optionalBoolean(values.houseLearningEnabled),
     ram_log_history_enabled: true,
   };
 }
@@ -225,7 +264,7 @@ export async function loadUsageTelemetryPreviewMqttEnabled(request = fetchWithTi
       "/mqtt/status",
       { cache: "no-store" },
       MQTT_STATUS_TIMEOUT_MS,
-      "MQTT-status ophalen duurde te lang.",
+      t("usage.previewMqttTimeout"),
       async (response) => {
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);

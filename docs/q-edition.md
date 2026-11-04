@@ -7,7 +7,7 @@ Van nieuwe controller naar een werkende OpenQuatt-installatie. De Heatpump Contr
 1. Maak de CiC en Quatt-buitenunit(s) spanningsloos, verplaats de kabels en voer de eindcontrole uit.
 2. Voed de HCQ, schakel de Quatt-buitenunit(s) weer in en stel Wi-Fi in.
 3. Open `openquatt.local` en controleer de basisverbinding.
-4. Kies in **Quick Start → Configuratie en software-update** de juiste configuratie, laat de software controleren en rond Quick Start af.
+4. Kies in **Quick Start → Configuratie en software-update** de juiste configuratie. Controleer de stabiele software of behoud, als de gekozen build al actief is, de huidige software zonder OTA. Rond daarna Quick Start af.
 
 Daarna werkt OpenQuatt zelfstandig via de web-app. Home Assistant is een optionele vervolgstap voor dashboards en automatisering.
 
@@ -34,8 +34,8 @@ Draadkleuren in de schema's en stappenhulp zijn illustratief. De klemmarkeringen
 |---|---|---|
 | Buitenunit(s) · Modbus `A/G/B` | `M1` · `GND/A/B` | Let goed op de juiste volgorde: `A → A` (rood), `G → GND` (groen), `B → B` (blauw). |
 | Kamerthermostaat · OpenTherm | `OTT` | Neem de twee aders over. |
-| CV-ketel · OpenTherm | `OTB` | Neem de twee aders over. |
-| CV-ketel · aan/uit | `R1` · `COM + NO` | Het CV-aan/uit-contact van de CiC zit onder een apart afdekkapje. Op R1 blijft de bovenste klem `NC` vrij; gebruik de middelste klem `COM` en de onderste klem `NO`. |
+| CV-ketel · OpenTherm | `OTB` | Neem de twee aders over. Sluit OTB alleen aan op de digitale OpenTherm-klemmen van de ketel; gebruik voor een aan/uit-kamerthermostaatingang R1. |
+| CV-ketel · aan/uit | `R1` · `COM + NO` | Gebruik R1 voor een aan/uit-kamerthermostaatingang (bijv. RT, RT24 of TA). Het CV-aan/uit-contact van de CiC zit onder een apart afdekkapje. Op R1 blijft de bovenste klem `NC` vrij; gebruik de middelste klem `COM` en de onderste klem `NO`. |
 | Quatt flowmeter / PT1000 | `Q` | Steek de bestaande Quatt-sensorstekker over. |
 | **Optioneel:** vrijgekomen buitenunit-Modbus `A/G/B` op de CiC | `M2` · `GND/A/B` | Gebruik een aparte RS485-kabel: `A → A`, `G → GND`, `B → B`. |
 
@@ -49,13 +49,13 @@ Draadkleuren in de schema's en stappenhulp zijn illustratief. De klemmarkeringen
 > Kies voor de CV-ketel óf `OTB` óf `R1`; gebruik beide routes niet tegelijk.
 
 > [!TIP]
-> De verbinding tussen `M2` en de CiC is optioneel. Activeer daarna **CiC-compatibiliteit** onder **Instellingen → Bronnen / integraties** als de Quatt app via de CiC moet blijven meekijken. Deze functie staat standaard uit en geeft alleen OpenQuatt-data door; de CiC neemt de regeling niet over.
+> De Modbusverbinding tussen `M2` en de CiC is optioneel. Activeer daarna **Quatt-app via CiC** onder **Instellingen → Bronnen / integraties** om buitenunitgegevens in de Quatt-app te blijven bekijken. Deze functie staat standaard uit en geeft alleen buitenunitgegevens door, geen thermostaatgegevens. OpenQuatt blijft regelen. Dit staat los van **CiC JSON-feed inlezen**, waarmee OpenQuatt juist gegevens uit de CiC leest.
 
 ### M1, M2 en de optionele aansluitingen
 
 - **M1** is de primaire Modbuspoort voor de Quatt-buitenunit(s). Deze verbinding is nodig voor de normale regeling.
-- **M2** is de optionele Modbuspoort voor CiC-compatibiliteit. Verbind M2 alleen met de vrijgekomen Modbuspoort van de CiC als de Quatt app moet blijven meekijken.
-- **R2** is een tweede potentiaalvrij wisselrelais met `NC`, `COM` en `NO`. R2 kan optioneel als hulprelais worden ingesteld via **Instellingen → Installatie → Hulprelais (R2)**, bijvoorbeeld om een fancoil, pomp of klep te laten volgen op de warmte- of koelvraag van OpenQuatt. Standaard staat deze functie uit en blijft R2 onbekrachtigd. Sluit apparatuur die moet inschakelen bij een actief relais aan op `COM` + `NO`; heb je geen hulpuitgang nodig, laat deze aansluiting dan vrij.
+- **M2** is de optionele Modbuspoort voor Quatt-app via CiC. Verbind M2 alleen met de vrijgekomen Modbuspoort van de CiC als de Quatt-app moet blijven meekijken. M2 is niet nodig voor CiC JSON-feed inlezen.
+- **R2** is een tweede potentiaalvrij wisselrelais met `NC`, `COM` en `NO`. R2 kan optioneel als hulprelais worden ingesteld via **Instellingen → Installatie → Hulprelais (R2)**, bijvoorbeeld om een fancoil, pomp of klep te laten volgen op de warmte- of koelvraag van OpenQuatt, eventueel met nadraaien na afloop van de vraag. Standaard staat deze functie uit en blijft R2 onbekrachtigd. Sluit apparatuur die moet inschakelen bij een actief relais aan op `COM` + `NO`; heb je geen hulpuitgang nodig, laat deze aansluiting dan vrij.
 - **T** is een 1-Wire-aansluiting voor een optionele Dallas/DS18B20-temperatuursensor: `+3.3V`, `GND` en `DATA`.
 
 ### Aansluitingen op de HCQ
@@ -76,9 +76,9 @@ Laat de USB-poort bereikbaar. Je hebt deze later ook nodig voor Wi-Fi provisioni
 
 ## 2. Wi-Fi instellen
 
-Een Wi-Fi-build biedt twee routes. Op een computer is provisioning via USB meestal het handigst. Op een telefoon of tablet staat de route via het OpenQuatt access point daarom als eerste.
+De huidige Q-firmware ondersteunt Wi-Fi en Ethernet. Voor Wi-Fi zijn er twee instelroutes. Op een computer is provisioning via USB meestal het handigst. Op een telefoon of tablet staat de route via het OpenQuatt access point daarom als eerste.
 
-Wil je de HCQ uiteindelijk via Ethernet gebruiken? Breng de geleverde `Single` + `Wi-Fi`-build ook dan eerst via deze stap online en sluit de netwerkkabel aan. In Quick Start kies je daarna de juiste `Single`- of `Duo`-Ethernetsetup; de web-app installeert dan de bijbehorende firmware.
+Wil je de HCQ uiteindelijk via Ethernet gebruiken? Sluit de netwerkkabel vóór het opstarten aan. Stel ook Wi-Fi in als je die als herstelroute wilt gebruiken. In Quick Start kies je `Single` of `Duo` en de gewenste verbinding. Wi-Fi en Ethernet zitten in dezelfde Q-firmware.
 
 ### Route A: via USB
 
@@ -96,7 +96,7 @@ Gebruik deze route ook als alleen de netwerknaam of het Wi-Fi-wachtwoord is gewi
 
 ### Route B: via het OpenQuatt access point
 
-Kan de controller geen verbinding maken met het ingestelde Wi-Fi-netwerk, dan start een Wi-Fi-build een eigen access point met captive portal:
+Kan de controller geen verbinding maken met het ingestelde Wi-Fi-netwerk, dan kan de controller een eigen instelnetwerk (access point) openen:
 
 - netwerknaam: `OpenQuatt`;
 - wachtwoord: `openquatt`.
@@ -112,7 +112,7 @@ Kan de controller geen verbinding maken met het ingestelde Wi-Fi-netwerk, dan st
 Verschijnt de captive portal niet? Blijf verbonden met `OpenQuatt` en open handmatig [http://192.168.4.1/](http://192.168.4.1/) in je browser.
 
 > [!NOTE]
-> Het access point is een tijdelijke configuratieroute en niet bedoeld als normale netwerkverbinding. Bij Ethernet is deze route niet beschikbaar.
+> Het access point is een tijdelijke configuratieroute en niet bedoeld als normale netwerkverbinding. Ook bij gebruik van Ethernet kan het instelnetwerk beschikbaar zijn. Zonder opgeslagen Wi-Fi-gegevens blijft het open totdat nieuwe gegevens werken en opgeslagen zijn.
 
 ## 3. OpenQuatt voor het eerst openen
 
@@ -145,7 +145,7 @@ Kies hier direct de combinatie die bij je installatie hoort:
 
 Sluit bij Ethernet eerst de netwerkkabel aan. Kies alleen `Duo` als de installatie daadwerkelijk twee warmtepompen heeft.
 
-Na bevestiging controleert OpenQuatt de nieuwste stabiele release voor de gekozen configuratie. Alleen als de softwareversie of configuratie afwijkt, installeert OpenQuatt de juiste stabiele release en start de controller opnieuw op. Een aanwezige dev- of testbuild wordt daarmee vervangen. Zijn versie en configuratie al correct, dan gaat Quick Start zonder OTA verder. **Bestaande OpenQuatt-instellingen blijven bij een software-update of configuratiewissel behouden.** Je hoeft bij de eerste ingebruikname dus niet via **Instellingen → Systeem → Updates** te wisselen. Open na een herstart zo nodig opnieuw `http://openquatt.local` en ga verder met Quick Start.
+Na bevestiging kun je OpenQuatt de nieuwste stabiele release voor de gekozen configuratie laten controleren. Alleen als de softwareversie of configuratie afwijkt, installeert OpenQuatt de juiste stabiele release en start de controller opnieuw op. Een aanwezige dev- of testbuild wordt daarmee vervangen. Is de gekozen build al actief, dan kun je in plaats daarvan **Huidige software behouden en doorgaan** kiezen; Quick Start gaat dan zonder OTA of herstart verder en het actieve releasekanaal blijft ongewijzigd. Zijn versie en configuratie al correct, dan gaat Quick Start eveneens zonder OTA verder. **Bestaande OpenQuatt-instellingen blijven bij een software-update of configuratiewissel behouden.** Je hoeft bij de eerste ingebruikname dus niet via **Instellingen → Systeem → Updates** te wisselen. Open na een herstart zo nodig opnieuw `http://openquatt.local` en ga verder met Quick Start.
 
 Daarna geef je aan welke Quatt Hybrid en installatie je hebt. V1, V1.5 en V2 beschrijven de generatie van de warmtepomp en staan los van de keuze voor `Single` of `Duo`.
 
@@ -155,7 +155,7 @@ Daarna geef je aan welke Quatt Hybrid en installatie je hebt. V1, V1.5 en V2 bes
 
 Volg de route die de web-app voor jouw installatie toont. De basisstappen zijn:
 
-1. **Configuratie en software-update:** `Single` of `Duo` en Wi-Fi of Ethernet; daarna controleert OpenQuatt de stabiele main-release en installeert deze alleen als dat nodig is.
+1. **Configuratie en software-update:** `Single` of `Duo` en Wi-Fi of Ethernet; controleer de stabiele main-release of behoud de huidige software zonder OTA als de gekozen build al actief is.
 2. **Kies je Quatt Hybrid:** V1, V1.5 of V2.
 3. **Flowmeting configureren:** controleer en activeer de juiste flowbron.
 4. **Thermostaatgegevens configureren:** kies waar kamertemperatuur en kamer-setpoint vandaan komen.
@@ -166,7 +166,8 @@ Volg de route die de web-app voor jouw installatie toont. De basisstappen zijn:
 9. **Watertemperatuur beveiligen:** controleer de normale bovengrens en de tripgrens.
 10. **Stille uren en niveaus:** stel het stille venster en de compressorlimieten voor dag en nacht in.
 11. **Gebruiksstatistieken:** controleer of OpenQuatt beperkte technische systeemstatus, aan/uit-statussen van functies en configuratiekeuzes zoals Quatt Hybrid-versie, verwarmingsstrategie, flowbron en regelbronnen mag delen; tijdens een nieuwe Quick Start staat dit standaard aan en kan het hier worden uitgezet. Gemeten of ingestelde temperaturen, wifi-gegevens, gebruikersnamen en wachtwoorden worden nooit meegestuurd.
-12. **Bevestigen en afronden:** controleer je keuzes en markeer Quick Start als voltooid.
+12. **Prestatiemetingen:** kies of OpenQuatt stabiele verwarmingsmetingen mag delen voor validatie van het prestatiemodel; tijdens een nieuwe Quick Start staat dit standaard uit en kan het hier worden aangezet.
+13. **Bevestigen en afronden:** controleer je keuzes en markeer Quick Start als voltooid.
 
 Bij een koude verwarmingsstart circuleert OpenQuatt eerst water en controleert daarna de uitgaande temperatuur van iedere aangesloten ODU. Onder `5 °C` blijven de compressoren uit; met `Overnemen wanneer de warmtepomp niet beschikbaar is` kan de aanvullende warmtebron voorverwarmen. Tussen `5 en 12 °C` starten de warmtepompen zelfstandig; met `Hybride verwarmen bij vermogenstekort` helpt de aanvullende warmtebron tijdelijk mee. Vanaf `12 °C` geldt de normale warmteregeling. Een algemene startgrens van `18 °C` wordt niet toegepast.
 
@@ -179,9 +180,19 @@ Bij een koude verwarmingsstart circuleert OpenQuatt eerst water en controleert d
 
 Vanaf dit punt kun je OpenQuatt zelfstandig via de web-app gebruiken. Home Assistant en het dashboard zijn optionele vervolgstappen.
 
+## Passief leren voor Power House
+
+Op Heatpump Controller Q Single en Duo kan Power House optioneel **passief leren**. Je vindt dit onder **Instellingen → Verwarmen → Power House**.
+
+Na inschakelen verzamelt OpenQuatt alleen geschikte verwarmingsperioden en schat het warmteverlies van de woning en een bijbehorende woninglijn. De verzamelde leerdata blijft na een herstart of software-update bewaard, en de gekozen aan/uit-stand blijft behouden. **Passief leren staat standaard aan**; bewust uitschakelen blijft ook na een herstart of update behouden.
+
+De functie is observerend: een geleerd model wordt niet automatisch toegepast en verandert geen warmtevraag, compressorregeling of ketelaansturing. De web-app toont de verzamelstatus, blokkaderedenen, meetpunten en - zodra er voldoende bruikbare data is - een voorlopige geleerde lijn. Via **Leerdata wissen** kan de opgeslagen leerhistorie expliciet worden verwijderd.
+
+De kwaliteit van het model hangt af van voldoende geschikte metingen over verschillende buitentemperaturen. Een beschikbare schatting is daarom diagnostische informatie en geen garantie op energiebesparing.
+
 ## Configuratie later wijzigen
 
-Heb je Quick Start al afgerond en verandert de installatie later, dan kun je dezelfde firmwarewissel alsnog via de web-app starten. Maak voor de zekerheid eerst een backup; de bestaande OpenQuatt-instellingen blijven tijdens de update of wissel behouden.
+Heb je Quick Start al afgerond en verandert de installatie later, dan kun je de opstelling of netwerkvoorkeur alsnog via de web-app wijzigen. Maak voor de zekerheid eerst een backup; de bestaande OpenQuatt-instellingen blijven tijdens de update of wissel behouden.
 
 Open in de web-app **Instellingen → Systeem** en kies bij **Updates** voor **Openen**. Onder **Geavanceerd** vind je, wanneer beschikbaar, **Opstelling wisselen** en **Verbinding wisselen**.
 
@@ -191,28 +202,24 @@ Open in de web-app **Instellingen → Systeem** en kies bij **Updates** voor **O
 - Gebruik voor alleen een andere Wi-Fi-netwerknaam of een ander wachtwoord opnieuw **Configureer Wi-Fi via USB** of het OpenQuatt access point.
 
 > [!IMPORTANT]
-> Wi-Fi en Ethernet blijven aparte firmware-builds. Een Ethernet-build heeft geen Wi-Fi fallback of captive portal. De web-app voert zo'n wissel daarom uit als firmware-update en toont vooraf de bijbehorende controle.
+> De huidige Q-firmware bevat Wi-Fi en Ethernet. Een verbindingswissel verandert de netwerkvoorkeur; een wissel tussen Single en Duo vereist andere firmware. Sluit de Ethernetkabel vóór de wissel aan. Bij oudere firmware kan ook een verbindingswissel nog een firmware-update vereisen.
 
 ## Optioneel: toevoegen aan Home Assistant
 
-Home Assistant is optioneel voor OpenQuatt zelf en aanbevolen voor dashboards en automatisering. Zodra OpenQuatt en Home Assistant op hetzelfde netwerk zitten, wordt het ESPHome-apparaat meestal automatisch gevonden.
+OpenQuatt werkt nu zelfstandig via de web-app. Wil je Home Assistant gebruiken voor monitoring, dashboards en automatisering? Begin bij [OpenQuatt in Home Assistant](dashboard/README.md) en volg [OpenQuatt koppelen](dashboard/koppelen.md).
 
-Open de melding bij **Instellingen → Apparaten & diensten** en kies **Configureren**. Verschijnt er geen melding, kies dan **Integratie toevoegen → ESPHome** en vul `openquatt.local` of het IP-adres van OpenQuatt in.
-
-Gebruik de bestaande handleidingen voor de vervolgstappen:
-
-- [Het juiste Single- of Duo-dashboard installeren](dashboard/README.md)
-- [Het dashboard gebruiken](dashboardoverzicht.md)
-
-Selecteer bij de eerste toevoeging nog geen Home Assistant-area. Wacht tot de OpenQuatt-entiteiten zijn aangemaakt en ken daarna pas een area toe.
+> [!IMPORTANT]
+> Bij de eerste koppeling geldt een venster van 10 minuten na het opstarten. Is dat verlopen, zet de controller één keer kort uit en weer aan voordat je koppelt. Volg de handleiding om OpenQuatt te koppelen. Daar lees je ook hoe de verbinding wordt beveiligd en wanneer je een area kunt selecteren.
 
 ## Als het niet lukt
 
 - **Geen USB-poort zichtbaar:** controleer of je een USB-datakabel gebruikt en probeer een andere USB-poort.
 - **Instabiel of onverklaarbaar gedrag:** een USB-voedingsadapter van onvoldoende kwaliteit of vermogen kan vreemde storingen veroorzaken. Probeer een andere, betrouwbare voedingsadapter.
-- **Geen captive portal:** controleer dat je met `OpenQuatt` bent verbonden en dat je geen Ethernet-build gebruikt.
+- **Geen captive portal:** controleer dat je met `OpenQuatt` bent verbonden en open zo nodig `http://192.168.4.1`.
 - **`openquatt.local` opent niet:** zoek het IP-adres in je router.
 - **Geen warmtepompdata:** controleer voeding, communicatiebedrading en of `Single` of `Duo` klopt.
 - **Niet gevonden in Home Assistant:** controleer eerst of de web-app lokaal bereikbaar is.
+
+Ben je het wachtwoord vergeten of wil je Home Assistant of Wi-Fi herstellen? Volg [Herstelpagina gebruiken](web-app/herstel.md#herstelpagina-gebruiken).
 
 Ga voor verdere diagnose naar [Problemen oplossen](problemen-oplossen.md). Gebruik [Handmatige installatie](handmatige-installatie.md) alleen als de normale installer niet werkt.

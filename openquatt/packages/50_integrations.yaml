@@ -17,6 +17,7 @@ packages:
   oq_api_ingress: !include ../oq_api_ingress.yaml
   oq_mqtt_ingress: !include ../oq_mqtt_ingress.yaml
   oq_usage_telemetry: !include ../oq_usage_telemetry.yaml
+  oq_performance_telemetry: !include ../oq_performance_telemetry.yaml
   oq_local_sensors: !include ../oq_local_sensors.yaml
   oq_sensor_sources: !include
     file: ../oq_sensor_sources.yaml

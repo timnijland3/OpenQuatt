@@ -10,19 +10,20 @@
   export const STRATEGY_OPTION_CURVE = "Water Temperature Control (heating curve)";
 
   export const QUICK_STEPS = [
-    ["setup", "Configuratie en software-update", "Kies Single of Duo en Wi-Fi of Ethernet. OpenQuatt controleert daarna de stabiele main-release en installeert deze alleen als dat nodig is."],
-    ["generation", "Kies je Quatt Hybrid", "Geef hier aan welke Quatt Hybrid je hebt. Dan zet OpenQuatt de juiste regeling klaar."],
-    ["flow-source", "Flowmeting configureren", "Controleer en activeer de flowbron die bij jouw Quatt-versie en controller hoort."],
-    ["thermostat-source", "Thermostaatgegevens configureren", "Leg vast waar OpenQuatt de kamertemperatuur en het kamer-setpoint samen vandaan haalt."],
-    ["boiler", "Aanvullende warmtebron", "Leg vast of een aanvullende warmtebron is aangesloten en wanneer OpenQuatt die mag gebruiken.", "auxHeatSourcePresent"],
-    ["strategy", "Kies de verwarmingsstrategie", "Kies hier hoe OpenQuatt je verwarming regelt. Daarna lopen we samen de belangrijkste instellingen langs."],
-    ["heating", "Werk de regeling uit", "Stel nu de gekozen regeling verder in. De inhoud hieronder past zich aan aan je keuze."],
-    ["flow", "Flowregeling en afstelling", "Leg daarna vast hoe de pomp geregeld moet worden en welke waarden daarbij horen. De autotune staat later onder Instellingen → Installatie → Service & commissioning."],
-    ["water", "Watertemperatuur beveiligen", "Controleer de normale bovengrens en de tripgrens voor het watercircuit."],
-    ["silent", "Stille uren en niveaus", "Stel daarna het stille venster en de compressorlimieten voor dag en nacht in."],
-    ["usage-telemetry", "Gebruiksstatistieken", "Kies of OpenQuatt beperkte technische gebruiksstatistieken mag delen. Tijdens een nieuwe Quick Start staat delen standaard aan.", "usageTelemetryEnabled"],
-    ["confirm", "Bevestigen en afronden", "Controleer nog één keer je keuzes. Met afronden markeer je Quick Start als voltooid."],
-  ].map(([id, title, copy, optionalEntity], index) => ({ id, kicker: `Stap ${index + 1}`, title, copy, ...(optionalEntity ? { optionalEntity } : {}) }));
+    ["setup", "quickStart.setup.title", "quickStart.setup.copy"],
+    ["generation", "quickStart.generation.title", "quickStart.generation.copy"],
+    ["flow-source", "quickStart.flowSource.title", "quickStart.flowSource.copy"],
+    ["thermostat-source", "quickStart.thermostatSource.title", "quickStart.thermostatSource.copy"],
+    ["boiler", "quickStart.boiler.title", "quickStart.boiler.copy", "auxHeatSourcePresent"],
+    ["strategy", "quickStart.strategy.title", "quickStart.strategy.copy"],
+    ["heating", "quickStart.heating.title", "quickStart.heating.copy"],
+    ["flow", "quickStart.flow.title", "quickStart.flow.copy"],
+    ["water", "quickStart.water.title", "quickStart.water.copy"],
+    ["silent", "quickStart.silent.title", "quickStart.silent.copy"],
+    ["usage-telemetry", "quickStart.usageTelemetry.title", "quickStart.usageTelemetry.copy", "usageTelemetryEnabled"],
+    ["performance-telemetry", "quickStart.performanceTelemetry.title", "quickStart.performanceTelemetry.copy", "performanceTelemetryEnabled"],
+    ["confirm", "quickStart.confirm.title", "quickStart.confirm.copy"],
+  ].map(([id, titleKey, copyKey, optionalEntity]) => ({ id, titleKey, copyKey, ...(optionalEntity ? { optionalEntity } : {}) }));
 
   const DOMAIN_BINARY_SENSOR = "binary_sensor";
   const DOMAIN_BUTTON = "button";
@@ -70,6 +71,7 @@
     ["installationTopology", DOMAIN_TEXT_SENSOR, "OpenQuatt Installation Topology"],
     ["hardwareProfileText", DOMAIN_TEXT_SENSOR, "OpenQuatt Hardware Profile"],
     ["hardwareRevisionText", DOMAIN_TEXT_SENSOR, "OpenQuatt Hardware Revision"],
+    ["hardwareSerial", DOMAIN_SENSOR, "OpenQuatt Hardware Serial"],
     ["connectionText", DOMAIN_TEXT_SENSOR, "OpenQuatt Connection"],
     ["preferredConnection", DOMAIN_SELECT, "Preferred Connection"],
     ["hp1Generation", DOMAIN_TEXT_SENSOR, "HP1 - ODU generation"],
@@ -93,6 +95,11 @@
     ["usageTelemetryEnabled", DOMAIN_SWITCH, "Usage statistics"],
     ["usageTelemetryChoiceConfigured", DOMAIN_BINARY_SENSOR, "Usage statistics choice configured"],
     ["usageTelemetryInstallationId", DOMAIN_TEXT_SENSOR, "Usage statistics installation ID"],
+    ["houseLearningEnabled", DOMAIN_SWITCH, "Power House Passive Learning"],
+    ["houseLearningReset", DOMAIN_BUTTON, "Power House Learning Reset"],
+    ["performanceTelemetryEnabled", DOMAIN_SWITCH, "Performance model validation"],
+    ["performanceTelemetryChoiceConfigured", DOMAIN_BINARY_SENSOR, "Performance model validation choice configured"],
+    ["performanceTelemetryPromptHandled", DOMAIN_BINARY_SENSOR, "Performance model validation prompt handled"],
     ["hpGeneration", DOMAIN_SELECT, "Quatt Hybrid version", false],
     ["electricalCurrentLimit", DOMAIN_NUMBER, "Electrical current limit"],
     ["strategy", DOMAIN_SELECT, "Heating Control Mode", false],
@@ -103,6 +110,7 @@
     ["boilerConnection", DOMAIN_SELECT, "Boiler connection"],
     ["otbConnectionAutoSelected", DOMAIN_BINARY_SENSOR, "OTB - Boiler Connection Auto-selected"],
     ["otbConnectionMismatch", DOMAIN_BINARY_SENSOR, "OTB - Boiler Connection Mismatch"],
+    ["otbConnectionState", DOMAIN_TEXT_SENSOR, "OTB - Boiler Connection State"],
     ["manualCoolingEnable", DOMAIN_SWITCH, "Manual Cooling Enable"],
     ["coolingScheduleStartTime", DOMAIN_TIME, "Cooling schedule start time"],
     ["coolingScheduleEndTime", DOMAIN_TIME, "Cooling schedule end time"],
@@ -155,12 +163,15 @@
     ["waterSupplySource", DOMAIN_SELECT, "Water Supply Source"],
     ["flowSource", DOMAIN_SELECT, "Flow Source"],
     ["qFlowSource", DOMAIN_SELECT, "Q Flow Source"],
+    ["controllerFlowMeter", DOMAIN_SELECT, "Controller Flow Meter"],
+    ["customFlowMeterPulsesPerLiter", DOMAIN_NUMBER, "Custom Flow Meter Pulses Per Liter"],
     ["outdoorUnitFlowMode", DOMAIN_SELECT, "Outdoor Unit Flow Mode"],
     ["outsideTempSource", DOMAIN_SELECT, "Outside Temperature Source"],
     ["roomTempSource", DOMAIN_SELECT, "Room Temperature Source"],
     ["roomSetpointSource", DOMAIN_SELECT, "Room Setpoint Source"],
     ["externalHeatDemandSource", DOMAIN_SELECT, "External Heat Demand Source"],
     ["heatingSupplyTargetSource", DOMAIN_SELECT, "Heating Supply Target Source"],
+    ["heatingCurveModifierSource", DOMAIN_SELECT, "Heating Curve Modifier Source"],
     ["heatingEnableSource", DOMAIN_SELECT, "Heating Enable Source"],
     ["coolingEnableSource", DOMAIN_SELECT, "Cooling Enable Source"],
     ["localWaterSupplyTempSource", DOMAIN_SELECT, "Local Water Supply Temp Source"],
@@ -186,6 +197,13 @@
     ["flowSetpoint", DOMAIN_NUMBER, "Flow Setpoint", false],
     ["coolingFlowSetpoint", DOMAIN_NUMBER, "Cooling Flow Setpoint"],
     ["manualIpwm", DOMAIN_NUMBER, "Manual iPWM", false],
+    // Delta T flow control (oq_flow_delta_t.yaml).
+    ["flowDeltaTTarget", DOMAIN_NUMBER, "Flow Delta T Target"],
+    ["flowDeltaTMinFlow", DOMAIN_NUMBER, "Flow Delta T Minimum Flow"],
+    ["flowDeltaTMaxFlow", DOMAIN_NUMBER, "Flow Delta T Maximum Flow"],
+    ["flowDeltaTStepInterval", DOMAIN_NUMBER, "Flow Delta T Step Interval"],
+    ["flowDeltaTMaxStep", DOMAIN_NUMBER, "Flow Delta T Max Step"],
+    ["flowDeltaTDeadband", DOMAIN_NUMBER, "Flow Delta T Deadband"],
     ["flowOutputIpwm", DOMAIN_SENSOR, "Flow Output iPWM"],
     ["compressorStarts2hWarningLimit", DOMAIN_NUMBER, "Compressor starts 2h warning limit"],
     ["compressorStarts72hWarningLimit", DOMAIN_NUMBER, "Compressor starts 72h warning limit"],
@@ -238,6 +256,7 @@
     ["cicDataStale", DOMAIN_BINARY_SENSOR, "CIC - Data stale"],
     ["otEnabled", DOMAIN_SWITCH, "OpenTherm Enabled"],
     ["otThermostatChEnable", DOMAIN_BINARY_SENSOR, "OT - Thermostat CH Enable"],
+    ["otThermostatDhwEnable", DOMAIN_BINARY_SENSOR, "OT - Thermostat DHW Enable"],
     ["otThermostatStatusValid", DOMAIN_BINARY_SENSOR, "OT - Thermostat Status Valid"],
     ["otThermostatControlSetpointValid", DOMAIN_BINARY_SENSOR, "OT - Control Setpoint Valid"],
     ["otThermostatCoolingEnable", DOMAIN_BINARY_SENSOR, "OT - Thermostat Cooling Enable"],
@@ -368,6 +387,7 @@
     ["waterSupplyCalibrationStatus", DOMAIN_TEXT_SENSOR, "Water Supply Temperature Calibration Status"],
     ["controlModeLabel", DOMAIN_TEXT_SENSOR, "Control Mode (Label)", false],
     ["flowMode", DOMAIN_TEXT_SENSOR, "Flow Mode", false],
+    ["flowDeltaTStatus", DOMAIN_TEXT_SENSOR, "Flow Delta T Status"],
     ["dayMaxHz", DOMAIN_NUMBER, "Day max frequency"],
     ["silentMaxHz", DOMAIN_NUMBER, "Silent max frequency"],
     ["silentStartTime", DOMAIN_TIME, "Silent start time", false],
@@ -394,16 +414,21 @@
     ["boilerBlockReason", DOMAIN_TEXT_SENSOR, "Boiler block reason"],
     ["boilerStartThermalGuard", DOMAIN_TEXT_SENSOR, "Boiler warm-start guard"],
     ["boilerStartThermalSafeCeiling", DOMAIN_SENSOR, "Boiler warm-start safe ceiling"],
+    ["boilerCommandHeatRequest", DOMAIN_BINARY_SENSOR, "Boiler command heat request"],
+    ["boilerRelayTargetState", DOMAIN_TEXT_SENSOR, "Boiler relay target state"],
     ["boilerHeatPower", DOMAIN_SENSOR, "Boiler Heat Power"],
     ["auxRelayFunction", DOMAIN_SELECT, "Aux Relay Function"],
     ["auxWaitForSupplyTemp", DOMAIN_SWITCH, "Aux Relay Wait For Supply Temp"],
     ["auxHeatingStartTemp", DOMAIN_NUMBER, "Aux Relay Heating Start Temp"],
     ["auxCoolingStartTemp", DOMAIN_NUMBER, "Aux Relay Cooling Start Temp"],
     ["auxTempHysteresis", DOMAIN_NUMBER, "Aux Relay Temp Hysteresis"],
+    ["auxRunOnMode", DOMAIN_SELECT, "Aux Relay Run-on"],
+    ["auxRunOnTime", DOMAIN_NUMBER, "Aux Relay Run-on Time"],
     ["auxRelayActive", DOMAIN_BINARY_SENSOR, "Aux relay active"],
     ["auxRelayStatus", DOMAIN_TEXT_SENSOR, "Aux relay status"],
     ["systemHeatPower", DOMAIN_SENSOR, "System Heat Power"],
     ["flowSelected", DOMAIN_SENSOR, "Flow average (Selected)", false],
+    ["flowSelectedRoute", DOMAIN_TEXT_SENSOR, "Flow Selected Route"],
     ["flowLocal", DOMAIN_SENSOR, "Flow average (local)"],
     ["controllerFlow", DOMAIN_SENSOR, "Controller Flow"],
     ["trendHistoryEnabled", DOMAIN_SWITCH, "Trendopslag"],
@@ -480,6 +505,15 @@
     ["mqttHeatingSupplyTarget", DOMAIN_SENSOR, "MQTT Heating Supply Target"],
     ["mqttHeatingSupplyTargetAge", DOMAIN_SENSOR, "MQTT Heating Supply Target Age"],
     ["mqttHeatingSupplyTargetValid", DOMAIN_BINARY_SENSOR, "MQTT Heating Supply Target Valid"],
+    ["heatingCurveModifierHa", DOMAIN_SENSOR, "HA - Heating Curve Modifier"],
+    ["heatingCurveModifierHaValid", DOMAIN_BINARY_SENSOR, "HA - Heating Curve Modifier Valid"],
+    ["heatingCurveModifierHaEffectiveValid", DOMAIN_BINARY_SENSOR, "Heating Curve Modifier HA Valid"],
+    ["apiInputHeatingCurveModifier", DOMAIN_NUMBER, "api_input_heating_curve_modifier"],
+    ["apiInputHeatingCurveModifierAge", DOMAIN_SENSOR, "API Input Heating Curve Modifier Age"],
+    ["apiInputHeatingCurveModifierValid", DOMAIN_BINARY_SENSOR, "API Input Heating Curve Modifier Valid"],
+    ["mqttHeatingCurveModifier", DOMAIN_SENSOR, "MQTT Heating Curve Modifier"],
+    ["mqttHeatingCurveModifierAge", DOMAIN_SENSOR, "MQTT Heating Curve Modifier Age"],
+    ["mqttHeatingCurveModifierValid", DOMAIN_BINARY_SENSOR, "MQTT Heating Curve Modifier Valid"],
     ["heatingSupplyTargetActiveSource", DOMAIN_TEXT_SENSOR, "Heating Supply – target source"],
     ["apiInputHeatingEnable", DOMAIN_SWITCH, "api_input_heating_enable"],
     ["apiInputHeatingEnableAge", DOMAIN_SENSOR, "API Input Heating Enable Age"],
@@ -508,6 +542,10 @@
     ["coolingEnableEffectiveSource", DOMAIN_TEXT_SENSOR, "Cooling Enable Effective Source"],
     ["powerHouseDemandSource", DOMAIN_TEXT_SENSOR, "Power House – demand source"],
     ["curveSupplyTarget", DOMAIN_SENSOR, "Heating Curve Supply Target", false],
+    ["curveBaseTarget", DOMAIN_SENSOR, "Heating Curve Base Target", false],
+    ["curveModifier", DOMAIN_SENSOR, "Heating Curve Modifier", false],
+    ["curveRoomTrim", DOMAIN_SENSOR, "Heating Curve Room Trim", false],
+    ["curveEffectiveTarget", DOMAIN_SENSOR, "Heating Supply Target (Effective)", false],
     ["requestReason", DOMAIN_TEXT_SENSOR, "Request Reason"],
     ["strategyActiveCode", DOMAIN_SENSOR, "Strategy active code"],
     ["strategyPhaseCode", DOMAIN_SENSOR, "Strategy phase code"],
@@ -547,6 +585,26 @@
     ["phComfortAbove", DOMAIN_NUMBER, "Power House comfort above setpoint", false],
     ["phDemandRiseTime", DOMAIN_NUMBER, "Power House demand rise time", false],
     ["phDemandFallTime", DOMAIN_NUMBER, "Power House demand fall time", false],
+    ["phRunExtension", DOMAIN_SWITCH, "Power House run extension"],
+    ["phRunExtensionStopMargin", DOMAIN_NUMBER, "Power House run extension stop margin"],
+    ["phRunExtensionRestartCooldown", DOMAIN_NUMBER, "Power House run extension restart cooldown"],
+    ["phRunExtensionStatus", DOMAIN_TEXT_SENSOR, "Power House run extension status"],
+    ["phRunExtensionBasePower", DOMAIN_SENSOR, "Power House run extension base power"],
+    ["phRunExtensionFloorPower", DOMAIN_SENSOR, "Power House run extension floor power"],
+    ["phRunExtensionState", DOMAIN_SENSOR, "Power House run extension state"],
+    ["phComfortMemory", DOMAIN_SENSOR, "Power House – comfort memory"],
+    ["phRunExtensionComfortStop", DOMAIN_SENSOR, "Power House run extension comfort stop"],
+    ["phRunExtensionWarmRestart", DOMAIN_SENSOR, "Power House run extension warm restart"],
+    ["warmupEnabled", DOMAIN_SWITCH, "Controlled warmup enabled"],
+    ["warmupTrigger", DOMAIN_NUMBER, "Controlled warmup trigger"],
+    ["warmupStep", DOMAIN_NUMBER, "Controlled warmup step"],
+    ["warmupStepTime", DOMAIN_NUMBER, "Controlled warmup step time"],
+    ["warmupActive", DOMAIN_BINARY_SENSOR, "Controlled warmup active"],
+    ["warmupIntermediateTarget", DOMAIN_SENSOR, "Controlled warmup intermediate target"],
+    ["warmupBoost", DOMAIN_SENSOR, "Controlled warmup boost"],
+    ["warmupEffectiveTarget", DOMAIN_SENSOR, "Controlled warmup effective target"],
+    ["warmupStatus", DOMAIN_SENSOR, "Controlled warmup status"],
+    ["warmupElapsed", DOMAIN_SENSOR, "Controlled warmup elapsed"],
     ["lowLoadDynamicThresholds", DOMAIN_TEXT_SENSOR, "Low-load dynamic thresholds"],
     ["lowLoadDynamicOffFactor", DOMAIN_NUMBER, "Low-load dynamic OFF factor"],
     ["lowLoadDynamicOnFactor", DOMAIN_NUMBER, "Low-load dynamic ON factor"],
@@ -577,6 +635,8 @@
     ["hp1AcCurrent", DOMAIN_SENSOR, "HP1 - AC current"],
     ["hp1PumpPower", DOMAIN_SENSOR, "HP1 - Pump Power"],
     ["hp1PumpRelay", DOMAIN_BINARY_SENSOR, "HP1 - DC Pump Relay"],
+    ["hp1PumpIpwmCommand", DOMAIN_SENSOR, "HP1 - Pump iPWM command"],
+    ["hp1PumpIpwmFeedback", DOMAIN_SENSOR, "HP1 - Pump iPWM feedback"],
     ["hp1Heat", DOMAIN_SENSOR, "HP1 - Heat Power", false],
     ["hp1Cooling", DOMAIN_SENSOR, "HP1 - Cooling Power", false],
     ["hp1Cop", DOMAIN_SENSOR, "HP1 - COP", false],
@@ -617,6 +677,8 @@
     ["hp2AcCurrent", DOMAIN_SENSOR, "HP2 - AC current"],
     ["hp2PumpPower", DOMAIN_SENSOR, "HP2 - Pump Power"],
     ["hp2PumpRelay", DOMAIN_BINARY_SENSOR, "HP2 - DC Pump Relay"],
+    ["hp2PumpIpwmCommand", DOMAIN_SENSOR, "HP2 - Pump iPWM command"],
+    ["hp2PumpIpwmFeedback", DOMAIN_SENSOR, "HP2 - Pump iPWM feedback"],
     ["hp2Heat", DOMAIN_SENSOR, "HP2 - Heat Power"],
     ["hp2Cooling", DOMAIN_SENSOR, "HP2 - Cooling Power"],
     ["hp2Cop", DOMAIN_SENSOR, "HP2 - COP"],
@@ -658,12 +720,12 @@
   export const COOLING_SCHEDULE_EFFECTIVE_SOURCE_KEY = "coolingEnableEffectiveSource";
   export const COOLING_SCHEDULE_TIME_KEYS = ["coolingScheduleStartTime", "coolingScheduleEndTime"];
   export const APP_VIEWS = [
-    { id: "overview", label: "Overzicht", icon: "monitor-dashboard" },
-    { id: "energy", label: "Energie", icon: "zap" },
-    { id: "results", label: "Resultaten", icon: "bar-chart" },
-    { id: "control", label: "Beslislog", icon: "activity", badge: "BETA" },
-    { id: "diagnosis", label: "Diagnose", icon: "activity" },
-    { id: "settings", label: "Instellingen", icon: "settings" },
+    { id: "overview", labelKey: "navigation.overview", icon: "monitor-dashboard" },
+    { id: "energy", labelKey: "navigation.energy", icon: "zap" },
+    { id: "results", labelKey: "navigation.results", icon: "bar-chart" },
+    { id: "control", labelKey: "navigation.control", icon: "activity", badge: "BETA" },
+    { id: "diagnosis", labelKey: "navigation.diagnosis", icon: "activity" },
+    { id: "settings", labelKey: "navigation.settings", icon: "settings" },
   ];
   export const APP_VIEW_IDS = new Set(APP_VIEWS.map((view) => view.id));
 
@@ -671,12 +733,15 @@
     activity: '<path d="M3 12h4l2-7 4 14 2-7h6"/>',
     "bar-chart": '<path d="M4 19V5"/><path d="M20 19H4"/><rect x="7" y="11" width="3" height="5" rx="1"/><rect x="12" y="7" width="3" height="9" rx="1"/><rect x="17" y="3" width="3" height="13" rx="1"/>',
     calculator: '<rect x="4" y="2" width="16" height="20" rx="2"/><path d="M8 6h8"/><path d="M16 14v4"/><path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 10h.01"/><path d="M12 14h.01"/><path d="M8 14h.01"/><path d="M12 18h.01"/><path d="M8 18h.01"/>',
+    clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
     clipboard: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
     "clipboard-check": '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/><path d="m11 14 2 2 4-5"/>',
     droplet: '<path d="M12 3.2s6 6.5 6 10.8a6 6 0 0 1-12 0c0-4.3 6-10.8 6-10.8z"/>',
     flame: '<path d="M12 12c2 -2.96 0 -7 -1 -8c0 3.04 -1.77 4.74 -3 6c-1.23 1.26 -2 3.24 -2 5a6 6 0 1 0 12 0c0 -1.53 -1.06 -3.94 -2 -5c-1.79 3 -2.79 3 -4 2z"/>',
     "home-cog": '<path d="M5 12h-2l9 -9l9 9h-2"/><path d="M5 12v7a2 2 0 0 0 2 2h4"/><path d="M9 21v-6a2 2 0 0 1 2 -2h1"/><circle cx="17" cy="18" r="2"/><path d="M17 14.5v1.5"/><path d="M17 20v1.5"/><path d="M13.97 16.25l1.3 .75"/><path d="M18.73 19l1.3 .75"/><path d="M20.03 16.25l-1.3 .75"/><path d="M15.27 19l-1.3 .75"/>',
+    info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5"/><path d="M12 7.6h.01"/>',
     link: '<path d="M9 15l6 -6"/><path d="M11 6l.46 -.54a5 5 0 0 1 7.08 7.08l-.54 .46"/><path d="M13 18l-.46 .54a5 5 0 0 1 -7.08 -7.08l.54 -.46"/>',
+    lock: '<rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>',
     "monitor-dashboard": '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/><path d="M6.5 7h7v4h-7z"/><path d="M16 7h2"/><path d="M16 10h2"/><path d="M6.5 13h3"/><path d="M11 13h2.5"/>',
     "more-horizontal": '<path d="M5 12h.01"/><path d="M12 12h.01"/><path d="M19 12h.01"/>',
     pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
@@ -712,12 +777,12 @@
       .replaceAll("'", "&#39;");
   }
   export const SETTINGS_GROUPS = [
-    { id: "installation", label: "Installatie", icon: "home-cog" },
-    { id: "heating", label: "Verwarmen", icon: "flame" },
-    { id: "cooling", label: "Koelen", icon: "snowflake" },
-    { id: "integrations", label: "Bronnen / integraties", icon: "link" },
-    { id: "service", label: "Service", icon: "tool" },
-    { id: "system", label: "Systeem", icon: "server" },
+    { id: "installation", labelKey: "settingsGroups.installation", icon: "home-cog" },
+    { id: "heating", labelKey: "settingsGroups.heating", icon: "flame" },
+    { id: "cooling", labelKey: "settingsGroups.cooling", icon: "snowflake" },
+    { id: "integrations", labelKey: "settingsGroups.integrations", icon: "link" },
+    { id: "service", labelKey: "settingsGroups.service", icon: "tool" },
+    { id: "system", labelKey: "settingsGroups.system", icon: "server" },
   ];
   export const SETTINGS_GROUP_IDS = new Set(SETTINGS_GROUPS.map((group) => group.id));
   export const HP_PANEL_CONFIGS = [
@@ -799,6 +864,7 @@
   ];
 
   export const POWER_HOUSE_KEYS = [
+    "roomSetpoint",
     "housePower",
     "houseColdTemp",
     "houseOutdoorMax",
@@ -808,11 +874,29 @@
     "phComfortAbove",
     "phDemandRiseTime",
     "phDemandFallTime",
+    "phRunExtension",
+    "phRunExtensionStopMargin",
+    "phRunExtensionRestartCooldown",
+    "phRunExtensionStatus",
   ];
+  export const WARMUP_SETTING_KEYS = ["warmupEnabled", "warmupTrigger", "warmupStep", "warmupStepTime"];
+  export const WARMUP_STATE_KEYS = ["warmupActive", "warmupIntermediateTarget", "warmupBoost", "warmupEffectiveTarget", "warmupStatus", "warmupElapsed"];
   export const FREQUENCY_CAP_KEYS = ["dayMaxHz", "silentMaxHz"];
   export const FREQUENCY_MINIMUM_KEYS = ["hp1MinimumHeatingHz", "hp1MinimumCoolingHz", "hp2MinimumHeatingHz", "hp2MinimumCoolingHz"];
   export const LIMIT_KEYS = [...FREQUENCY_CAP_KEYS, "maxWater"];
-  export const FLOW_SETTING_KEYS = ["flowControlMode", "flowSetpoint", "coolingFlowSetpoint", "manualIpwm"];
+  export const FLOW_SETTING_KEYS = [
+    "flowControlMode",
+    "flowSetpoint",
+    "coolingFlowSetpoint",
+    "manualIpwm",
+    "flowDeltaTTarget",
+    "flowDeltaTMinFlow",
+    "flowDeltaTMaxFlow",
+    "flowDeltaTStepInterval",
+    "flowDeltaTMaxStep",
+    "flowDeltaTDeadband",
+    "flowDeltaTStatus",
+  ];
   export const FLOW_TUNING_KEYS = ["flowKp", "flowKi"];
   export const SENSOR_CALIBRATION_KEYS = [
     "hp1WaterInOffset",
@@ -867,6 +951,19 @@
     "hp2CompressorStarts72h",
     "hp2CompressorLastStartAge",
     "lowflowFaultActive",
+    "flowSelected",
+    "flowSetpoint",
+    "coolingFlowSetpoint",
+    "flowControlMode",
+    "controlModeLabel",
+    "coolingRequestActive",
+    "manualIpwm",
+    "flowOutputIpwm",
+    "flowSource",
+    "qFlowSource",
+    "installationTopology",
+    "hp1PumpRelay",
+    "hp2PumpRelay",
     "pt1000ReadProblem",
     "waterSupplyTempFallbackActive",
     "flowMismatch",
@@ -876,6 +973,11 @@
     "otEnabled",
     "otThermostatStatusValid",
     "otLinkProblem",
+    "boilerConnection",
+    "otbConnectionState",
+    "otbLinkAvailable",
+    "otbLowWaterPressure",
+    "otbChPressure",
     "roomTempSource",
     "roomSetpointSource",
     "heatingEnableSource",
@@ -897,6 +999,10 @@
     "otEnabled",
     "otThermostatStatusValid",
     "otLinkProblem",
+    "boilerConnection",
+    "otbLinkAvailable",
+    "otbLowWaterPressure",
+    "otbChPressure",
     "roomTempSource",
     "roomSetpointSource",
     "heatingEnableSource",
@@ -990,6 +1096,8 @@
     "hp2Mode",
   ];
   export const SERVICE_STATUS_ENTITY_KEYS = new Set([
+    "warmupStatus",
+    "warmupElapsed",
     "commissioningStatus",
     "cm100Active",
     "boilerPowerTestResult",
@@ -1040,6 +1148,7 @@
   export const CIC_POLLING_SETTING_KEYS = ["cicPollingEnabled", "cicFeedUrl", "cicDataStale"];
   export const OPENTHERM_DIAGNOSTIC_KEYS = [
     "otThermostatChEnable",
+    "otThermostatDhwEnable",
     "otThermostatCoolingEnable",
     "otThermostatControlSetpointValid",
     "otControlSetpoint",
@@ -1058,6 +1167,7 @@
     "boilerStartThermalSafeCeiling",
   ];
   export const OTB_DIAGNOSTIC_KEYS = [
+    "otbConnectionState",
     "otbLinkAvailable",
     "otbChCommand",
     "otbControlSetpointCommand",
@@ -1168,6 +1278,8 @@
     "apiInputExternalHeatDemandValid",
     "powerHouseDemandSource",
     "heatingSupplyTargetSource",
+    "heatingCurveModifierSource",
+    "curveModifier",
     "heatingSupplyTargetSelected",
     "heatingSupplyTargetHa",
     "heatingSupplyTargetHaValid",
@@ -1177,6 +1289,15 @@
     "mqttHeatingSupplyTarget",
     "mqttHeatingSupplyTargetAge",
     "mqttHeatingSupplyTargetValid",
+    "heatingCurveModifierHa",
+    "heatingCurveModifierHaValid",
+    "heatingCurveModifierHaEffectiveValid",
+    "apiInputHeatingCurveModifier",
+    "apiInputHeatingCurveModifierAge",
+    "apiInputHeatingCurveModifierValid",
+    "mqttHeatingCurveModifier",
+    "mqttHeatingCurveModifierAge",
+    "mqttHeatingCurveModifierValid",
     "heatingSupplyTargetActiveSource",
     "otThermostatControlSetpointValid",
     "apiInputHeatingEnable",
@@ -1312,14 +1433,19 @@
     "heatingCurvePidKd",
     "duoDispatchMode",
     "duoShareLoadStartLevel",
+    "curveBaseTarget",
+    "curveModifier",
+    "curveRoomTrim",
+    "curveEffectiveTarget",
+    "heatingSupplyTargetActiveSource",
   ];
   export const EXCLUDED_FREQUENCY_KEYS = [
     "hp1ExcludeMinHz", "hp1ExcludeMaxHz", "hp2ExcludeMinHz", "hp2ExcludeMaxHz",
   ];
   export const COMPRESSOR_SETTING_KEYS = ["minRuntime", ...EXCLUDED_FREQUENCY_KEYS];
-  // Restore order: gate + thresholds first, the function last, so a backup
+  // Restore order: gate, thresholds and run-on first, the function last, so a backup
   // restore cannot energize the relay with stale gate settings in between.
-  export const AUX_RELAY_SETTING_KEYS = ["auxWaitForSupplyTemp", "auxHeatingStartTemp", "auxCoolingStartTemp", "auxTempHysteresis", "auxRelayFunction"];
+  export const AUX_RELAY_SETTING_KEYS = ["auxWaitForSupplyTemp", "auxHeatingStartTemp", "auxCoolingStartTemp", "auxTempHysteresis", "auxRunOnTime", "auxRunOnMode", "auxRelayFunction"];
   export const AUX_RELAY_STATE_KEYS = ["auxRelayActive", "auxRelayStatus"];
   export const SILENT_SETTING_KEYS = ["silentStartTime", "silentEndTime", ...FREQUENCY_CAP_KEYS];
   export const BOILER_SUPPORT_SWITCHING_KEYS = ["boilerSupportStartThreshold", "boilerSupportStopThreshold"];
@@ -1331,10 +1457,36 @@
     "resetRuntimeCountersHp1",
     "resetRuntimeCountersHp1Hp2",
   ];
-  export const DEBUG_RECORDING_DURATION_OPTIONS = [
+  // Download window selection for the Systeemrecorder. minutes === 0 means
+  // everything retained on the device.
+  export const DEBUG_RECORDING_DOWNLOAD_RANGE_OPTIONS = [
     { minutes: 15, label: "15 min" },
     { minutes: 30, label: "30 min" },
-    { minutes: 60, label: "1 uur" },
+    { minutes: 60, label: "60 min" },
+    { minutes: 120, labelKey: "debugRecording.range2h" },
+    { minutes: 360, labelKey: "debugRecording.range6h" },
+    { minutes: 0, label: "Alles", labelKey: "debugRecording.rangeAll" },
+  ];
+  export const SYSTEM_RECORDER_ANALYSER_URL = "https://openheatpumps.nl";
+  // Firmware-owned configuration snapshot, independent of settings backups.
+  // Only non-sensitive persisted settings; live inputs and credentials stay out.
+  export const DEBUG_CONFIGURATION_KEYS = [
+    "phRunExtension",
+    "phRunExtensionStopMargin",
+    "phRunExtensionRestartCooldown",
+    "roomTempSource",
+    "roomSetpointSource",
+    "outsideTempSource",
+    "minRuntime",
+    "maxWater",
+    "electricalCurrentLimit",
+    "hpGeneration",
+    "dayMaxHz",
+    "silentMaxHz",
+    "hp1ExcludeMinHz",
+    "hp1ExcludeMaxHz",
+    "hp2ExcludeMinHz",
+    "hp2ExcludeMaxHz",
   ];
   export const DEBUG_RECORDING_KEYS = [
     "projectVersionText",
@@ -1488,6 +1640,7 @@
     "boilerCommandTargetTemperature",
     "boilerBlockReason",
     "otbLinkAvailable",
+    "otbConnectionState",
     "otbChCommand",
     "otbControlSetpointCommand",
     "otbFlameOn",
@@ -1562,6 +1715,77 @@
     "hp2PumpRelay",
     "hp2BottomPlate",
     "hp2Crankcase",
+    "flowSource",
+    "qFlowSource",
+    "controllerFlowMeter",
+    "customFlowMeterPulsesPerLiter",
+    "outdoorUnitFlowMode",
+    "flowSelectedRoute",
+    "flowLocal",
+    "controllerFlow",
+    "cicFlowrate",
+    "hp1PumpIpwmCommand",
+    "hp2PumpIpwmCommand",
+    "hp1PumpIpwmFeedback",
+    "hp2PumpIpwmFeedback",
+    "hp1FourWay",
+    "hp2FourWay",
+    "boilerCommandHeatRequest",
+    "boilerRelayTargetState",
+    "phRunExtensionStatus",
+    "phRunExtensionBasePower",
+    "phRunExtensionFloorPower",
+    "phRunExtensionState",
+    "phComfortMemory",
+    "phRunExtensionComfortStop",
+    "phRunExtensionWarmRestart",
+    "roomTempEffectiveSource",
+    "roomSetpointEffectiveSource",
+    "warmupEnabled",
+    "warmupTrigger",
+    "warmupStep",
+    "warmupStepTime",
+    "warmupActive",
+    "warmupIntermediateTarget",
+    "warmupBoost",
+    "warmupEffectiveTarget",
+    // Source diagnostics are sampled by firmware, including without a browser.
+    "waterSupplySource",
+    "localWaterSupplyTempSource",
+    "waterSupplyTempEffectiveSource",
+    "waterSupplyTempFallbackActive",
+    "pt1000ReadProblem",
+    "waterSupplyTempEsp",
+    "waterSupplyTempPt1000",
+    "waterSupplyTempDs18b20",
+    "cicWaterSupplyTemp",
+    "waterSupplyTempHa",
+    "waterSupplyTempHaValid",
+    "waterSupplyCalibrationOffset",
+    "waterSupplyCalibrationRequired",
+    "waterSupplyCalibrationStatus",
+    "coolingDewPointSource",
+    "coolingEnableSource",
+    "coolingEnableValid",
+    "heatingEnableEffectiveSource",
+    "coolingEnableEffectiveSource",
+    "heatingCurveModifierSource",
+    "heatingCurveModifierHaEffectiveValid",
+    "curveModifier",
+    "cicPollingEnabled",
+    "cicJsonFeedOk",
+    "cicLastSuccessAge",
+    "outsideTempHaValid",
+    "roomTempHaValid",
+    "roomSetpointHaValid",
+    "cicRoomTemp",
+    "cicRoomSetpoint",
+    "outsideTempHa",
+    "roomTempHa",
+    "roomSetpointHa",
+    "coolingDewPointHa",
+    "coolingDewPointHaValid",
+    "heatingCurveModifierHa",
   ];
   export const FIRMWARE_ENTITY_KEYS = ["firmwareUpdate", "firmwareUpdateChannel", "firmwareUpdateTarget", "firmwareUpdateProgress", "firmwareUpdateStatus"];
   export const FIRMWARE_TEST_ENTITY_KEYS = ["firmwareTestManifestUrl", "installFirmwareTestManifest"];
@@ -1569,6 +1793,9 @@
   export const FIRMWARE_MODAL_KEYS = [...FIRMWARE_ENTITY_KEYS, ...FIRMWARE_TEST_ENTITY_KEYS, ...FIRMWARE_TEST_LEGACY_ENTITY_KEYS, "installFirmwareUpdateTarget", "projectVersionText", "releaseChannelText", "installationTopology", "hardwareProfileText", "connectionText", "preferredConnection"];
   export const TOPOLOGY_HINT_KEYS = ["hp2ExcludeMinHz", "hp2Power", "hp2WaterOut"];
   export const HEADER_ENTITY_KEYS = [
+    "performanceTelemetryEnabled",
+    "performanceTelemetryChoiceConfigured",
+    "performanceTelemetryPromptHandled",
     "status",
     "uptime",
     "uptimeReadable",
@@ -1587,6 +1814,8 @@
     "controlModeOverride",
   ];
   export const OVERVIEW_KEYS = [
+    "warmupStatus",
+    "warmupElapsed",
     "strategy",
     "openquattEnabled",
     "usageTelemetryEnabled",
@@ -1641,6 +1870,7 @@
     "boilerHeatPower",
     "otbLinkAvailable",
     "otbFaultIndication",
+    "otbLowWaterPressure",
     "otbChActive",
     "otbDhwActive",
     "otbFlameOn",
@@ -1677,18 +1907,35 @@
     "roomSetpoint",
     "supplyTemp",
     "curveSupplyTarget",
+    "strategyActiveCode",
+    "strategySupplyTarget",
     "silentActive",
     "stickyActive",
     ...HP_PANEL_ENTITY_KEYS,
   ];
   export const CONTROL_REPLAY_STATE_KEYS = [
+    "phRunExtension",
+    "phRunExtensionStatus",
+    "phRunExtensionComfortStop",
     "strategyActiveCode",
+    "strategyRequestActive",
+    "strategyWaterTripActive",
+    "strategyWaterHardTripActive",
+    "heatingBlockedByThermostat",
+    "controlModeOverride",
+    "lowLoadLatch",
+    "lowLoadOnW",
+    "lowLoadOffW",
+    "curveRestartInhibit",
+    "curveRestartBlockedByRoom",
     "hp1CompressorStarts24h",
     "hp2CompressorStarts24h",
     "hp1RuntimeHours",
     "hp2RuntimeHours",
   ];
   export const FAST_OVERVIEW_KEYS = [
+    "warmupStatus",
+    "warmupElapsed",
     "strategy",
     "openquattEnabled",
     "usageTelemetryEnabled",
@@ -1725,6 +1972,8 @@
     "roomSetpoint",
     "supplyTemp",
     "curveSupplyTarget",
+    "strategyActiveCode",
+    "strategySupplyTarget",
     "silentActive",
     "stickyActive",
     "totalPower",
@@ -1809,68 +2058,68 @@
   ];
   export const OVERVIEW_ENERGY_COLUMN_CONFIGS = [
     {
-      label: "Nu",
+      labelKey: "energy.colNow",
       tone: "blue",
       categories: [
         {
-          title: "Verwarmen",
+          titleKey: "energy.catHeating",
           tone: "orange",
           groups: [
-            { title: "Warmtepomp", rows: [["Elektrisch vermogen", "heatingPowerInput"], ["Warmteafgifte", "totalHeat"], ["COP", "totalCop"]] },
-            { title: "CV-ketel", rows: [["Warmteafgifte", "boilerHeatPower"]] },
-            { title: "Systeem", rows: [["Warmteafgifte", "systemHeatPower"]] },
+            { titleKey: "energy.groupHeatpump", rows: [["energy.rowPower", "heatingPowerInput"], ["energy.rowHeatOutput", "totalHeat"], ["energy.rowCop", "totalCop"]] },
+            { titleKey: "energy.groupBoiler", requiresAuxHeatSource: true, rows: [["energy.rowHeatOutput", "boilerHeatPower"]] },
+            { titleKey: "energy.groupSystem", rows: [["energy.rowHeatOutput", "systemHeatPower"]] },
           ],
         },
         {
-          title: "Koelen",
+          titleKey: "energy.catCooling",
           tone: "blue",
           groups: [
-            { title: "Warmtepomp", rows: [["Elektrisch vermogen", "coolingPowerInput"], ["Koelafgifte", "totalCoolingPower"], ["COP (EER)", "totalEer"]] },
+            { titleKey: "energy.groupHeatpump", rows: [["energy.rowPower", "coolingPowerInput"], ["energy.rowCoolingOutput", "totalCoolingPower"], ["energy.rowCopEer", "totalEer"]] },
           ],
         },
       ],
     },
     {
-      label: "Vandaag",
+      labelKey: "energy.colToday",
       tone: "orange",
       categories: [
         {
-          title: "Verwarmen",
+          titleKey: "energy.catHeating",
           tone: "orange",
           groups: [
-            { title: "Warmtepomp", rows: [["Elektriciteit", "heatingElectricalEnergyDaily"], ["Warmte", "heatpumpThermalEnergyDaily"], ["COP", "heatpumpCopDaily"]] },
-            { title: "CV-ketel", rows: [["Warmte", "boilerThermalEnergyDaily"]] },
-            { title: "Systeem", rows: [["Warmte", "systemThermalEnergyDaily"]] },
+            { titleKey: "energy.groupHeatpump", rows: [["energy.rowElectricity", "heatingElectricalEnergyDaily"], ["energy.rowHeat", "heatpumpThermalEnergyDaily"], ["energy.rowCop", "heatpumpCopDaily"]] },
+            { titleKey: "energy.groupBoiler", requiresAuxHeatSource: true, rows: [["energy.rowHeat", "boilerThermalEnergyDaily"]] },
+            { titleKey: "energy.groupSystem", rows: [["energy.rowHeat", "systemThermalEnergyDaily"]] },
           ],
         },
         {
-          title: "Koelen",
+          titleKey: "energy.catCooling",
           tone: "blue",
           groups: [
-            { title: "Warmtepomp", rows: [["Elektriciteit", "coolingElectricalEnergyDaily"], ["Koeling", "heatpumpCoolingEnergyDaily"], ["COP (EER)", "heatpumpEerDaily"]] },
+            { titleKey: "energy.groupHeatpump", rows: [["energy.rowElectricity", "coolingElectricalEnergyDaily"], ["energy.rowCooling", "heatpumpCoolingEnergyDaily"], ["energy.rowCopEer", "heatpumpEerDaily"]] },
           ],
         },
       ],
     },
     {
-      label: "Cumulatief",
+      labelKey: "energy.colCumulative",
       tone: "green",
       counterResetKey: "resetCumulativeEnergyCounters",
       categories: [
         {
-          title: "Verwarmen",
+          titleKey: "energy.catHeating",
           tone: "orange",
           groups: [
-            { title: "Warmtepomp", rows: [["Elektriciteit", "heatingElectricalEnergyCumulative"], ["Warmte", "heatpumpThermalEnergyCumulative"], ["COP", "heatpumpCopCumulative"]] },
-            { title: "CV-ketel", rows: [["Warmte", "boilerThermalEnergyCumulative"]] },
-            { title: "Systeem", rows: [["Warmte", "systemThermalEnergyCumulative"]] },
+            { titleKey: "energy.groupHeatpump", rows: [["energy.rowElectricity", "heatingElectricalEnergyCumulative"], ["energy.rowHeat", "heatpumpThermalEnergyCumulative"], ["energy.rowCop", "heatpumpCopCumulative"]] },
+            { titleKey: "energy.groupBoiler", requiresAuxHeatSource: true, rows: [["energy.rowHeat", "boilerThermalEnergyCumulative"]] },
+            { titleKey: "energy.groupSystem", rows: [["energy.rowHeat", "systemThermalEnergyCumulative"]] },
           ],
         },
         {
-          title: "Koelen",
+          titleKey: "energy.catCooling",
           tone: "blue",
           groups: [
-            { title: "Warmtepomp", rows: [["Elektriciteit", "coolingElectricalEnergyCumulative"], ["Koeling", "heatpumpCoolingEnergyCumulative"], ["COP (EER)", "heatpumpEerCumulative"]] },
+            { titleKey: "energy.groupHeatpump", rows: [["energy.rowElectricity", "coolingElectricalEnergyCumulative"], ["energy.rowCooling", "heatpumpCoolingEnergyCumulative"], ["energy.rowCopEer", "heatpumpEerCumulative"]] },
           ],
         },
       ],
@@ -1894,6 +2143,9 @@
     "manualCoolingEnable",
     "usageTelemetryEnabled",
     "usageTelemetryInstallationId",
+    "houseLearningEnabled",
+    "houseLearningReset",
+    "performanceTelemetryEnabled",
     "silentModeOverride",
     "silentActive",
     "trendHistoryEnabled",
@@ -1924,6 +2176,8 @@
     ...COOLING_SETTING_KEYS,
     ...LIMIT_KEYS,
     ...POWER_HOUSE_KEYS,
+    ...WARMUP_SETTING_KEYS,
+    ...WARMUP_STATE_KEYS,
     ...CURVE_SETTING_KEYS,
     ...COMPRESSOR_SETTING_KEYS,
     ...SILENT_SETTING_KEYS,
@@ -1934,23 +2188,35 @@
   export const SETTINGS_BACKUP_EXCLUDED_KEYS = new Set([
     "installationTopology",
     "preferredConnection",
+    // Passive learning always requires an explicit opt-in after boot.
+    "houseLearningEnabled",
     ...COMMISSIONING_STATE_KEYS,
     "cicDataStale",
     "otLinkProblem",
     "otbChCommand",
     "otbControlSetpointCommand",
+    // Live API inputs are runtime state, not persisted settings. Restoring a
+    // default or stale value would mark it freshly valid.
+    "apiInputOutsideTemperature",
+    "apiInputRoomTemperature",
+    "apiInputRoomSetpoint",
+    "apiInputHeatingEnable",
+    "apiInputCoolingEnable",
+    "apiInputCoolingDewPoint",
     // A live power request rather than a persisted setting: restoring it
     // would re-assert a stale demand and mark it freshly valid.
     "apiInputExternalHeatDemand",
     // A live supply-target request rather than a persisted setting: restoring
     // it would re-assert a stale target and mark it freshly valid.
     "apiInputHeatingSupplyTarget",
+    "apiInputHeatingCurveModifier",
     "coolingGuardMode",
     "coolingFallbackNightMinOutdoorTemp",
     "coolingFallbackMinSupplyTemp",
     "coolingEffectiveMinSupplyTemp",
     "statusLedsEnabled",
     "usageTelemetryEnabled",
+    "performanceTelemetryEnabled",
     "controlModeOverride",
   ]);
   // Keep this aligned with persisted UI settings. The build checks that new
@@ -1958,7 +2224,7 @@
   export const SETTINGS_BACKUP_SECTIONS = [
     {
       id: "installation",
-      label: "Installatie",
+      labelKey: "backupSections.installation",
       keys: [
         "setupComplete",
         "hpGeneration",
@@ -1972,7 +2238,7 @@
     },
     {
       id: "operation",
-      label: "Bediening",
+      labelKey: "backupSections.operation",
       keys: [
         "strategy",
         "openquattEnabled",
@@ -1983,7 +2249,7 @@
     },
     {
       id: "integrations",
-      label: "Integraties",
+      labelKey: "backupSections.integrations",
       keys: [
         "otEnabled",
         "cicPollingEnabled",
@@ -1993,7 +2259,7 @@
     },
     {
       id: "sensor_sources",
-      label: "Sensorbronnen",
+      labelKey: "backupSections.sensorSources",
       keys: [
         ...SENSOR_CALIBRATION_KEYS,
         ...SUPPLY_CALIBRATION_BACKUP_KEYS,
@@ -2012,17 +2278,12 @@
         "coolingDewPointSource",
         "externalHeatDemandSource",
         "heatingSupplyTargetSource",
-        "apiInputOutsideTemperature",
-        "apiInputRoomTemperature",
-        "apiInputRoomSetpoint",
-        "apiInputHeatingEnable",
-        "apiInputCoolingEnable",
-        "apiInputCoolingDewPoint",
+        "heatingCurveModifierSource",
       ],
     },
     {
       id: "comfort",
-      label: "Comfort",
+      labelKey: "backupSections.comfort",
       keys: [
         "silentStartTime",
         "silentEndTime",
@@ -2032,7 +2293,7 @@
     },
     {
       id: "heatingCurve",
-      label: "Stooklijn",
+      labelKey: "backupSections.heatingCurve",
       keys: [
         "curveControlProfile",
         "curveFallbackSupply",
@@ -2046,7 +2307,7 @@
     },
     {
       id: "powerHouse",
-      label: "Power House",
+      labelKey: "backupSections.powerHouse",
       keys: [
         "housePower",
         "houseColdTemp",
@@ -2057,16 +2318,24 @@
         "phComfortAbove",
         "phDemandRiseTime",
         "phDemandFallTime",
+        "phRunExtension",
+        "phRunExtensionStopMargin",
+        "phRunExtensionRestartCooldown",
       ],
     },
     {
+      id: "warmup",
+      labelKey: "backupSections.warmup",
+      keys: [...WARMUP_SETTING_KEYS],
+    },
+    {
       id: "flow",
-      label: "Flow",
-      keys: ["flowControlMode", "flowSetpoint", "coolingFlowSetpoint", "manualIpwm", "flowKp", "flowKi"],
+      labelKey: "backupSections.flow",
+      keys: ["flowControlMode", "flowSetpoint", "coolingFlowSetpoint", "manualIpwm", "flowDeltaTTarget", "flowDeltaTMinFlow", "flowDeltaTMaxFlow", "flowDeltaTStepInterval", "flowDeltaTMaxStep", "flowDeltaTDeadband", "flowKp", "flowKi"],
     },
     {
       id: "cooling",
-      label: "Koeling",
+      labelKey: "backupSections.cooling",
       keys: [
         ...COOLING_SCHEDULE_TIME_KEYS,
         "coolingMinimumSupplyTemp",
@@ -2086,12 +2355,12 @@
     },
     {
       id: "compressor",
-      label: "Compressor",
+      labelKey: "backupSections.compressor",
       keys: ["minRuntime", "compressorStarts2hWarningLimit", "compressorStarts72hWarningLimit", ...EXCLUDED_FREQUENCY_KEYS],
     },
     {
       id: "system",
-      label: "Systeem",
+      labelKey: "backupSections.system",
       keys: [
         "trendHistoryEnabled",
         "trendHistoryFlashEnabled",

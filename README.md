@@ -1,6 +1,9 @@
-# OpenQuatt
+# OpenQuatt [![Discord](https://img.shields.io/badge/chat-Discord-44cc11)](https://discord.com/channels/1176602554885492786/1464174190788874427) [![Release](https://img.shields.io/github/v/release/OpenQuatt/OpenQuatt?label=release&color=007ec6)](https://github.com/OpenQuatt/OpenQuatt/releases/latest)
 
-<img src="docs/assets/openquatt_logo.svg" alt="OpenQuatt logo" width="400" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/openquatt-logo-horizontal-dark.svg" />
+  <img src="docs/assets/brand/openquatt-logo-horizontal-light.svg" alt="OpenQuatt" width="420" />
+</picture>
 
 OpenQuatt is open-source ESPHome-firmware voor Quatt Hybrid `Single`- en `Duo`-installaties. Het project geeft je lokaal inzicht, lokale controle, een uitgebreide web-app en optionele Home Assistant-integratie bovenop de bestaande Quatt-hardware.
 
@@ -21,8 +24,7 @@ Kies alleen de route die bij jouw huidige hardware en situatie hoort. Home Assis
 | Jouw situatie | Begin hier | Wat je gaat doen |
 |---|---|---|
 | Nieuwe Heatpump Controller Q-edition met OpenQuatt voorgeïnstalleerd | [Q-edition aansluiten en in gebruik nemen](docs/q-edition.md) | Controller aansluiten, online brengen en Quick Start afronden. Zelf firmware flashen is normaal niet nodig. |
-| Bestaande Waveshare- of Heatpump Listener-module | [Andere modules installeren](docs/installatie-en-ingebruikname.md) | Exact hardwareprofiel kiezen, firmware flashen en Quick Start afronden. Deze modules hebben limited/best-effort support. |
-| OpenQuatt draait al | [Web-app gebruiken](docs/web-app.md) | Instellingen beheren, updaten, backups maken en diagnose uitvoeren via `openquatt.local`. |
+| OpenQuatt draait al | [Overzicht van de web-app](docs/web-app.md) | Instellingen beheren, updaten, backups maken en diagnose uitvoeren via `openquatt.local`. |
 | Eerst alleen rondkijken | [Web-app demo](https://openquatt.github.io/OpenQuatt/demo/) | De interface bekijken zonder hardware of wijzigingen aan je installatie. |
 
 ## Wat is OpenQuatt?
@@ -44,11 +46,9 @@ Je hoeft voor de eerste installatie niet eerst alle technische achtergronddocume
 
 OpenQuatt ondersteunt momenteel Quatt Hybrid `Single` en `Duo` (V1, V1.5 en V2).
 
-Voor nieuwe installaties is de [`Electropaultje Heatpump Controller Q-edition`](https://electropaultje.nl/product/heatpump-controller-q-edition/) de aanbevolen en volledig ondersteunde module. Deze hardware is speciaal voor OpenQuatt gemaakt en is de primaire focus voor support en nieuwe ontwikkeling.
+De [`Electropaultje Heatpump Controller Q-edition`](https://electropaultje.nl/product/heatpump-controller-q-edition/) is de ondersteunde OpenQuatt-module. Deze hardware is speciaal voor OpenQuatt gemaakt en is de basis voor support en nieuwe ontwikkeling.
 
-`Waveshare ESP32-S3-Relay-1CH` en `Electropaultje Heatpump Listener` blijven beschikbaar met limited/best-effort support. Ze blijven waarschijnlijk gewoon functioneren, maar actieve ontwikkeling en support richten zich op de Heatpump Controller Q-edition.
-
-Alle Wi-Fi-combinaties van bovenstaande opstelling en hardware zijn beschikbaar. Voor de Heatpump Controller Q zijn daarnaast Ethernet-builds beschikbaar voor `Single` en `Duo`. Ethernet en Wi-Fi zijn nu nog aparte firmware-builds; een Ethernet-build verwacht dus een werkende kabel/netwerkroute en heeft geen automatische Wi-Fi fallback of captive portal.
+De Q-edition ondersteunt `Single` en `Duo`, met Wi-Fi en Ethernet in dezelfde firmware. Bestaande Waveshare- en Heatpump Listener-modules worden niet meer ondersteund; v0.50.0 is daarvoor de laatste firmwarerelease.
 
 ## Wanneer is de installatie klaar?
 
@@ -61,7 +61,7 @@ De basisinstallatie is afgerond wanneer:
 
 Home Assistant en het meegeleverde dashboard zijn optionele vervolgstappen. Ze zijn niet nodig om OpenQuatt zelf te installeren of via de web-app te gebruiken.
 
-Voor bestaande Waveshare- en Heatpump Listener-modules biedt de [installer](https://openquatt.github.io/OpenQuatt/install/) de nieuwste stabiele eerste-installatiebestanden. Bij een HCQ gebruik je de installer alleen om Wi-Fi via USB in te stellen of als herstelroute. Ga bij problemen naar [Problemen oplossen](docs/problemen-oplossen.md).
+Gebruik de [installer](https://openquatt.github.io/OpenQuatt/install/) om Wi-Fi via USB in te stellen of als herstelroute voor een HCQ. Ga bij problemen naar [Problemen oplossen](docs/problemen-oplossen.md).
 
 ## Mogelijkheden
 
@@ -79,30 +79,18 @@ OpenQuatt biedt:
 Belangrijke beperkingen voor deze fase:
 
 - OpenQuatt is bedoeld voor Quatt Hybrid `Single` en `Duo`, niet voor Quatt All-Electric, Quatt Chill of Quatt HomeBattery.
-- De Heatpump Controller Q-edition is de support- en ontwikkelfocus; Waveshare en Heatpump Listener zijn limited/best-effort.
+- Alleen de Heatpump Controller Q-edition wordt ondersteund.
 - OpenTherm-aansturing van de ketel via `OTB` is alleen beschikbaar op de Heatpump Controller Q-edition.
-- Ethernet en Wi-Fi zijn nu nog aparte firmware-builds.
-- CV-assist in Heating Curve, CV/boiler-only mode en uitgebreidere storingsafhandeling staan op de roadmap.
 - OpenQuatt is geen officiële Quatt-helpdesk of individuele installatieservice.
-
-## Roadmap
-
-Compacte roadmap:
-
-- gecombineerde Ethernet/Wi-Fi firmware, afhankelijk van ESPHome-ontwikkelingen;
-- CV-assist in Heating Curve;
-- CV/boiler-only mode;
-- betere storingsafhandeling en herstelroutes.
 
 ## Documentatie
 
 Belangrijkste pagina's voor gebruikers:
 
 - [Heatpump Controller Q-edition aansluiten en in gebruik nemen](docs/q-edition.md) voor de normale route met nieuwe OpenQuatt-hardware
-- [Andere modules installeren](docs/installatie-en-ingebruikname.md) voor een bestaande Waveshare- of Heatpump Listener-module
-- [Web-app gebruiken](docs/web-app.md) voor Quick Start, instellingen, updates, backup en beveiliging
+- [Overzicht van de web-app](docs/web-app.md) voor Quick Start, instellingen, updates, backup en beveiliging
 - [OpenQuatt Home Assistant](docs/dashboard/README.md) voor dashboards, optionele HA-packages en de companion-repository
-- [Verwarmen en koelen uitgelegd](docs/verwarmen-en-koelen.md) voor een eenvoudige uitleg van `Power House`, stooklijnregeling, koeling, `Single` en `Duo`
+- [Verwarmen en comfort](docs/dagelijks/verwarmen.md) voor de keuze tussen Power House en stooklijnregeling; zie ook [Koelen](docs/dagelijks/koelen.md)
 - [MQTT inputbronnen](docs/mqtt.md) voor externe MQTT-bronwaarden zoals dauwpunt, buiten- en kamerwaarden en toestemmingssignalen
 - [Problemen oplossen](docs/problemen-oplossen.md) voor diagnose zonder meteen te gaan tunen
 

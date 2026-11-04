@@ -70,6 +70,22 @@ beforeEach(() => {
   setRenderCallback(() => {});
 });
 
+test("Quick Start legt de actieve setup vast bij bevestigen", () => {
+  state.entities = {
+    connectionText: { state: "wifi", value: "wifi" },
+    installationTopology: { state: "duo", value: "duo" },
+  };
+  state.quickStartSetupDraft = "";
+  state.quickStartSetupConfirmed = false;
+
+  handleInput({ target: { checked: true, dataset: { oqQuickstartSetupConfirm: "true" } } });
+
+  assert.equal(state.quickStartSetupDraft, "duo:wifi");
+  assert.equal(state.quickStartSetupConfirmed, true);
+  state.entities.installationTopology = { state: "single", value: "single" };
+  assert.equal(state.quickStartSetupDraft, "duo:wifi");
+});
+
 test("partial hours/minutes survive background settings patches without posting", async () => {
   const input = inputFor();
   const writes = [];

@@ -10,14 +10,14 @@ Technische naslag voor ontwikkeling en diagnose van de Electropaultje Heatpump C
 | Aansluiting | Functie in de huidige firmware | Signaal |
 |---|---|---|
 | `Q` | Lokale aanvoertemperatuur en, bij Quatt V1, flowmeting | PT1000 en flowmeter-puls |
-| `R1` | CV-ketel via aan/uit | Potentiaalvrij relais: `COM` + `NO` |
+| `R1` | CV-ketel via aan/uit | Potentiaalvrij relais voor een aan/uit-kamerthermostaatingang (bijv. RT, RT24 of TA): `COM` + `NO` |
 | `R2` | Configureerbaar hulprelais, standaard uit | Potentiaalvrij wisselrelais: `NC` / `COM` / `NO` |
 | `T` | Optionele lokale temperatuursensor | 1-Wire Dallas/DS18B20: `+3.3V`, `GND`, `DATA` |
 | `OTT` | Kamerthermostaat | OpenTherm slave, twee aders |
-| `OTB` | CV-ketel | OpenTherm master, twee aders |
+| `OTB` | CV-ketel | OpenTherm master, twee aders; alleen aansluiten op de digitale OpenTherm-klemmen van de ketel |
 | `M1` | Quatt-buitenunit(s) | RS485 Modbus: `GND` / `A` / `B` |
-| `M2` | Optionele CiC-compatibiliteit | RS485 Modbus: `GND` / `A` / `B` |
-| Ethernet | Netwerk in Ethernet-builds | W5500 met RJ45 |
+| `M2` | Quatt-app via CiC (optioneel) | RS485 Modbus: `GND` / `A` / `B` |
+| Ethernet | Lokale netwerkverbinding | W5500 met RJ45 |
 | USB | Voeding, Wi-Fi-provisioning, flashen en herstel | USB |
 
 Gebruik voor de CV-ketel altijd precies één route: `OTB` of `R1`, nooit beide tegelijk. De polariteit van de twee aders op `OTT` en `OTB` maakt niet uit.
@@ -34,7 +34,7 @@ Gebruik voor de CV-ketel altijd precies één route: `OTB` of `R1`, nooit beide 
 | OpenTherm thermostaat | `OTT` | slave: in/uit | in `GPIO21`, uit `GPIO14` |
 | OpenTherm CV-ketel | `OTB` | master: in/uit | in `GPIO47`, uit `GPIO48` |
 | Buitenunit-Modbus | `M1` | UART met RS485 DE/RE | TX `GPIO40`, RX `GPIO42`, DE/RE `GPIO41` |
-| CiC-compatibiliteit | `M2` | UART met RS485 DE/RE | TX `GPIO45`, RX `GPIO39`, DE/RE `GPIO38` |
+| Quatt-app via CiC | `M2` | UART met RS485 DE/RE | TX `GPIO45`, RX `GPIO39`, DE/RE `GPIO38` |
 | Ethernet W5500 | RJ45 | SPI | MOSI `GPIO10`, MISO `GPIO11`, CLK `GPIO12`, CS `GPIO13`, INT `GPIO9` |
 | Status-led geel | Front | GPIO-uitgang | `GPIO1` |
 | Status-led rood | Front | GPIO-uitgang | `GPIO2` |
@@ -61,7 +61,7 @@ De twee PT1000-draden op pin 2 en 5 mogen worden verwisseld. Bepaal de pinnummer
 
 De pulslezer op `GPIO15` heeft een interne pull-up en een filter van 100 µs. Kies in de web-app onder **Instellingen → Bronnen / integraties → Sensorselectie → Flow → Lokale flowmeter** het aangesloten type. In Home Assistant en de standaard ESPHome-webinterface heet deze instelling **Controller Flow Meter**:
 
-- **Huba Control** (standaard): behoudt de bestaande omrekening met 0,05 l/min per Hz en eventuele Huba-configuratieaanpassingen.
+- **Huba Control 236** (standaard, normaliter door Quatt geïnstalleerd): behoudt de bestaande omrekening met 0,05 l/min per Hz en eventuele Huba-configuratieaanpassingen.
 - **Custom**: gebruikt een zelf ingestelde, lineaire kalibratie in pulsen per liter voor bijvoorbeeld sensoren uit de ZJ-B10- en YF-B10-familie.
 
 Een pulswaarde van nul blijft bij ieder profiel nul; de bestaande timeout van 5 seconden blijft behouden. Sensoren binnen dezelfde B10-productfamilie kunnen verschillende kalibraties hebben. Zoek daarom in de documentatie van de daadwerkelijk geleverde sensor hoeveel pulsen per liter deze afgeeft en neem geen waarde over op basis van alleen de modelnaam.
@@ -92,21 +92,7 @@ Sluit de draden als volgt aan:
 
 Controleer de `C`-, `B`- en `E`-aansluitingen aan de hand van de datasheet van jouw BC547. De pootvolgorde kan per behuizing of fabrikant verschillen.
 
-```text
-B10-flowmeter                              Q-stekker (Molex MX3.0)
-
-rood   +5V  --------------------------------  pin 1  +5V
-
-geel   SIG  ----[ 4,7 kΩ ]---- B
-                                  BC547 NPN
-zwart  GND  ------------------- E
-          |                       C ---------  pin 3  FLOW / GPIO15
-          +---------------------------------  pin 4  GND
-
-PT1000 draad 1  -----------------------------  pin 2  PT1000
-PT1000 draad 2  -----------------------------  pin 5  PT1000
-                                                 pin 6  niet gebruikt
-```
+![Bedradingsschema B10-flowmeter naar de Q-stekker](assets/zj-b10-q-aansluiting.svg)
 
 Isoleer na het doormeten iedere soldeerverbinding afzonderlijk. Schakel de controller daarna in, kies **Custom** als lokale flowmeter, vul de juiste waarde in bij **Pulsen per liter** en controleer de gemeten flow terwijl de circulatiepomp draait.
 
@@ -128,13 +114,13 @@ Op `OTT` gedraagt de HCQ zich als OpenTherm-slave tegenover de kamerthermostaat.
 
 `M1` is de primaire RS485-poort voor de buitenunit(s). De HCQ is hier Modbus-master met 19200 baud, 8E1 en DE/RE op `GPIO41`.
 
-`M2` is de optionele tweede RS485-poort voor CiC-compatibiliteit. Hier is de HCQ Modbus-server met 19200 baud, 8E1 en DE/RE op `GPIO38`. Na het aansluiten moet **CiC-compatibiliteit** in de web-app worden ingeschakeld als de Quatt-app via de CiC moet blijven meekijken.
+`M2` is de optionele tweede RS485-poort voor **Quatt-app via CiC**. Hier is de HCQ Modbus-server met 19200 baud, 8E1 en DE/RE op `GPIO38`. De CiC leest via deze koppeling alleen buitenunitgegevens; thermostaatgegevens gaan niet naar de CiC. Schakel na het aansluiten **Quatt-app via CiC** in als de Quatt-app via de CiC moet blijven meekijken. Dit staat los van **CiC JSON-feed inlezen**.
 
 ### Ethernet, leds en herstelknop
 
-In een Ethernet-build gebruikt de W5500 de SPI-pinnen in de tabel. In een Wi-Fi-build zet de firmware diezelfde W5500 in power-down; Ethernet en Wi-Fi zijn afzonderlijke firmware-builds.
+De huidige Q-firmware bevat zowel Wi-Fi als Ethernet. De W5500 gebruikt de SPI-pinnen in de tabel; de netwerkvoorkeur wordt tijdens gebruik ingesteld. De oudere Wi-Fi-/Ethernet-bestandsnamen zijn compatibiliteitsnamen voor dezelfde Single- of Duo-firmware.
 
-De gele led brandt wanneer de actieve netwerkverbinding verbonden is. De rode led signaleert een actieve firmware-, sensor-, OpenTherm-, warmtepomp- of veiligheidsfout. Houd de herstelknop vijf seconden ingedrukt om een tijdelijk herstelvenster voor de web-login te openen.
+De gele led brandt wanneer de actieve netwerkverbinding verbonden is. De rode led signaleert een actieve firmware-, sensor-, OpenTherm-, warmtepomp- of veiligheidsfout. Houd de herstelknop vijf seconden ingedrukt en laat hem los om de [herstelpagina](web-app/herstel.md) te activeren voor wachtwoord-, API- of Wi-Fi-herstel. Tien seconden indrukken wist direct de opgeslagen Wi-Fi-gegevens.
 
 ## Bronnen in de firmware
 

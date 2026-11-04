@@ -4,6 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenQuatt installatiehulp</title>
+    <meta name="theme-color" content="#0F1724" />
+    <link rel="icon" type="image/svg+xml" href="../assets/brand/favicon.svg" />
+    <link rel="apple-touch-icon" href="../assets/brand/apple-touch-icon.png" />
     <meta
       name="description"
       content="Stel Wi-Fi in op een voorgeïnstalleerde OpenQuatt-module of installeer de nieuwste stabiele firmware via USB."
@@ -36,7 +39,7 @@
           </button>
 
           <a class="site-brand" href="../index.html">
-            <img class="site-brand-logo" src="../assets/openquatt_logo.svg" alt="OpenQuatt" width="118" height="40" />
+            <img class="site-brand-logo" src="../assets/brand/openquatt-logo-compact-dark.svg" alt="OpenQuatt" width="200" height="44" />
           </a>
         </div>
 
@@ -59,7 +62,7 @@
           <section class="sidebar-overview">
             <p class="sidebar-kicker">Installatiehulp</p>
             <p class="sidebar-copy">
-              Nieuwe HCQ: Wi-Fi instellen. Bestaande Waveshare of Listener: firmware installeren.
+              Heatpump Controller Q-edition verbinden, herstellen of installeren.
             </p>
             <a class="sidebar-utility" href="../q-edition.html">Open aansluithulp</a>
             <p class="docs-version" data-docs-version>Docs vanaf main</p>
@@ -99,9 +102,9 @@
       <main class="docs-main" id="main-content" tabindex="-1">
         <section class="doc-header">
           <p class="doc-kicker">Installatiehulp</p>
-          <h1>HCQ verbinden of bestaande module installeren</h1>
+          <h1>Heatpump Controller Q-edition verbinden</h1>
           <p class="doc-lead">
-            Stel Wi-Fi in op een voorgeïnstalleerde Heatpump Controller Q-edition, of flash een bestaande Waveshare- of Heatpump Listener-module. Kies de HCQ alleen bij zelf installeren als herstelroute.
+            Stel Wi-Fi in op een voorgeïnstalleerde Heatpump Controller Q-edition, of installeer de firmware opnieuw via USB als herstelroute.
           </p>
           <p class="install-warning-inline">
             <span>Let op</span>
@@ -167,8 +170,8 @@
             <div class="install-route-panel" id="route-install-panel" role="tabpanel" aria-labelledby="route-install-tab" data-install-route-panel="install" hidden>
               <div class="install-layout">
                 <section class="install-card install-flow">
-                  <p class="install-section-label">Bestaande module installeren of HCQ herstellen</p>
-                  <p class="install-step-copy">Gebruik deze route voor een bestaande Waveshare of Heatpump Listener. Kies de HCQ hier alleen als OpenQuatt opnieuw moet worden geïnstalleerd of de normale herstelroute dat vraagt.</p>
+                  <p class="install-section-label">HCQ herstellen of opnieuw installeren</p>
+                  <p class="install-step-copy">Gebruik deze route alleen als OpenQuatt opnieuw moet worden geïnstalleerd of de normale herstelroute dat vraagt.</p>
                   <section class="install-step" id="topology-step">
                     <div class="install-step-head">
                       <p class="install-step-number">1</p>
@@ -203,19 +206,9 @@
 
                     <div class="choice-grid" id="hardware-grid">
                       <label class="choice-card">
-                        <input type="radio" name="hardware" value="waveshare" />
-                        <span class="choice-title">Waveshare</span>
-                        <span class="choice-body">Waveshare ESP32-S3-Relay-1CH voor OpenQuatt.</span>
-                      </label>
-                      <label class="choice-card">
-                        <input type="radio" name="hardware" value="heatpump_listener" />
-                        <span class="choice-title">Heatpump Listener</span>
-                        <span class="choice-body">Electropaultje Heatpump Listener voor OpenQuatt.</span>
-                      </label>
-                      <label class="choice-card">
                         <input type="radio" name="hardware" value="heatpump_controller_q" />
-                        <span class="choice-title">Heatpump Controller Q · herstel</span>
-                        <span class="choice-body">Alleen voor herinstallatie of herstel. De gecombineerde firmware kiest bij opstart automatisch Ethernet of Wi-Fi.</span>
+                        <span class="choice-title">Heatpump Controller Q-edition</span>
+                        <span class="choice-body">De gecombineerde firmware kiest bij opstart automatisch Ethernet of Wi-Fi.</span>
                       </label>
                     </div>
                     <p class="install-step-copy">De Heatpump Controller Q-edition is verkrijgbaar via de <a href="https://electropaultje.nl/product/heatpump-controller-q-edition/">productpagina van Electropaultje</a>.</p>
@@ -322,7 +315,7 @@
               </article>
               <article class="install-follow-up-item">
                 <h3>Fallback route</h3>
-                <p>Lukt Wi-Fi instellen via USB niet, laat Ethernet los, verbind met het OpenQuatt access point en stel Wi-Fi daar in. Sluit daarna Ethernet weer aan en herstart om de automatische keuze opnieuw uit te voeren.</p>
+                <p>Lukt Wi-Fi instellen via USB niet, verbind met het OpenQuatt access point. Zonder opgeslagen Wi-Fi-gegevens start dit direct en blijft het instelvenster open totdat nieuwe gegevens werken én opgeslagen zijn, ook met Ethernet aangesloten. Bij bekende maar onbereikbare Wi-Fi verschijnt de fallback-AP na 90 seconden, zolang Wi-Fi actief is. De termijn van 10 minuten geldt alleen voor een nieuwe Home Assistant-koppeling. Wi-Fi wissen kan door de herstelknop 10 seconden vast te houden; web-login en andere instellingen blijven behouden.</p>
               </article>
             </div>
           </section>

@@ -6,6 +6,7 @@
 #include <cstring>
 #include <limits>
 
+#include "esp_http_server.h"
 #include "esp_random.h"
 #include "esphome/components/web_server/web_server.h"
 #include "esphome/components/web_server_base/web_server_base.h"
@@ -112,6 +113,13 @@ uint8_t cleared_command_reason(uint8_t expected_mode) {
       return openquatt_decision_log::REASON_KEEP_CURRENT;
   }
   return openquatt_decision_log::REASON_KEEP_CURRENT;
+}
+
+void send_json(AsyncWebServerRequest* request, const char* status, const char* body) {
+  auto* response = request->beginResponse(200, "application/json", body);
+  httpd_resp_set_status(*request, status);
+  response->addHeader("Cache-Control", "no-store");
+  request->send(response);
 }
 
 bool write_raw(httpd_req_t* req, const char* value) {
@@ -415,65 +423,78 @@ class IncidentManagerRequestHandler : public AsyncWebHandler {
     return url_path_matches(url_buf, "/openquatt/incidents") && request->method() == HTTP_GET;
   }
 
+  enum class Action : uint8_t { SNAPSHOT, RETRY_START, CONFIRM_ODU_POWER_CYCLE };
+
+  // Keep URL routing scratch out of the action and response call chains.
+  __attribute__((noinline)) static Action parse_action_(AsyncWebServerRequest* request) {
+    char url_buf[AsyncWebServerRequest::URL_BUF_SIZE];
+    request->url_to(url_buf);
+    if (url_path_matches(url_buf, "/openquatt/incidents/retry-start")) return Action::RETRY_START;
+    if (url_path_matches(url_buf, "/openquatt/incidents/confirm-odu-power-cycle"))
+      return Action::CONFIRM_ODU_POWER_CYCLE;
+    return Action::SNAPSHOT;
+  }
+
   void handleRequest(AsyncWebServerRequest* request) override {
     if (!this->parent_->request_is_authenticated(request)) {
       request->requestAuthentication();
       return;
     }
     if (!this->parent_->storage_ready()) {
-      request->send(503, "application/json", R"({"error":"snapshot_unavailable"})");
+      send_json(request, "503 Service Unavailable", R"({"error":"snapshot_unavailable"})");
       return;
     }
-    char url_buf[AsyncWebServerRequest::URL_BUF_SIZE];
-    request->url_to(url_buf);
-    const bool retry_start = url_path_matches(url_buf, "/openquatt/incidents/retry-start");
-    const bool confirm_odu_power_cycle = url_path_matches(url_buf, "/openquatt/incidents/confirm-odu-power-cycle");
-    if (retry_start || confirm_odu_power_cycle) {
-      if (!this->passes_same_origin_(request) || !this->passes_csrf_(request)) {
-        request->send(403, "application/json", R"({"accepted":false,"result":"forbidden"})");
-        return;
-      }
-
-      const std::string hp_arg = request->arg("hp");
-      const uint8_t hp_index = hp_arg == "1" ? 1U : (hp_arg == "2" ? 2U : 0U);
-      if (hp_index == 0U) {
-        request->send(400, "application/json", R"({"accepted":false,"result":"invalid_hp"})");
-        return;
-      }
-      if (!this->parent_->hp_configured(hp_index)) {
-        request->send(404, "application/json", R"({"accepted":false,"result":"hp_not_configured"})");
-        return;
-      }
-      const uint32_t request_id = parse_positive_request_id(request->arg("request_id"));
-      if (request_id == 0U) {
-        request->send(400, "application/json", R"({"accepted":false,"result":"invalid_request_id"})");
-        return;
-      }
-      const OpenQuattIncidentManager::DeferredActionQueueResult queue_result =
-          retry_start ? this->parent_->defer_start_failure_retry(hp_index, request_id)
-                      : this->parent_->defer_odu_power_cycle_confirmation(hp_index, request_id);
-      if (queue_result == OpenQuattIncidentManager::DeferredActionQueueResult::BUSY) {
-        request->send(409, "application/json", R"({"accepted":false,"result":"action_in_progress"})");
-        return;
-      }
-      if (queue_result == OpenQuattIncidentManager::DeferredActionQueueResult::INVALID) {
-        request->send(400, "application/json", R"({"accepted":false,"result":"invalid_request_id"})");
-        return;
-      }
-      char response[192];
-      std::snprintf(
-          response, sizeof(response), R"({"accepted":true,"duplicate":%s,"hp":%u,"action":"%s","action_id":%u})",
-          queue_result == OpenQuattIncidentManager::DeferredActionQueueResult::DUPLICATE ? "true" : "false", hp_index,
-          retry_start ? "start_failure_retry" : "confirm_odu_power_cycle", static_cast<unsigned>(request_id));
-      request->send(202, "application/json", response);
+    const Action action = parse_action_(request);
+    if (action != Action::SNAPSHOT) {
+      this->handle_action_(request, action);
       return;
     }
-
     httpd_req_t* req = *request;
     httpd_resp_set_status(req, HTTPD_200);
     httpd_resp_set_type(req, "application/json; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     this->parent_->write_snapshot(req);
+  }
+
+  __attribute__((noinline)) void handle_action_(AsyncWebServerRequest* request, Action action) {
+    const bool retry_start = action == Action::RETRY_START;
+    if (!this->passes_same_origin_(request) || !this->passes_csrf_(request)) {
+      send_json(request, "403 Forbidden", R"({"accepted":false,"result":"forbidden"})");
+      return;
+    }
+
+    const std::string hp_arg = request->arg("hp");
+    const uint8_t hp_index = hp_arg == "1" ? 1U : (hp_arg == "2" ? 2U : 0U);
+    if (hp_index == 0U) {
+      send_json(request, "400 Bad Request", R"({"accepted":false,"result":"invalid_hp"})");
+      return;
+    }
+    if (!this->parent_->hp_configured(hp_index)) {
+      send_json(request, "404 Not Found", R"({"accepted":false,"result":"hp_not_configured"})");
+      return;
+    }
+    const uint32_t request_id = parse_positive_request_id(request->arg("request_id"));
+    if (request_id == 0U) {
+      send_json(request, "400 Bad Request", R"({"accepted":false,"result":"invalid_request_id"})");
+      return;
+    }
+    const OpenQuattIncidentManager::DeferredActionQueueResult queue_result =
+        retry_start ? this->parent_->defer_start_failure_retry(hp_index, request_id)
+                    : this->parent_->defer_odu_power_cycle_confirmation(hp_index, request_id);
+    if (queue_result == OpenQuattIncidentManager::DeferredActionQueueResult::BUSY) {
+      send_json(request, "409 Conflict", R"({"accepted":false,"result":"action_in_progress"})");
+      return;
+    }
+    if (queue_result == OpenQuattIncidentManager::DeferredActionQueueResult::INVALID) {
+      send_json(request, "400 Bad Request", R"({"accepted":false,"result":"invalid_request_id"})");
+      return;
+    }
+    char response[192];
+    std::snprintf(
+        response, sizeof(response), R"({"accepted":true,"duplicate":%s,"hp":%u,"action":"%s","action_id":%u})",
+        queue_result == OpenQuattIncidentManager::DeferredActionQueueResult::DUPLICATE ? "true" : "false", hp_index,
+        retry_start ? "start_failure_retry" : "confirm_odu_power_cycle", static_cast<unsigned>(request_id));
+    send_json(request, "202 Accepted", response);
   }
 
  protected:
@@ -525,6 +546,7 @@ void OpenQuattIncidentManager::setup() {
   for (size_t slot = 0U; slot < this->units_().size(); ++slot) {
     UnitState& unit = this->units_()[slot];
     unit.last_link_round_ms = now_ms;
+    unit.boot_resume.begin(unit.configured && boot_resume_eligible(static_cast<uint8_t>(slot + 1U)), now_ms);
     unit.restart_guard.configure(this->minimum_off_ms_, LINK_ROUND_TIMEOUT_MS);
     const uint32_t restored_credit_ms = restored_off_credit_ms(static_cast<uint8_t>(slot + 1U));
     unit.restart_guard.restore_credit(restored_credit_ms, true);
@@ -588,6 +610,86 @@ bool OpenQuattIncidentManager::startup_inhibited(uint8_t hp_index) const {
   return unit == nullptr || !unit->startup_released;
 }
 
+void OpenQuattIncidentManager::observe_boot_readback(uint8_t hp_index, uint16_t address, float value, uint32_t now_ms) {
+  UnitState* unit = this->unit_(hp_index);
+  if (unit != nullptr) unit->boot_resume.observe(address, value, now_ms);
+}
+
+bool OpenQuattIncidentManager::boot_resume_pending(uint8_t hp_index, uint32_t now_ms) const {
+  const UnitState* unit = this->unit_(hp_index);
+  return unit != nullptr && unit->boot_resume.pending(now_ms);
+}
+
+int OpenQuattIncidentManager::boot_resume_level(uint8_t hp_index) const {
+  const UnitState* unit = this->unit_(hp_index);
+  return unit == nullptr ? 0 : unit->boot_resume.level();
+}
+
+bool OpenQuattIncidentManager::boot_resume_safety_ready(uint8_t hp_index, uint32_t now_ms) const {
+  const UnitState* unit = this->unit_(hp_index);
+  if (unit == nullptr || !unit->boot_resume.pending(now_ms) || this->restarting_ || !restart_handoff_storage_ready() ||
+      (this->manual_reset_persistence_.fault_mask() & (1U << hp_slot_(hp_index))) != 0U ||
+      (this->polling_paused_ != nullptr && this->polling_paused_->has_state() && this->polling_paused_->state))
+    return false;
+  const auto technical = unit->engine.outputs();
+  const bool link_acquired = technical.link_state == oq_incidents::LinkState::HEALTHY ||
+                             technical.link_state == oq_incidents::LinkState::RECOVERING;
+  return link_acquired && !technical.must_stop && !technical.fault_active && !technical.protection_active &&
+         unit->runtime_frequency_mapping_valid && unit->transport_online && technical.running_confirmed &&
+         this->manual_reset_persistence_.ready() && unit->boot_resume.readback_ready(now_ms) &&
+         unit->initialization_fault_snapshot_count >= INITIALIZATION_FAULT_SNAPSHOT_COUNT &&
+         elapsed_ms_(now_ms, unit->last_link_round_ms) <= LINK_ROUND_TIMEOUT_MS;
+}
+
+bool OpenQuattIncidentManager::ota_resume_candidate(uint8_t hp_index, uint32_t now_ms) const {
+  const auto* unit = this->unit_(hp_index);
+  if (unit == nullptr || this->startup_inhibited(hp_index)) return false;
+  const auto out = this->get_outputs(hp_index);
+  return out.link_state == oq_incidents::LinkState::HEALTHY && out.available_for_start && out.running_confirmed &&
+         !out.must_stop && !out.fault_active && !out.protection_active && unit->boot_resume.readback_ready(now_ms);
+}
+
+bool OpenQuattIncidentManager::boot_protection_hold(uint8_t hp_index, uint32_t now_ms) const {
+  const UnitState* unit = this->unit_(hp_index);
+  return unit != nullptr && unit->boot_resume.protection_hold(now_ms);
+}
+
+int OpenQuattIncidentManager::update_boot_resume(uint8_t hp_index, bool abort, bool safety_ready, bool inputs_ready,
+                                                 bool allow_resume, uint32_t now_ms) {
+  UnitState* unit = this->unit_(hp_index);
+  if (unit == nullptr) return 0;
+  const auto technical = unit->engine.outputs();
+  abort = abort || this->restarting_ || !restart_handoff_storage_ready() ||
+          (unit->transport_seen && !unit->transport_online) || technical.must_stop || technical.fault_active ||
+          technical.protection_active ||
+          (unit->runtime_frequency_mapping_observed && !unit->runtime_frequency_mapping_valid) ||
+          (this->manual_reset_persistence_.fault_mask() & (1U << hp_slot_(hp_index))) != 0U ||
+          (this->polling_paused_ != nullptr && this->polling_paused_->has_state() && this->polling_paused_->state);
+  const bool sources_ready = safety_ready;
+  safety_ready = safety_ready && this->boot_resume_safety_ready(hp_index, now_ms);
+  const bool was_pending = unit->boot_resume.pending(now_ms);
+  // Bootstrap link recovery deliberately takes at least 60 s. Live safety
+  // must be complete within 45 s, but adoption still waits for that existing
+  // recovery gate. A recovery after link loss remains a must-stop above.
+  const int level =
+      unit->boot_resume.update(now_ms, abort, safety_ready, inputs_ready,
+                               allow_resume && technical.available_for_start && boot_resume_image_confirmed());
+  if (level > 0) {
+    unit->startup_released = true;
+    unit->expected_mode = unit->active_command_mode = 2U;
+    invalidate_restart_credit_(*unit);
+    ESP_LOGI(TAG, "HP%u resumed existing heating cycle at F%d", hp_index, level);
+  } else if (was_pending && !unit->boot_resume.pending(now_ms)) {
+    ESP_LOGI(TAG,
+             "HP%u boot acquisition ended: abort=%u sources=%u readback=%u mapping=%u online=%u available=%u "
+             "running=%u snapshots=%u inputs=%u; normal safe stop/start guards apply",
+             hp_index, abort, sources_ready, unit->boot_resume.readback_ready(now_ms),
+             unit->runtime_frequency_mapping_valid, unit->transport_online, technical.available_for_start,
+             technical.running_confirmed, unit->initialization_fault_snapshot_count, inputs_ready);
+  }
+  return level;
+}
+
 uint32_t OpenQuattIncidentManager::minimum_off_remaining_ms(uint8_t hp_index, uint32_t now_ms) const {
   const UnitState* unit = this->unit_(hp_index);
   return unit == nullptr ? this->minimum_off_ms_ : unit->restart_guard.remaining_ms(now_ms);
@@ -604,8 +706,17 @@ void OpenQuattIncidentManager::invalidate_restart_credit_(UnitState& unit) {
 }
 
 void OpenQuattIncidentManager::perform_restart_(uint32_t now_ms) {
+  if (!restart_handoff_storage_ready()) {
+    ESP_LOGE(TAG, "Restart refused while handoff storage is unavailable");
+    return;
+  }
   // Runs synchronously on the ESPHome loop. No controller/strategy loop can
   // enqueue another start between this snapshot and safe_reboot().
+  const bool polling_active =
+      this->polling_paused_ != nullptr && this->polling_paused_->has_state() && !this->polling_paused_->state;
+  // Snapshot confirmed running units before restarting_ closes the live gates.
+  // Zero off-time credit alone never proves that a heating cycle is running.
+  const uint8_t resume_mask = polling_active ? current_running_resume_mask() : 0U;
   this->restarting_ = true;
   std::array<uint32_t, 2U> credit{};
   for (uint8_t hp = 1U; hp <= this->configured_hp_count(); ++hp) {
@@ -621,7 +732,7 @@ void OpenQuattIncidentManager::perform_restart_(uint32_t now_ms) {
       credit[hp - 1U] = unit->restart_guard.snapshot_credit_ms(now_ms);
     }
   }
-  const bool saved = arm_restart_handoff(credit[0], credit[1]);
+  const bool saved = arm_restart_handoff(credit[0], credit[1], resume_mask);
   ESP_LOGI(TAG, "Controlled restart: confirmed off-time credit HP1=%us HP2=%us (%s)",
            static_cast<unsigned>(credit[0] / 1000U), static_cast<unsigned>(credit[1] / 1000U),
            saved ? "saved" : "conservative fallback");
@@ -796,6 +907,7 @@ void OpenQuattIncidentManager::observe_runtime_frequency_mapping(uint8_t hp_inde
 void OpenQuattIncidentManager::observe_working_mode(uint8_t hp_index, float working_mode, uint32_t now_ms) {
   UnitState* unit = this->unit_(hp_index);
   if (unit == nullptr) return;
+  unit->boot_resume.observe(2099U, working_mode, now_ms);
   if (!std::isfinite(working_mode)) {
     unit->working_mode_valid = false;
     invalidate_restart_credit_(*unit);
@@ -811,6 +923,7 @@ void OpenQuattIncidentManager::observe_working_mode(uint8_t hp_index, float work
 void OpenQuattIncidentManager::observe_compressor_frequency(uint8_t hp_index, float frequency_hz, uint32_t now_ms) {
   UnitState* unit = this->unit_(hp_index);
   if (unit == nullptr) return;
+  unit->boot_resume.observe(2103U, frequency_hz, now_ms);
   if (!std::isfinite(frequency_hz) || frequency_hz < 0.0F) {
     unit->compressor_frequency_valid = false;
     invalidate_restart_credit_(*unit);
@@ -922,13 +1035,15 @@ void OpenQuattIncidentManager::process_fault_snapshot_(UnitState& unit, size_t s
   observation.words = unit.fault_words;
   observation.fresh = unit.fault_pending;
   unit.engine.observe_fault_words(observation);
+  // The boot acquisition needs two complete live snapshots on every boot,
+  // including controllers whose manual-reset storage was already initialized.
+  if (complete && unit.initialization_fault_snapshot_count < INITIALIZATION_FAULT_SNAPSHOT_COUNT) {
+    ++unit.initialization_fault_snapshot_count;
+  }
   if (complete && this->manual_reset_persistence_.initialization_pending()) {
     const uint8_t hp_mask = static_cast<uint8_t>(1U << slot);
     if ((unit.fault_words[1U] & (1U << 4U)) != 0U) {
       this->initialization_manual_reset_mask_ |= hp_mask;
-    }
-    if (unit.initialization_fault_snapshot_count < INITIALIZATION_FAULT_SNAPSHOT_COUNT) {
-      ++unit.initialization_fault_snapshot_count;
     }
     bool all_snapshots_complete = true;
     for (const UnitState& candidate : this->units_()) {
@@ -1029,6 +1144,7 @@ oq_incidents::StartFailureResetResult OpenQuattIncidentManager::retry_start_fail
 
 OpenQuattIncidentManager::DeferredActionQueueResult OpenQuattIncidentManager::defer_start_failure_retry(
     uint8_t hp_index, uint32_t request_id) {
+  const uint32_t epoch = web_server_base::global_web_server_base->recovery_epoch();
   UnitState* unit = this->unit_(hp_index);
   if (unit == nullptr) return DeferredActionQueueResult::INVALID;
   const DeferredActionQueueResult queue_result =
@@ -1036,7 +1152,15 @@ OpenQuattIncidentManager::DeferredActionQueueResult OpenQuattIncidentManager::de
   if (queue_result != DeferredActionQueueResult::ACCEPTED) {
     return queue_result;
   }
-  this->defer([this, hp_index, request_id]() { this->retry_start_failure(hp_index, millis(), request_id); });
+  this->defer([this, unit, hp_index, request_id, epoch]() {
+    if (web_server_base::global_web_server_base->is_recovery_active() ||
+        epoch != web_server_base::global_web_server_base->recovery_epoch()) {
+      this->record_action_result_(*unit, "start_failure_retry", "recovery_cancelled", false, millis(), request_id);
+      this->publish_snapshot_(millis());
+      return;
+    }
+    this->retry_start_failure(hp_index, millis(), request_id);
+  });
   return queue_result;
 }
 
@@ -1158,6 +1282,7 @@ bool OpenQuattIncidentManager::confirm_odu_power_cycle(uint8_t hp_index, uint32_
 
 OpenQuattIncidentManager::DeferredActionQueueResult OpenQuattIncidentManager::defer_odu_power_cycle_confirmation(
     uint8_t hp_index, uint32_t request_id) {
+  const uint32_t epoch = web_server_base::global_web_server_base->recovery_epoch();
   UnitState* unit = this->unit_(hp_index);
   if (unit == nullptr) return DeferredActionQueueResult::INVALID;
   const DeferredActionQueueResult queue_result =
@@ -1165,7 +1290,15 @@ OpenQuattIncidentManager::DeferredActionQueueResult OpenQuattIncidentManager::de
   if (queue_result != DeferredActionQueueResult::ACCEPTED) {
     return queue_result;
   }
-  this->defer([this, hp_index, request_id]() { this->confirm_odu_power_cycle(hp_index, millis(), request_id); });
+  this->defer([this, unit, hp_index, request_id, epoch]() {
+    if (web_server_base::global_web_server_base->is_recovery_active() ||
+        epoch != web_server_base::global_web_server_base->recovery_epoch()) {
+      this->record_action_result_(*unit, "confirm_odu_power_cycle", "recovery_cancelled", false, millis(), request_id);
+      this->publish_snapshot_(millis());
+      return;
+    }
+    this->confirm_odu_power_cycle(hp_index, millis(), request_id);
+  });
   return queue_result;
 }
 
@@ -1576,6 +1709,11 @@ void OpenQuattIncidentManager::publish_transitions_(UnitState& unit, size_t slot
                      ? incident_reason_(primary)
                      : static_cast<uint8_t>(openquatt_decision_log::REASON_KEEP_CURRENT);
       }
+      const int16_t restart_wait_s = availability == openquatt_decision_log::STATE_BLOCKED
+                                         ? restart_wait_log_seconds(unit.engine.outputs(), current_outputs,
+                                                                    unit.restart_guard.remaining_ms(now_ms))
+                                         : 0;
+      if (restart_wait_s > 0) reason = openquatt_decision_log::REASON_MIN_REST_ACTIVE;
       this->decision_log_->emit(
           openquatt_decision_log::EVENT_HP_AVAILABILITY_CHANGE, event_subject_(slot), reason,
           availability == openquatt_decision_log::STATE_FAULTED || availability == openquatt_decision_log::STATE_OFFLINE
@@ -1583,7 +1721,7 @@ void OpenQuattIncidentManager::publish_transitions_(UnitState& unit, size_t slot
               : openquatt_decision_log::SEVERITY_NORMAL,
           this->control_mode_code_ != nullptr ? static_cast<uint8_t>(this->control_mode_code_->value()) : 0U,
           unit.last_reported_availability, availability, static_cast<int16_t>(current_outputs.primary_incident_id),
-          static_cast<int16_t>(current_outputs.active_incident_count));
+          static_cast<int16_t>(current_outputs.active_incident_count), restart_wait_s);
     }
     unit.last_reported_availability = availability;
   }
@@ -1655,6 +1793,15 @@ bool OpenQuattIncidentManager::all_fallback_outputs_safe() const {
     outputs[slot] = this->get_outputs(static_cast<uint8_t>(slot + 1U));
   }
   return all_hp_outputs_safe_for_fallback(outputs.data(), configured_count);
+}
+
+bool OpenQuattIncidentManager::all_fallback_output_gates_clear() const {
+  std::array<oq_incidents::DerivedOutputs, 2U> outputs{};
+  const size_t configured_count = this->configured_hp_count();
+  for (size_t slot = 0U; slot < configured_count; ++slot) {
+    outputs[slot] = this->get_outputs(static_cast<uint8_t>(slot + 1U));
+  }
+  return all_hp_fallback_output_gates_clear(outputs.data(), configured_count);
 }
 
 void OpenQuattIncidentManager::set_fallback_status(bool requested, bool active, uint8_t block_reason) {
@@ -1812,10 +1959,15 @@ oq_incidents::DerivedOutputs OpenQuattIncidentManager::outputs_for_slot_(size_t 
       (!this->manual_reset_persistence_.ready() || (this->manual_reset_persistence_.fault_mask() & hp_mask) != 0U);
   outputs = apply_persistence_safety_gate(outputs, persistence_blocks);
   const UnitState& unit = this->units_()[slot];
-  if (outputs.run_state == oq_incidents::RunState::STOPPED || !unit.startup_released) {
+  // A confirmed running boot candidate is continuation, not a new start.
+  // Otherwise Power House cannot produce valid output before adoption, while
+  // adoption itself waits for valid strategy output. Pending writes stay gated.
+  const bool acquiring_running = unit.boot_resume.pending(millis()) && outputs.running_confirmed;
+  if (outputs.run_state == oq_incidents::RunState::STOPPED || (!unit.startup_released && !acquiring_running)) {
     outputs.available_for_start = outputs.available_for_start && unit.restart_guard.can_start(millis());
   }
-  if (!unit.runtime_frequency_mapping_valid) {
+  if (!unit.runtime_frequency_mapping_valid &&
+      (unit.runtime_frequency_mapping_observed || !unit.boot_resume.pending(millis()))) {
     // A missing or interrupted mapping is a control-safety condition. The
     // actuator receives this only through the incident-manager outputs, so a
     // policy lookup never becomes an untracked compressor stop.
@@ -1839,7 +1991,8 @@ oq_incidents::DerivedOutputs OpenQuattIncidentManager::outputs_for_slot_(size_t 
       outputs.protection_state = oq_incidents::ProtectionState::FAULT_ACTIVE;
     }
   }
-  if (this->restarting_ || !restart_handoff_storage_ready()) {
+  if (this->restarting_ || !restart_handoff_storage_ready() ||
+      (unit.boot_resume.stop_required(millis()) && !unit.startup_released)) {
     outputs.available_for_start = false;
     outputs.must_stop = true;
   }
@@ -1949,44 +2102,45 @@ void OpenQuattIncidentManager::write_snapshot(httpd_req_t* req) const {
   bool first_hp = true;
   for (size_t slot = 0U; ok && slot < this->configured_hp_count(); ++slot) {
     const oq_incidents::DerivedOutputs& outputs = snapshot.units[slot].outputs;
-    ok = (first_hp || write_raw(req, ",")) && write_raw(req, R"({"index":)") && write_uint(req, slot + 1U) &&
-         write_raw(req, R"(,"link_state":)") && write_json_string(req, link_state_name(outputs.link_state)) &&
-         write_raw(req, R"(,"protection_state":)") &&
-         write_json_string(req, protection_state_name(outputs.protection_state)) &&
-         write_raw(req, R"(,"run_state":)") && write_json_string(req, run_state_name(outputs.run_state)) &&
-         write_raw(req, R"(,"availability":)") && write_json_string(req, availability_name(outputs)) &&
-         write_raw(req, R"(,"available_for_start":)") && write_bool(req, outputs.available_for_start) &&
-         write_raw(req, R"(,"must_stop":)") && write_bool(req, outputs.must_stop) &&
-         write_raw(req, R"(,"fault_active":)") && write_bool(req, outputs.fault_active) &&
-         write_raw(req, R"(,"protection_active":)") && write_bool(req, outputs.protection_active) &&
-         write_raw(req, R"(,"running_confirmed":)") && write_bool(req, outputs.running_confirmed) &&
-         write_raw(req, R"(,"stop_confirmed":)") && write_bool(req, outputs.stop_confirmed) &&
-         write_raw(req, R"(,"stop_confirmation_pending":)") && write_bool(req, outputs.stop_confirmation_pending) &&
-         write_raw(req, R"(,"stop_unconfirmed":)") && write_bool(req, outputs.stop_unconfirmed) &&
-         write_raw(req, R"(,"fallback_cause_present":)") && write_bool(req, outputs.fallback_cause_present) &&
-         write_raw(req, R"(,"fallback_eligible":)") && write_bool(req, outputs.fallback_eligible) &&
-         write_raw(req, R"(,"primary_incident_id":)") && write_uint(req, outputs.primary_incident_id) &&
-         write_raw(req, R"(,"pump_context":{"request_on":)") &&
-         write_optional_bool(req, snapshot.units[slot].pump_context.request_valid,
-                             snapshot.units[slot].pump_context.request_on) &&
-         write_raw(req, R"(,"relay_on":)") &&
-         write_optional_bool(req, snapshot.units[slot].pump_context.relay_valid,
-                             snapshot.units[slot].pump_context.relay_on) &&
-         write_raw(req, R"(,"flow_switch_on":)") &&
-         write_optional_bool(req, snapshot.units[slot].pump_context.flow_switch_valid,
-                             snapshot.units[slot].pump_context.flow_switch_on) &&
-         write_raw(req, R"(,"ipwm_feedback_raw":)") &&
-         write_optional_uint(req, snapshot.units[slot].pump_context.feedback_valid,
-                             snapshot.units[slot].pump_context.feedback_raw) &&
-         write_raw(req, R"(,"ipwm_status":)") &&
-         write_json_string(req, oq_pump_ipwm::status_name(snapshot.units[slot].pump_context.status)) &&
-         write_raw(req, R"(,"pump_power_w":)") &&
-         write_optional_float(req, snapshot.units[slot].pump_context.power_valid,
-                              snapshot.units[slot].pump_context.power_w) &&
-         write_raw(req, R"(,"flow_lph":)") &&
-         write_optional_float(req, snapshot.units[slot].pump_context.flow_valid,
-                              snapshot.units[slot].pump_context.flow_lph) &&
-         write_raw(req, R"(},"last_action_result":)");
+    ok =
+        (first_hp || write_raw(req, ",")) && write_raw(req, R"({"index":)") && write_uint(req, slot + 1U) &&
+        write_raw(req, R"(,"link_state":)") && write_json_string(req, link_state_name(outputs.link_state)) &&
+        write_raw(req, R"(,"protection_state":)") &&
+        write_json_string(req, protection_state_name(outputs.protection_state)) && write_raw(req, R"(,"run_state":)") &&
+        write_json_string(req, run_state_name(outputs.run_state)) && write_raw(req, R"(,"availability":)") &&
+        write_json_string(req, availability_name(outputs)) && write_raw(req, R"(,"available_for_start":)") &&
+        write_bool(req, outputs.available_for_start) && write_raw(req, R"(,"must_stop":)") &&
+        write_bool(req, outputs.must_stop) && write_raw(req, R"(,"fault_active":)") &&
+        write_bool(req, outputs.fault_active) && write_raw(req, R"(,"protection_active":)") &&
+        write_bool(req, outputs.protection_active) && write_raw(req, R"(,"running_confirmed":)") &&
+        write_bool(req, outputs.running_confirmed) && write_raw(req, R"(,"stop_confirmed":)") &&
+        write_bool(req, outputs.stop_confirmed) && write_raw(req, R"(,"stop_confirmation_pending":)") &&
+        write_bool(req, outputs.stop_confirmation_pending) && write_raw(req, R"(,"stop_unconfirmed":)") &&
+        write_bool(req, outputs.stop_unconfirmed) && write_raw(req, R"(,"stop_unconfirmed_due_to_link_loss":)") &&
+        write_bool(req, outputs.stop_unconfirmed_due_to_link_loss) && write_raw(req, R"(,"fallback_cause_present":)") &&
+        write_bool(req, outputs.fallback_cause_present) && write_raw(req, R"(,"fallback_eligible":)") &&
+        write_bool(req, outputs.fallback_eligible) && write_raw(req, R"(,"primary_incident_id":)") &&
+        write_uint(req, outputs.primary_incident_id) && write_raw(req, R"(,"pump_context":{"request_on":)") &&
+        write_optional_bool(req, snapshot.units[slot].pump_context.request_valid,
+                            snapshot.units[slot].pump_context.request_on) &&
+        write_raw(req, R"(,"relay_on":)") &&
+        write_optional_bool(req, snapshot.units[slot].pump_context.relay_valid,
+                            snapshot.units[slot].pump_context.relay_on) &&
+        write_raw(req, R"(,"flow_switch_on":)") &&
+        write_optional_bool(req, snapshot.units[slot].pump_context.flow_switch_valid,
+                            snapshot.units[slot].pump_context.flow_switch_on) &&
+        write_raw(req, R"(,"ipwm_feedback_raw":)") &&
+        write_optional_uint(req, snapshot.units[slot].pump_context.feedback_valid,
+                            snapshot.units[slot].pump_context.feedback_raw) &&
+        write_raw(req, R"(,"ipwm_status":)") &&
+        write_json_string(req, oq_pump_ipwm::status_name(snapshot.units[slot].pump_context.status)) &&
+        write_raw(req, R"(,"pump_power_w":)") &&
+        write_optional_float(req, snapshot.units[slot].pump_context.power_valid,
+                             snapshot.units[slot].pump_context.power_w) &&
+        write_raw(req, R"(,"flow_lph":)") &&
+        write_optional_float(req, snapshot.units[slot].pump_context.flow_valid,
+                             snapshot.units[slot].pump_context.flow_lph) &&
+        write_raw(req, R"(},"last_action_result":)");
     if (ok && snapshot.units[slot].last_action_seq == 0U) {
       ok = write_raw(req, "null");
     } else if (ok) {

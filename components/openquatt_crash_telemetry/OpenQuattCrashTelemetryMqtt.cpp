@@ -1,5 +1,6 @@
 #include "OpenQuattCrashTelemetry.h"
 #include "OpenQuattCrashTelemetryHelpers.h"
+#include "OpenQuattWatchdogDetails.h"
 
 #include "esp_crt_bundle.h"
 #include "esp_memory_utils.h"
@@ -313,9 +314,6 @@ void OpenQuattCrashTelemetry::worker_task_(void* arg) {
                static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
       self->cleanup_task_complete_.store(true);
       App.wake_loop_threadsafe();
-      if (!MQTT_WORKER_STACK_IN_PSRAM) {
-        vTaskSuspend(nullptr);
-      }
       continue;
     }
 
@@ -447,24 +445,13 @@ void OpenQuattCrashTelemetry::schedule_retry_() { this->next_attempt_ms_ = milli
 void OpenQuattCrashTelemetry::schedule_immediate_() { this->next_attempt_ms_ = millis() + 1U; }
 
 void OpenQuattCrashTelemetry::loop() {
+  note_crash_telemetry_loop();
   // The loopTask only observes worker completions and asks for cleanup. It
   // never runs MQTT lifecycle calls or waits on network I/O itself.
   if (this->start_task_complete_.exchange(false)) {
     this->start_task_running_.store(false);
   }
   if (this->cleanup_task_complete_.exchange(false)) {
-    if (!MQTT_WORKER_STACK_IN_PSRAM) {
-      const TaskHandle_t handle = this->worker_task_state_.get_handle();
-      if (handle != nullptr && eTaskGetState(handle) != eSuspended) {
-        // The classic-ESP32 worker publishes completion immediately before it
-        // parks itself. Do not free a static stack that may still be executing
-        // on the other core.
-        this->cleanup_task_complete_.store(true);
-        return;
-      }
-      this->worker_task_state_.deallocate();
-      this->worker_task_region_valid_ = false;
-    }
     this->finalize_session_();
   }
   if (this->start_task_running_.load() || this->finishing_session_.load()) {

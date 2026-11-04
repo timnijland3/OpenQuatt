@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <string>
 #include "oq_cooling_safety_policy.h"
+#include "oq_sensor_source_runtime.h"
 namespace oq_cooling_safety {
 class CoolingSafetyRuntime {
  public:
@@ -76,12 +77,12 @@ class CoolingSafetyRuntime {
     return "Ready";
   }
   float safety_margin_selected() { return clamp_finite(id(cooling_safety_margin).state, 0.0f, 4.0f); }
-  float selected_dew_point(uint32_t now_ms, uint32_t hold_ms) {
+  float selected_dew_point(uint32_t now_ms, uint32_t hold_ms, uint32_t ha_stale_s) {
     const int source_mode_code = dew_source_mode_code();
     const DewPointSources sources{id(cooling_dew_point_ha).state,
                                   id(api_input_cooling_dew_point).state,
                                   id(mqtt_cooling_dew_point).state,
-                                  ha_dew_valid(),
+                                  ha_dew_valid(now_ms, ha_stale_s),
                                   api_dew_valid(),
                                   mqtt_dew_valid()};
     const auto selected = select_dew_point(source_mode_code, sources, now_ms, hold_ms, dew_selection_);
@@ -194,9 +195,12 @@ class CoolingSafetyRuntime {
     return id(room_setpoint_selected).has_state() && finite_value(id(room_setpoint_selected).state);
   }
   bool flow_valid() const { return id(flow_rate_selected).has_state() && finite_value(id(flow_rate_selected).state); }
-  bool ha_dew_valid() const {
-    return id(cooling_dew_point_valid_ha).has_state() && id(cooling_dew_point_valid_ha).state &&
-           id(cooling_dew_point_ha).has_state() && finite_value(id(cooling_dew_point_ha).state);
+  // Live HA input: shares the central HA ingress heartbeat, so a constant
+  // dew point stays usable while the heartbeat arrives and goes stale when
+  // the HA -> ESPHome link drops (issue #698).
+  bool ha_dew_valid(uint32_t now_ms, uint32_t ha_stale_s) const {
+    return oq_sensor_source::runtime().ha_live_valid(id(cooling_dew_point_valid_ha), id(cooling_dew_point_ha), now_ms,
+                                                     ha_stale_s);
   }
   bool mqtt_dew_valid() const {
     return id(mqtt_cooling_dew_point_valid).has_state() && id(mqtt_cooling_dew_point_valid).state &&

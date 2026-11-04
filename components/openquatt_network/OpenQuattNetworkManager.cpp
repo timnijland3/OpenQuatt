@@ -1,6 +1,9 @@
 #include "OpenQuattNetworkManager.h"
 
 #include "esp_eth_driver.h"
+#include "esp_netif.h"
+#include "esp_netif_net_stack.h"
+#include "lwip/netif.h"
 
 #include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
@@ -31,7 +34,8 @@ void OpenQuattNetworkManager::setup() {
   // Ethernet must initialize even for WiFi preference so its own SPI driver can
   // put the W5500 PHY into Power Down. For Ethernet preference, WiFi can remain
   // lazily uninitialized until failover is actually needed.
-  if (this->preference_ == Preference::ETHERNET && wifi::global_wifi_component != nullptr) {
+  this->provisioning_override_ = wifi::global_wifi_component->requires_provisioning();
+  if (this->preference_ == Preference::ETHERNET && !this->provisioning_override_) {
     wifi::global_wifi_component->set_enable_on_boot(false);
   }
 
@@ -42,12 +46,32 @@ void OpenQuattNetworkManager::setup() {
 
 void OpenQuattNetworkManager::loop() {
   const uint32_t now = millis();
+  this->restore_default_dns_(now);
 
   if (!this->ethernet_prepared_ && !this->prepare_ethernet_after_setup_()) {
     return;
   }
 
   this->update_connection_stability_(now);
+
+  if (this->provisioning_override_) {
+    this->ensure_wifi_enabled_();
+    if (wifi::global_wifi_component->requires_provisioning()) {
+      if (this->preference_ != Preference::WIFI &&
+          (now - this->last_interface_action_ms_) >= INTERFACE_ACTION_RETRY_MS) {
+        this->last_interface_action_ms_ = now;
+        this->ensure_ethernet_enabled_();
+      }
+      this->active_ = this->is_connected_(Connection::ETHERNET) ? Connection::ETHERNET : Connection::NONE;
+      this->publish_active_connection_();
+      return;
+    }
+    // Successful STA provisioning ends the temporary override without writing
+    // the user's stored Wi-Fi/Ethernet preference.
+    this->provisioning_override_ = false;
+    this->phase_ = Phase::STARTUP;
+    this->phase_started_ms_ = now;
+  }
 
   switch (this->phase_) {
     case Phase::STARTUP:
@@ -65,6 +89,60 @@ void OpenQuattNetworkManager::loop() {
   }
 
   this->publish_active_connection_();
+}
+
+void OpenQuattNetworkManager::restore_default_dns_(uint32_t now) {
+#ifdef CONFIG_ESP_NETIF_SET_DNS_PER_DEFAULT_NETIF
+  if ((now - this->last_dns_check_ms_) < 1000) {
+    return;
+  }
+  this->last_dns_check_ms_ = now;
+  bool restored = false;
+  // DHCP startup on an inactive interface can clear lwIP's global DNS without
+  // changing the default route. Keep selection, cached DNS reads and repair in
+  // one TCP/IP operation so a concurrent DHCP renewal or failover cannot race.
+  const esp_err_t result = esp_netif_tcpip_exec(
+      [](void* context) -> esp_err_t {
+        auto* selected = esp_netif_get_default_netif();
+        if (selected == nullptr || !esp_netif_is_netif_up(selected) ||
+            esp_netif_get_netif_impl(selected) != static_cast<void*>(netif_default)) {
+          return ESP_OK;
+        }
+        // Restore only missing main/backup entries. Preserve valid global DNS,
+        // the fallback server and the interface's DHCP/static configuration.
+        for (const auto type : {ESP_NETIF_DNS_MAIN, ESP_NETIF_DNS_BACKUP}) {
+          esp_netif_dns_info_t current{};
+          esp_netif_dns_info_t cached{};
+          esp_err_t error = esp_netif_get_dns_info(nullptr, type, &current);
+          if (error != ESP_OK) {
+            return error;
+          }
+          if (!ESP_IP_IS_ANY(current.ip)) {
+            continue;
+          }
+          error = esp_netif_get_dns_info(selected, type, &cached);
+          if (error != ESP_OK) {
+            return error;
+          }
+          if (ESP_IP_IS_ANY(cached.ip)) {
+            continue;
+          }
+          error = esp_netif_set_dns_info(nullptr, type, &cached);
+          if (error != ESP_OK) {
+            return error;
+          }
+          *static_cast<bool*>(context) = true;
+        }
+        return ESP_OK;
+      },
+      &restored);
+  if (restored) {
+    ESP_LOGI(TAG, "Restored missing DNS from default interface");
+  }
+  if (result != ESP_OK) {
+    ESP_LOGW(TAG, "Default DNS repair failed: %d", static_cast<int>(result));
+  }
+#endif
 }
 
 void OpenQuattNetworkManager::dump_config() {
@@ -300,6 +378,13 @@ bool OpenQuattNetworkManager::prepare_ethernet_after_setup_() {
 
   this->last_interface_action_ms_ = now;
   ethernet->disable();
+  if (!ethernet->is_driver_stopped()) {
+    // STOP delivery (or a failed stop) must not block WiFi/provisioning.
+    // Normal startup/recovery retries finish the Ethernet transition.
+    this->ethernet_prepared_ = true;
+    this->phase_started_ms_ = now;
+    return true;
+  }
   if (this->preference_ == Preference::WIFI) {
     this->power_down_w5500_();
   } else {
@@ -331,6 +416,9 @@ bool OpenQuattNetworkManager::ensure_ethernet_enabled_() {
   }
 
   if (ethernet->is_disabled()) {
+    if (!ethernet->is_driver_stopped()) {
+      return false;
+    }
     // Always wake a stopped W5500 before restart. A prior Power Down write may
     // have reached the PHY even when its verification read failed.
     if (!this->wake_w5500_()) {
@@ -342,6 +430,7 @@ bool OpenQuattNetworkManager::ensure_ethernet_enabled_() {
 }
 
 void OpenQuattNetworkManager::disable_wifi_() {
+  if (this->provisioning_override_) return;
   if (wifi::global_wifi_component != nullptr) {
     wifi::global_wifi_component->disable();
   }
@@ -353,10 +442,16 @@ bool OpenQuattNetworkManager::disable_ethernet_() {
     return false;
   }
   ethernet->disable();
+  if (!ethernet->is_driver_stopped()) {
+    return false;
+  }
   return this->power_down_w5500_();
 }
 
 bool OpenQuattNetworkManager::power_down_w5500_() {
+  if (!ethernet::global_eth_component->is_driver_stopped()) {
+    return false;
+  }
   uint8_t initial = 0;
   if (!this->read_w5500_phycfgr_(&initial) || !this->write_w5500_phycfgr_(W5500_PHYCFGR_POWER_DOWN) ||
       !this->write_w5500_phycfgr_(W5500_PHYCFGR_POWER_DOWN_RESET)) {
@@ -380,6 +475,9 @@ bool OpenQuattNetworkManager::power_down_w5500_() {
 }
 
 bool OpenQuattNetworkManager::wake_w5500_() {
+  if (!ethernet::global_eth_component->is_driver_stopped()) {
+    return false;
+  }
   if (!this->write_w5500_phycfgr_(W5500_PHYCFGR_ALL_CAPABLE) ||
       !this->write_w5500_phycfgr_(W5500_PHYCFGR_ALL_CAPABLE_RESET)) {
     ESP_LOGE(TAG, "W5500 wake sequence failed");

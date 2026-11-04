@@ -374,6 +374,12 @@ sensor:
     update_interval: 10s
     lambda: |-
       return oq_energy_runtime::total_power_input();
+    on_value:
+      then:
+        - lambda: |-
+            const bool cooling = id(oq_cooling_energy_session_active);
+            id(oq_heating_power_input).publish_state(oq_energy::attributed_input_power(x, cooling, false));
+            id(oq_cooling_power_input).publish_state(oq_energy::attributed_input_power(x, cooling, true));
 
   - platform: template
     id: oq_heating_power_input
@@ -383,9 +389,7 @@ sensor:
     device_class: power
     state_class: measurement
     accuracy_decimals: 2
-    update_interval: 10s
-    lambda: |-
-      return oq_energy_runtime::heating_power_input();
+    update_interval: never
 
   - platform: template
     id: oq_cooling_power_input
@@ -395,9 +399,7 @@ sensor:
     device_class: power
     state_class: measurement
     accuracy_decimals: 2
-    update_interval: 10s
-    lambda: |-
-      return oq_energy_runtime::cooling_power_input();
+    update_interval: never
 
   - platform: template
     id: oq_total_heat_power
@@ -431,7 +433,10 @@ sensor:
     accuracy_decimals: 2
     update_interval: 10s
     lambda: |-
-      return oq_energy::instant_ratio_or_nan(id(oq_total_heat_power).state, id(oq_total_power_input).state, ${oq_cop_min_input_w});
+      return oq_energy_runtime::total_cop(
+          oq_sources::monotonic_ms(),
+          static_cast<uint64_t>(${oq_power_measurement_stale_s}) * 1000ULL,
+          ${oq_cop_min_input_w});
 
   - platform: template
     id: oq_total_eer
@@ -499,8 +504,8 @@ sensor:
       #endif
 
   # V2/Power-House debug chain (recorder-only, no control behavior change).
-  # Requested/applied use the 0..10 model/control domain; physical F-level is
-  # already recorded via "HPx compressor level" (0..20, register 1999) and
+  # Requested/applied use the physical stand domain (0..20); ODU readback is
+  # recorded via "HPx compressor level" (register 1999) and
   # measured Hz via "HPx - Compressor frequency". Table frequency resolves the
   # last commanded physical F-level through the validated heating runtime
   # table. All return NAN when unavailable; never invent values. HP2 returns
@@ -608,7 +613,11 @@ sensor:
     accuracy_decimals: 0
     update_interval: ${oq_diagnostic_update_interval_s}s
     lambda: |-
-      return id(oq_P_hp_cap_w);
+      // Shared read-only estimate; strategy-local capacity stays private to control.
+      return oq_heating_capacity::current_estimate(
+          (uint32_t) ${oq_hp_min_off_s} * 1000UL,
+          (uint32_t) ${oq_hp_water_temp_stale_s} * 1000UL,
+          ${oq_defrost_power_factor});
 
   - platform: template
     id: oq_hp_deficit_w_sensor

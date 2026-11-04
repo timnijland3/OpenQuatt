@@ -61,10 +61,6 @@ globals:
     type: int
     restore_value: true
     initial_value: "440"
-  - id: oq_flow_cooling_settings_migrated
-    type: bool
-    restore_value: true
-    initial_value: 'false'
   - id: oq_flow_autotune_active
     type: bool
     restore_value: false
@@ -160,6 +156,8 @@ select:
     options:
       - Flow Setpoint
       - Manual PWM
+      # Index 2, read by oq_flow_delta_t_runtime.h. See oq_flow_delta_t.yaml.
+      - Delta T
     initial_option: Flow Setpoint
     restore_value: true
     optimistic: true

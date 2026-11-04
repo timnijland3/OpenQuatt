@@ -3,8 +3,6 @@
 
 #include "components/openquatt_mqtt_config/OpenQuattMqttConfigPolicy.h"
 
-using esphome::openquatt_mqtt_config::classic_worker_action;
-using esphome::openquatt_mqtt_config::ClassicWorkerAction;
 using esphome::openquatt_mqtt_config::mqtt_client_action;
 using esphome::openquatt_mqtt_config::mqtt_event_is_current;
 using esphome::openquatt_mqtt_config::mqtt_stop_decision;
@@ -59,28 +57,16 @@ int main() {
   assert(!storage_should_retry(2U, 2U, false, false));
   assert(!storage_should_retry(0U, 2U, true, false));
   assert(!storage_should_retry(0U, 2U, false, true));
-
   // Runtime apply is permitted only for a durable, current and non-cancelled
   // generation. A timeout that wins cancellation can therefore never apply.
   assert(storage_generation_may_commit(true, true, false));
   assert(!storage_generation_may_commit(false, true, false));
   assert(!storage_generation_may_commit(true, false, false));
   assert(!storage_generation_may_commit(true, true, true));
-
   // An in-flight commit has its own persistence-pending result, distinct from
   // a completed mutation whose client reconciliation remains pending.
   assert(storage_timeout_action(true, false) == StorageTimeoutAction::RETURN_COMPLETED);
   assert(storage_timeout_action(false, true) == StorageTimeoutAction::REPORT_PERSISTENCE_PENDING);
   assert(storage_timeout_action(false, false) == StorageTimeoutAction::CANCEL);
-
-  // A classic-ESP32 preflight worker that never received work must release
-  // its 24 KiB internal stack after persistence failure or cancellation.
-  assert(classic_worker_action(true, false, false, true, true) == ClassicWorkerAction::RELEASE);
-  assert(classic_worker_action(true, false, true, false, true) == ClassicWorkerAction::RELEASE);
-  // Backoff must not be bypassed by the cleanup path.
-  assert(classic_worker_action(true, false, true, true, false) == ClassicWorkerAction::RELEASE);
-  assert(classic_worker_action(true, false, true, true, true) == ClassicWorkerAction::WAKE);
-  assert(classic_worker_action(true, true, true, true, true) == ClassicWorkerAction::KEEP);
-  assert(classic_worker_action(false, false, false, false, false) == ClassicWorkerAction::KEEP);
   return 0;
 }

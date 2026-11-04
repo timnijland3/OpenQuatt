@@ -22,11 +22,6 @@ globals:
   - {id: oq_water_supply_temp_current_source_fingerprint, type: uint32_t, restore_value: false, initial_value: '0'}
   - {id: oq_water_supply_temp_current_source_ready, type: bool, restore_value: false, initial_value: 'false'}
 
-  # Legacy single-record storage retained for one-time migration and safe downgrade.
-  - {id: oq_water_supply_temp_calibration_source_code, type: int32_t, restore_value: true, initial_value: '0'}
-  - {id: oq_water_supply_temp_calibration_source_fingerprint, type: uint32_t, restore_value: true, initial_value: '0'}
-  - {id: oq_water_supply_temp_calibration_checksum, type: uint32_t, restore_value: true, initial_value: '0'}
-
   # Each physical/configured source has an independent fail-closed record.
   - {id: oq_water_supply_temp_calibration_pt1000_record, type: 'uint32_t[3]', restore_value: true, initial_value: '{0, 0, 0}'}
   - {id: oq_water_supply_temp_calibration_ds18b20_record, type: 'uint32_t[3]', restore_value: true, initial_value: '{0, 0, 0}'}
@@ -152,6 +147,26 @@ binary_sensor:
     lambda: |-
       return oq_sensor_source::runtime().cooling_enable_selected();
 
+  - platform: template
+    id: ha_ingress_fresh
+    name: "HA Ingress Fresh"
+    icon: mdi:heart-pulse
+    device_class: connectivity
+    entity_category: diagnostic
+    lambda: |-
+      auto &runtime = oq_sensor_source::runtime();
+      if (!runtime.ha_ingress_seen()) return {};
+      return runtime.ha_ingress_fresh((uint32_t) millis(), (uint32_t) ${ha_ingress_fresh_s}UL);
+
+  - platform: template
+    id: heating_curve_modifier_ha_valid
+    name: "Heating Curve Modifier HA Valid"
+    icon: mdi:check-decagram
+    entity_category: diagnostic
+    lambda: |-
+      return oq_sensor_source::runtime().heating_curve_modifier_ha_valid(
+          (uint32_t) millis(), (uint32_t) ${ha_heating_curve_modifier_stale_s}UL);
+
 text_sensor:
   - platform: template
     id: oq_water_supply_temp_calibration_status
@@ -213,6 +228,14 @@ text_sensor:
     lambda: |-
       return {oq_sensor_source::runtime().selected_hold_status()};
 
+  - platform: template
+    id: flow_route_selected
+    name: "Flow Selected Route"
+    internal: true
+    update_interval: 5s
+    lambda: |-
+      return oq_sensor_source::runtime().flow_route();
+
 sensor:
   - platform: template
     id: water_supply_temp_selected
@@ -228,6 +251,7 @@ sensor:
           (uint32_t) millis(),
           (uint32_t) (${oq_water_supply_temp_local_cic_hold_s}UL * 1000UL),
           (uint32_t) (${oq_selected_input_stale_hold_s}UL * 1000UL),
+          (uint32_t) ${ha_water_supply_temperature_stale_s}UL,
           (uint32_t) (${oq_hp_water_temp_stale_s}UL * 1000UL),
           "${ha_water_supply_temp_entity_id}");
 
@@ -254,7 +278,8 @@ sensor:
     update_interval: 10s
     lambda: |-
       return oq_sensor_source::runtime().outside(
-          (uint32_t) millis(), (uint32_t) (${oq_selected_input_stale_hold_s}UL * 1000UL));
+          (uint32_t) millis(), (uint32_t) (${oq_selected_input_stale_hold_s}UL * 1000UL),
+          (uint32_t) ${ha_outside_temperature_stale_s}UL);
 
   - platform: template
     id: room_temp_selected
@@ -268,7 +293,7 @@ sensor:
     lambda: |-
       return oq_sensor_source::runtime().room_temperature(
           (uint32_t) millis(), (uint32_t) (${oq_selected_input_stale_hold_s}UL * 1000UL),
-          (${oq_ot_room_temperature_fresh_expr}));
+          (uint32_t) ${ha_room_temperature_stale_s}UL, (${oq_ot_room_temperature_fresh_expr}));
 
   - platform: template
     id: room_setpoint_selected
@@ -295,7 +320,8 @@ sensor:
     update_interval: 10s
     lambda: |-
       return oq_sensor_source::runtime().external_heat_demand(
-          (uint32_t) millis(), (uint32_t) (${oq_selected_input_stale_hold_s}UL * 1000UL));
+          (uint32_t) millis(), (uint32_t) (${oq_selected_input_stale_hold_s}UL * 1000UL),
+          (uint32_t) ${ha_external_heat_demand_stale_s}UL);
 
   - platform: template
     id: heating_supply_target_selected
@@ -310,3 +336,14 @@ sensor:
       return oq_sensor_source::runtime().heating_supply_target(
           (uint32_t) millis(), (uint32_t) (${oq_selected_input_stale_hold_s}UL * 1000UL),
           (uint32_t) ${ha_heating_supply_target_stale_s}UL, (${oq_ot_supply_target_fresh_expr}));
+
+  - platform: template
+    id: ha_ingress_age
+    name: "HA Ingress Age"
+    icon: mdi:heart-pulse
+    unit_of_measurement: "s"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: ${oq_diagnostic_update_interval_s}s
+    lambda: |-
+      return oq_sensor_source::runtime().ha_ingress_age_s((uint32_t) millis());

@@ -72,16 +72,10 @@ class OpenQuattCrashTelemetry : public Component {
   static constexpr uint32_t TIME_SYNC_WAIT_MS = 60000UL;
   static constexpr uint32_t WORKER_STALL_LOG_MS = 30UL * 1000UL;
   static constexpr uint32_t WORKER_CLEANUP_RETRY_MS = 1000UL;
-#if defined(CONFIG_IDF_TARGET_ESP32S3)
-  // PSRAM-backed worker stack, mirroring usage telemetry. Sizes stay
-  // conservative until HIL watermarks prove they can shrink.
+  // Q-edition workers use PSRAM-backed stacks. Sizes stay conservative until
+  // HIL watermarks prove they can shrink.
   static constexpr uint32_t MQTT_WORKER_TASK_STACK_SIZE = 16384U;
   static constexpr bool MQTT_WORKER_STACK_IN_PSRAM = true;
-#else
-  // Classic ESP32 cannot safely run Wi-Fi/ROM-using tasks from a PSRAM stack.
-  static constexpr uint32_t MQTT_WORKER_TASK_STACK_SIZE = 8192U;
-  static constexpr bool MQTT_WORKER_STACK_IN_PSRAM = false;
-#endif
   static constexpr int MQTT_TASK_STACK_SIZE = 12288;
   static_assert(sizeof(StackType_t) == 1U, "ESP-IDF StaticTask stack sizes are configured in bytes");
 

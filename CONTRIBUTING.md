@@ -2,6 +2,9 @@
 
 This guide is intended for repo maintenance and reviews. Its goal is not to enforce generic YAML style, but to keep ESPHome packages predictable and quick to review.
 
+For architecture, HIL, release and local-development references, see
+[`docs/development/`](docs/development/README.md).
+
 ## Purpose
 
 - Keep high-churn control packages logically organized.
@@ -58,6 +61,14 @@ Not everything is checked automatically. These rules remain leading during revie
 - Add comments only where intent is not immediately clear.
 - Write new and changed code comments in English, including YAML comments and `//` comments inside ESPHome lambdas.
 
+## Ownership And Maintenance
+
+- Do not change control behaviour during a structural cleanup. Keep formatting, comments and functional changes in separate batches where practical.
+- Preserve the package include order in `openquatt/oq_packages*.yaml` unless dependencies are deliberately redesigned.
+- Do not add `web_server.sorting_groups`, `sorting_group_id` or `sorting_weight`: the OpenQuatt SPA owns entity layout, while ESPHome retains this unused metadata in dynamic internal-heap maps.
+- Keep established IDs and suffixes readable: use `oq_*` for system-owned state, `hp1_*` / `hp2_*` for per-heat-pump entities, `*_selected` for canonical selected inputs, and explicit unit/time suffixes such as `_ms`, `_s`, `_min`, `_w`, `_c` and `_lph`.
+- When a package or user-facing entity changes, update the relevant user documentation in the same PR.
+
 ## Embedded Memory and Heap
 
 Internal DRAM is a safety and availability budget, not interchangeable with free PSRAM. Wi-Fi, lwIP, TLS, ESP-MQTT, DMA and several FreeRTOS paths still require internal memory and often a sufficiently large contiguous block.
@@ -83,7 +94,7 @@ Validate memory-sensitive work with identical baseline and candidate firmware. R
 
 Measure during cold boot and realistic combined load, including the applicable HA, web, API, MQTT, Modbus, OpenTherm and OTA/flash paths. Avoid high-frequency diagnostic polling that materially changes the result. The linker RAM summary is useful for static deltas, but does not expose transient task stacks, TLS buffers or allocation peaks.
 
-An unexplained regression, allocation failure, or minimum/largest-block result without measured margin for the worst simultaneous allocation is release-blocking until investigated. Establish healthy HIL baselines per hardware profile and turn those into explicit profile budgets rather than relying on one global magic number. See `docs/system-overview.md` for the project memory model.
+An unexplained regression, allocation failure, or minimum/largest-block result without measured margin for the worst simultaneous allocation is release-blocking until investigated. Establish healthy HIL baselines per hardware profile and turn those into explicit profile budgets rather than relying on one global magic number. See `docs/development/system-overview.md` for the project memory model.
 
 ## Lambda Style
 
@@ -111,6 +122,12 @@ Use the project helper for normal local checks:
 - `python3 scripts/dev.py validate --config-only`
 - `python3 scripts/dev.py validate --jobs 2`
 
+JavaScript dependencies are installed with lifecycle scripts disabled. The repository
+`.npmrc` sets `ignore-scripts=true`, and CI also passes `--ignore-scripts`
+explicitly. Do not bypass this for normal builds. The dependency-policy contract in
+`tests/python/test_npm_install_policy_contract.py` fails when a new lockfile package
+advertises an install script; review that package before updating the expected set.
+
 For C/C++ source files, install the exact version from `.clang-format-version` and use the repository formatting commands. The cross-platform `uv` tool installer provides the pinned binary:
 
 - `uv tool install --force clang-format==22.1.8`
@@ -126,6 +143,32 @@ For quick iterations, the standalone checks remain useful:
 - `python3 scripts/check_docs_consistency.py`
 
 The checker is intended as a local quality gate. Add new rules only once the current codebase can satisfy them consistently.
+
+## Test Evidence
+
+Record test reports in the relevant pull request description or a PR comment,
+not in committed report files or dated sections of maintenance documentation.
+Include the tested commit and firmware identity, configuration, toolchain,
+procedure, results, skipped checks and remaining limits. Distinguish historical
+evidence from qualification of the current firmware. Keep credentials and other
+sensitive data out of reports.
+
+Reusable test procedures, regression tests, fixtures and current safety or
+compatibility contracts belong in the repository. Link to the PR for historical
+results. Before removing an existing report, preserve its evidence and limits in
+the relevant PR and verify the saved text.
+
+## Working With Codex
+
+- Start in the relevant source directory and name the files, target configuration
+  or component to investigate. Use a fresh chat for an unrelated task.
+- State the required checks explicitly; request a full firmware build when needed.
+  The commands above also support a focused check such as
+  `python3 scripts/dev.py validate --config-only --config configs/heatpump_controller_q/duo.yaml`.
+- Ask for concise results and relevant error lines instead of complete logs.
+  Identify a specific log file or excerpt when investigating a failure.
+- Follow the local `AGENTS.md` instructions and the
+  [web-app development guide](openquatt/web/README.md) for web changes.
 
 ## Generated Web Bundles
 

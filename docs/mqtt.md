@@ -7,12 +7,13 @@ OpenQuatt heeft geen volledige MQTT-export. De firmware gebruikt wel een kleine 
 - kamertemperatuur;
 - kamer-setpoint;
 - aanvoertarget;
+- stooklijn-offset;
 - warmtetoestemming;
 - koeltoestemming.
 
 Gebruik voor normale monitoring en bediening bij voorkeur de web-app en, als je die gebruikt, Home Assistant via de native ESPHome API. Voor dezelfde externe bronwaarden zonder MQTT kun je de [API-input-entiteiten](api-input.md) gebruiken.
 
-De [keuze voor gebruiksstatistieken](web-app.md#gebruiksstatistieken-en-privacy) gebruikt aparte outbound-only MQTT-clients om de centrale OpenQuatt-loggingserver te bereiken. De huidige standaardconfiguratie gebruikt poort 1883 zonder TLS. Deze clients delen geen entiteiten, discovery-berichten of reguliere logs en gebruiken niet de brokerconfiguratie van de MQTT inputbronnen. Het uurbericht vermeldt alleen of MQTT inputbronnen als geheel aanstaan. Na een echte firmwarecrash kan daarnaast het begrensde technische ESPHome-crashrapport worden gepubliceerd. Brokergegevens, wifi-netwerknaam, wifi-wachtwoord, gebruikersnamen, andere wachtwoorden, topics en ontvangen waarden worden nooit meegestuurd. Zoals bij iedere internetverbinding is het bron-IP-adres technisch zichtbaar voor de loggingserver; OpenQuatt slaat dit IP-adres niet op.
+De [keuze voor gebruiksstatistieken](web-app/privacy.md) gebruikt aparte outbound-only MQTT-clients om de centrale OpenQuatt-loggingserver te bereiken. De huidige standaardconfiguratie gebruikt poort 1883 zonder TLS. Deze clients delen geen entiteiten, discovery-berichten of reguliere logs en gebruiken niet de brokerconfiguratie van de MQTT inputbronnen. Het uurbericht vermeldt alleen of MQTT inputbronnen als geheel aanstaan. Na een echte firmwarecrash kan daarnaast het begrensde technische ESPHome-crashrapport worden gepubliceerd. Brokergegevens, wifi-netwerknaam, wifi-wachtwoord, gebruikersnamen, andere wachtwoorden, topics en ontvangen waarden worden nooit meegestuurd. Zoals bij iedere internetverbinding is het bron-IP-adres technisch zichtbaar voor de loggingserver; OpenQuatt slaat dit IP-adres niet op.
 
 Het crashbericht gebruikt QoS 1 en retain op `openquatt/devices/<installation-id>/crash`. Het topic bevat bewust alleen de laatst bekende crash; een volgende crash vervangt de vorige. Na uitschakelen van gebruiksstatistieken wist OpenQuatt dit retained topic met een lege retained payload zodra de broker bereikbaar is. De payload bevat de bronrepository, volledige commit-SHA, het exacte buildtarget, ESPHome- en firmwareversie, buildtijd en volledige ELF-SHA256. Een opnieuw gebouwd ELF mag alleen voor symbolisatie worden gebruikt wanneer die SHA256 exact overeenkomt. OpenQuatt bewaart niet standaard bij iedere build een ELF-bestand. Zie ook [Retained crashtelemetrie](crash-telemetry.md).
 
@@ -41,6 +42,7 @@ openquatt/<device_name>/input/weather/outdoor_temperature
 openquatt/<device_name>/input/thermostat/room_temperature
 openquatt/<device_name>/input/thermostat/room_setpoint
 openquatt/<device_name>/input/heating/supply_target
+openquatt/<device_name>/input/heating/curve_modifier
 openquatt/<device_name>/input/thermostat/heating_enable
 openquatt/<device_name>/input/thermostat/cooling_enable
 ```
@@ -53,6 +55,7 @@ openquatt/openquatt/input/weather/outdoor_temperature
 openquatt/openquatt/input/thermostat/room_temperature
 openquatt/openquatt/input/thermostat/room_setpoint
 openquatt/openquatt/input/heating/supply_target
+openquatt/openquatt/input/heating/curve_modifier
 openquatt/openquatt/input/thermostat/heating_enable
 openquatt/openquatt/input/thermostat/cooling_enable
 ```
@@ -97,6 +100,7 @@ Waarden buiten de geldige range worden genegeerd en maken die MQTT-bron ongeldig
 - kamertemperatuur: `0..50°C`;
 - kamer-setpoint: `5..35°C`;
 - aanvoertarget: `20..70°C`.
+- stooklijn-offset: `-5..+5 °C` aanvoercorrectie.
 
 ## Geldigheid
 
@@ -107,6 +111,7 @@ Een geldige MQTT-waarde blijft beperkt geldig. Komt er in die tijd geen nieuwe M
 - kamertemperatuur: 10 minuten;
 - kamer-setpoint: 30 minuten;
 - aanvoertarget: 15 minuten;
+- stooklijn-offset: 15 minuten (daarna 0 °C correctie);
 - warmtetoestemming: 10 minuten;
 - koeltoestemming: 10 minuten.
 

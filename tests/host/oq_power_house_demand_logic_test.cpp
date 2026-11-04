@@ -13,13 +13,14 @@ void test_model_and_feedforward() {
   struct ModelCase {
     float outside_c, expected_w;
   };
-  const ModelCase models[] = {{21.0f, 0.0f}, {16.0f, 0.0f}, {3.0f, 3000.0f}, {-10.0f, 6000.0f}, {-20.0f, 6000.0f}};
+  const ModelCase models[] = {{21.0f, 0.0f}, {16.0f, 0.0f}, {3.0f, 3000.0f}, {-10.0f, 6000.0f}, {-20.0f, 8307.692f}};
   for (const auto& test : models)
     assert(near(modelled_house_power_w(16.0f, -10.0f, test.outside_c, 6000.0f), test.expected_w));
   assert(isnan(modelled_house_power_w(16.0f, -10.0f, NAN, 6000.0f)));
   assert(isnan(modelled_house_power_w(16.0f, -10.0f, 3.0f, 0.0f)));
   assert(isnan(modelled_house_power_w(16.0f, 16.0f, 3.0f, 6000.0f)));
   assert(isnan(modelled_house_power_w(-10.0f, 16.0f, 3.0f, 6000.0f)));
+  assert(isnan(modelled_house_power_w(16.0f, -10.0f, -FLT_MAX, 7020.0f)));
   struct FeedCase {
     float external_w, rated_w, expected_w;
     bool present, external;
@@ -33,6 +34,27 @@ void test_model_and_feedforward() {
     const auto result = select_feedforward(2500.0f, test.external_w, test.present, test.rated_w);
     assert(result.external == test.external && near(result.house_power_w, test.expected_w));
   }
+}
+void test_cold_weather_exceeds_reference_power() {
+  auto in = input();
+  in.rated_w = 7020.0f;
+  in.outside_c = -15.0f;
+  assert(near(modelled_house_power_w(16.0f, -10.0f, -15.0f, 7020.0f), 8370.0f));
+  const auto cold = decide_demand(in, tuning(), {});
+  assert(cold.valid && near(cold.requested_w, 8370.0f) && cold.raw_demand == 20);
+  // Preserve demand above Pr and the existing rise rate on subsequent ticks.
+  in.now_ms += 60000U;
+  assert(near(decide_demand(in, tuning(), cold.next).requested_w, 8370.0f));
+  assert(near(decide_demand(in, tuning(), {7020, cold.next.last_ms, 0}).requested_w, 7722.0f));
+  in.water_limit_factor = 0.5f;
+  const auto water = decide_demand(in, tuning(), {});
+  assert(water.valid && near(water.requested_w, 4185.0f) && water.raw_demand == 12);
+}
+void test_normalized_demand_and_explicit_power_caps() {
+  assert(ceil_demand_level(FLT_MAX, FLT_MIN, 20) == 20);
+  assert(near(power_capped_request_w(8370.0f, 20, 20, 7020.0f), 8370.0f));
+  assert(near(power_capped_request_w(8370.0f, 10, 20, 7020.0f), 3510.0f));
+  assert(power_capped_request_w(8370.0f, 0, 20, 7020.0f) == 0.0f);
 }
 void test_cache_and_cadence_rollover() {
   constexpr uint32_t hold_ms = 300000U;
@@ -132,11 +154,59 @@ void test_demand_slew_and_limits() {
   warm.room_c = 22.0f;
   assert(decide_demand(warm, tuning(), {3000, 1U, 0.1f}).next.comfort_memory_c < 0.1f);
 }
+void test_comfort_warm_edge_and_recovery_boundary() {
+  // No prior tick: inspect the requested watts before slew delays the change.
+  // At 20 C desired, 3000 W house need and 3000 W/K room reaction.
+  struct Case {
+    float above_c, room_c, memory_c, expected_w;
+  };
+  const Case cases[] = {
+      {0.3f, 19.8f, 0.0f, 3300.0f},  {0.3f, 20.0f, 0.0f, 3000.0f},   {0.3f, 20.3f, 0.0f, 3000.0f},
+      {0.3f, 20.4f, 0.0f, 2700.0f},  {0.3f, 21.3f, 0.0f, 0.0f},      {1.0f, 20.3f, 0.0f, 3000.0f},
+      {1.0f, 21.0f, 0.0f, 3000.0f},  {1.0f, 21.1f, 0.0f, 2700.0f},   {0.0f, 20.0f, 0.2f, 3000.0f},
+      {0.0f, 20.05f, 0.2f, 2850.0f}, {0.05f, 20.05f, 0.2f, 3000.0f}, {0.05f, 20.1f, 0.2f, 2850.0f},
+      {0.3f, 20.05f, 0.2f, 3150.0f}, {0.3f, 20.4f, 0.2f, 2700.0f},
+  };
+  for (const auto& test : cases) {
+    auto in = input();
+    in.room_c = test.room_c;
+    auto cfg = tuning();
+    cfg.comfort_above_c = test.above_c;
+    const auto out = decide_demand(in, cfg, {3000, 0, test.memory_c});
+    assert(out.valid && near(out.requested_w, test.expected_w));
+  }
+  // Zero below-margin lets recovery reach past the warm edge unless bounded.
+  const float narrow_above[] = {0.0f, 0.05f};
+  for (float above : narrow_above) {
+    auto in = input();
+    auto cfg = tuning();
+    cfg.comfort_below_c = 0.0f;
+    cfg.comfort_above_c = above;
+    in.room_c = in.setpoint_c + above;
+    const auto out = decide_demand(in, cfg, {3000, 0, 0.08f});
+    assert(out.valid && near(out.contributions.room_feedback_w, 0.0f));
+    assert(near(out.requested_w, 3000.0f));
+  }
+  // A live change moves the braking edge without rewriting the room setpoint.
+  auto in = input();
+  in.room_c = 20.6f;
+  auto cfg = tuning();
+  const auto braking = decide_demand(in, cfg, {});
+  assert(near(braking.requested_w, 2100.0f));
+  cfg.comfort_above_c = 1.0f;
+  assert(near(decide_demand(in, cfg, {}).requested_w, 3000.0f));
+  assert(in.setpoint_c == 20.0f);
+  in.water_limit_factor = 0.5f;
+  assert(near(decide_demand(in, cfg, {}).requested_w, 1500.0f));
+}
 }  // namespace
 int main() {
   test_model_and_feedforward();
+  test_cold_weather_exceeds_reference_power();
+  test_normalized_demand_and_explicit_power_caps();
   test_cache_and_cadence_rollover();
   test_demand_finite_contract();
   test_demand_slew_and_limits();
+  test_comfort_warm_edge_and_recovery_boundary();
   return 0;
 }

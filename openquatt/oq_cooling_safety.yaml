@@ -3,7 +3,8 @@
 # ==============================================================================
 globals:
   - {id: oq_cooling_fallback_night_min_last_c, type: float, restore_value: true, initial_value: 'NAN'}
-  - {id: oq_cooling_fallback_night_min_last_day_key, type: int, restore_value: true, initial_value: '-1'}
+  # Deduplicate completed nights within this boot; the temperature survives reboot.
+  - {id: oq_cooling_fallback_night_min_last_day_key, type: int, restore_value: false, initial_value: '-1'}
   - {id: oq_cooling_dew_point_selected_hold_active, type: bool, restore_value: false, initial_value: 'false'}
 switch:
   - platform: template
@@ -156,7 +157,8 @@ sensor:
     update_interval: 10s
     lambda: |-
       return oq_cooling_safety::runtime().selected_dew_point((uint32_t) millis(),
-                                                            (uint32_t) (${oq_selected_input_stale_hold_s}UL * 1000UL));
+                                                            (uint32_t) (${oq_selected_input_stale_hold_s}UL * 1000UL),
+                                                            (uint32_t) ${ha_cooling_dew_point_stale_s}UL);
     filters:
       - exponential_moving_average:
           alpha: 0.3
