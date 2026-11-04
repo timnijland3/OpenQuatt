@@ -86,19 +86,19 @@ class QConfigCompositionContractTest(unittest.TestCase):
 
             self.assertEqual(
                 main_url,
-                f"https://github.com/OpenQuatt/OpenQuatt/releases/latest/download/openquatt-heatpump-controller-q-{topology}-ota.manifest.json",
+                f"https://github.com/timnijland3/OpenQuatt/releases/latest/download/openquatt-heatpump-controller-q-{topology}-ota.manifest.json",
             )
             self.assertEqual(
                 dev_url,
-                f"https://github.com/OpenQuatt/OpenQuatt/releases/download/dev-latest/openquatt-heatpump-controller-q-{topology}-ota.manifest.json",
+                f"https://github.com/timnijland3/OpenQuatt/releases/download/dev-latest/openquatt-heatpump-controller-q-{topology}-ota.manifest.json",
             )
             self.assertEqual(
                 alternate_main_url,
-                f"https://github.com/OpenQuatt/OpenQuatt/releases/latest/download/openquatt-heatpump-controller-q-{alternate}-ota.manifest.json",
+                f"https://github.com/timnijland3/OpenQuatt/releases/latest/download/openquatt-heatpump-controller-q-{alternate}-ota.manifest.json",
             )
             self.assertEqual(
                 alternate_dev_url,
-                f"https://github.com/OpenQuatt/OpenQuatt/releases/download/dev-latest/openquatt-heatpump-controller-q-{alternate}-ota.manifest.json",
+                f"https://github.com/timnijland3/OpenQuatt/releases/download/dev-latest/openquatt-heatpump-controller-q-{alternate}-ota.manifest.json",
             )
             self.assertEqual(
                 yaml_scalar(package, "release_manifest_url"),
