@@ -458,9 +458,11 @@ class Runtime {
           best_single = item;
       }
     oq_curve::DispatchCandidate best_duo;
+    const bool duo_levels_fixed = hp1_fixed_level > 0 || hp2_fixed_level > 0;
     if (demand_active)
       for (int first = 1; first <= hp1_pair_max; ++first)
         for (int second = 1; second <= hp2_pair_max; ++second) {
+          if (!oq_curve::duo_pair_allowed(dispatch_mode, first, second, duo_levels_fixed)) continue;
           const auto item = candidate(first, second, target_power_w);
           if (oq_curve::better_dispatch_candidate(item, best_duo, previous_hp1, previous_hp2, true)) best_duo = item;
         }

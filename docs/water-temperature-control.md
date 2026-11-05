@@ -207,7 +207,7 @@ Dat voorkomt onrustig schakelen tussen één en twee warmtepompen. Dit is en bli
 
 - OpenQuatt begint ook hier met één warmtepomp, maar laat die nooit verder oplopen dan `Share Load Start Level` (standaard niveau 2, instelbaar van 2 tot 9);
 - is er meer vermogen nodig dan die ene unit op dat niveau kan leveren, dan start de tweede unit erbij in plaats van de eerste unit verder op te voeren — bijvoorbeeld unit 1 op niveau 2 en unit 2 op niveau 1;
-- vraagt het nog meer, dan lopen beide units daarna gelijk op (bijvoorbeeld 2+2, dan 3+2, dan 3+3, enzovoort) in plaats van dat één unit alleen doorgroeit naar zijn maximum;
+- vraagt het nog meer, dan lopen beide units daarna gelijk op (bijvoorbeeld 2+2, dan 3+2, dan 3+3, enzovoort) in plaats van dat één unit alleen doorgroeit naar zijn maximum. De twee units blijven daarbij maximaal één niveau uit elkaar (dus niet 5+1 maar 3+3);
 - welke unit als eerste (de "lead") start, wisselt vanzelf mee met de al opgebouwde looptijd van beide units — er is dus geen vaste "unit 1 start altijd eerst".
 
 `Share Load` is bedoeld voor wie liever het vermogen vroeg over beide units verdeelt (bijvoorbeeld voor een rustiger geluidsbeeld of gelijkmatiger slijtage) in plaats van één unit hoog te laten oplopen voordat de tweede meedoet. `Dual HP Enable Hold` en `Dual HP Disable Hold` blijven in beide modi de bescherming tegen snel heen-en-weer schakelen.

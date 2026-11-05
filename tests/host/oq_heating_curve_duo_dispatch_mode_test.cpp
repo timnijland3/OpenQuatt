@@ -98,5 +98,18 @@ int main() {
     const auto capped = duo_enable_thresholds(DuoDispatchMode::SHARE_LOAD, 10, level_cap, true, 15);
     assert(capped.single_search_max_level == level_cap - 1);
   }
+
+  // Share Load keeps both ODUs within one level of each other, so 3+3 wins
+  // over 5+1; Sequential and boot-held (fixed) levels are unrestricted.
+  {
+    using oq_curve::duo_pair_allowed;
+    assert(duo_pair_allowed(DuoDispatchMode::SHARE_LOAD, 3, 3, false));
+    assert(duo_pair_allowed(DuoDispatchMode::SHARE_LOAD, 3, 2, false));
+    assert(duo_pair_allowed(DuoDispatchMode::SHARE_LOAD, 2, 3, false));
+    assert(!duo_pair_allowed(DuoDispatchMode::SHARE_LOAD, 5, 1, false));
+    assert(!duo_pair_allowed(DuoDispatchMode::SHARE_LOAD, 1, 3, false));
+    assert(duo_pair_allowed(DuoDispatchMode::SHARE_LOAD, 5, 1, true));
+    assert(duo_pair_allowed(DuoDispatchMode::SEQUENTIAL, 5, 1, false));
+  }
   return 0;
 }

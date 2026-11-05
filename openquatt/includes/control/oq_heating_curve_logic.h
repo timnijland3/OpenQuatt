@@ -504,6 +504,15 @@ inline DuoEnableThresholds duo_enable_thresholds(DuoDispatchMode mode, int owner
   return out;
 }
 
+// SHARE_LOAD spreads the load: once both ODUs run, their levels may differ by
+// at most one step. Without this the power-match / least-movement ranking can
+// settle on e.g. 5+1 instead of 3+3, because both give nearly the same power
+// and the already-running split then wins on "no frequency change". Boot-held
+// (fixed) levels are exempt, since the held unit cannot move to a balanced pair.
+inline bool duo_pair_allowed(DuoDispatchMode mode, int hp1_level, int hp2_level, bool levels_fixed) {
+  return mode != DuoDispatchMode::SHARE_LOAD || levels_fixed || abs(hp1_level - hp2_level) <= 1;
+}
+
 inline bool better_dispatch_candidate(const DispatchCandidate& candidate, const DispatchCandidate& best,
                                       int prev_hp1_level, int prev_hp2_level, bool use_frequency_movement = false) {
   if (!candidate.valid) return false;
