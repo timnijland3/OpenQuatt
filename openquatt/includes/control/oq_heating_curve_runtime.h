@@ -457,7 +457,14 @@ class Runtime {
         if (oq_curve::better_dispatch_candidate(item, best_single, previous_hp1, previous_hp2, true))
           best_single = item;
       }
+    // best_duo keeps the phase target so the single-vs-duo comparisons below stay like-for-like with best_single.
+    // best_duo_pick re-ranks the same pairs against the target that sizes the pair once Duo is actually enabled.
+    const float duo_pick_target_power_w =
+        demand_active
+            ? oq_curve::duo_pair_target_power_w(dispatch_mode, heat_phase, demand_u, owner_capacity_w, duo_capacity_w)
+            : 0.0f;
     oq_curve::DispatchCandidate best_duo;
+    oq_curve::DispatchCandidate best_duo_pick;
     const bool duo_levels_fixed = hp1_fixed_level > 0 || hp2_fixed_level > 0;
     if (demand_active)
       for (int first = 1; first <= hp1_pair_max; ++first)
@@ -465,6 +472,11 @@ class Runtime {
           if (!oq_curve::duo_pair_allowed(dispatch_mode, first, second, duo_levels_fixed)) continue;
           const auto item = candidate(first, second, target_power_w);
           if (oq_curve::better_dispatch_candidate(item, best_duo, previous_hp1, previous_hp2, true)) best_duo = item;
+          if (!item.valid) continue;
+          auto pick = item;
+          pick.error_w = std::fabs(item.power_w - duo_pick_target_power_w);
+          if (oq_curve::better_dispatch_candidate(pick, best_duo_pick, previous_hp1, previous_hp2, true))
+            best_duo_pick = pick;
         }
 
     const int dual_on_hold_min = std::max(1, static_cast<int>(std::lround(id(oq_dual_hp_enable_hold_min).state)));
@@ -538,8 +550,8 @@ class Runtime {
       id(oq_curve_capacity_mode_code) = 0;
     } else if (dual_enabled) {
       id(oq_curve_single_owner_hp) = 0;
-      hp1_level = best_duo.hp1_level;
-      hp2_level = best_duo.hp2_level;
+      hp1_level = best_duo_pick.hp1_level;
+      hp2_level = best_duo_pick.hp2_level;
       id(oq_curve_capacity_mode_code) = 2;
     } else {
       id(oq_curve_single_owner_hp) = single_owner;
