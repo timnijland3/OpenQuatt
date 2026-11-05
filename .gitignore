@@ -11,6 +11,7 @@ __pycache__/
 node_modules/
 tmp/
 .tmp/
+temp/
 openquatt/web/css/openquatt-preview.css
 openquatt/web/css/openquatt-app.css
 openquatt/web/js/openquatt-preview.js

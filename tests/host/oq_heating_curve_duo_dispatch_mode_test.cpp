@@ -111,5 +111,24 @@ int main() {
     assert(duo_pair_allowed(DuoDispatchMode::SHARE_LOAD, 5, 1, true));
     assert(duo_pair_allowed(DuoDispatchMode::SEQUENTIAL, 5, 1, false));
   }
+
+  // Share Load sizes an enabled pair against both units' capacity in every
+  // phase; with the single-unit RECOVERY target the pair would stall near one
+  // unit's maximum output. Sequential keeps the phase target unchanged.
+  {
+    using oq_curve::duo_pair_target_power_w;
+    using oq_curve::phase_target_power_w;
+    constexpr float single_cap_w = 6000.0f;
+    constexpr float duo_cap_w = 12000.0f;
+    assert(duo_pair_target_power_w(DuoDispatchMode::SHARE_LOAD, true, 1.0f, single_cap_w, duo_cap_w) == 12000.0f);
+    assert(duo_pair_target_power_w(DuoDispatchMode::SHARE_LOAD, false, 1.0f, single_cap_w, duo_cap_w) == 12000.0f);
+    assert(duo_pair_target_power_w(DuoDispatchMode::SHARE_LOAD, true, 0.5f, single_cap_w, duo_cap_w) == 6000.0f);
+    assert(duo_pair_target_power_w(DuoDispatchMode::SEQUENTIAL, true, 1.0f, single_cap_w, duo_cap_w) == 6000.0f);
+    assert(duo_pair_target_power_w(DuoDispatchMode::SEQUENTIAL, false, 1.0f, single_cap_w, duo_cap_w) == 12000.0f);
+    assert(duo_pair_target_power_w(DuoDispatchMode::SEQUENTIAL, true, 0.5f, single_cap_w, duo_cap_w) ==
+           phase_target_power_w(true, 0.5f, single_cap_w, duo_cap_w));
+    // No demand means no target in either mode.
+    assert(duo_pair_target_power_w(DuoDispatchMode::SHARE_LOAD, true, 0.0f, single_cap_w, duo_cap_w) == 0.0f);
+  }
   return 0;
 }

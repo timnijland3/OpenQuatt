@@ -513,6 +513,18 @@ inline bool duo_pair_allowed(DuoDispatchMode mode, int hp1_level, int hp2_level,
   return mode != DuoDispatchMode::SHARE_LOAD || levels_fixed || abs(hp1_level - hp2_level) <= 1;
 }
 
+// Target power used to pick the levels of an already enabled duo pair.
+// SEQUENTIAL keeps the phase target (in RECOVERY that is one unit's capacity,
+// which only matters for the rare emergency hand-off). SHARE_LOAD sizes the
+// pair against the capacity of both units in every phase: with the single-unit
+// RECOVERY target a balanced pair is satisfied at roughly one unit's maximum
+// output (e.g. 3+3) and never ramps further while the water is far below target.
+inline float duo_pair_target_power_w(DuoDispatchMode mode, bool heat_phase, float capped_demand_u, float single_cap_w,
+                                     float duo_cap_w) {
+  return phase_target_power_w(mode == DuoDispatchMode::SHARE_LOAD ? false : heat_phase, capped_demand_u, single_cap_w,
+                              duo_cap_w);
+}
+
 inline bool better_dispatch_candidate(const DispatchCandidate& candidate, const DispatchCandidate& best,
                                       int prev_hp1_level, int prev_hp2_level, bool use_frequency_movement = false) {
   if (!candidate.valid) return false;
