@@ -162,6 +162,27 @@ Dit staat los van `Heating Enable`: die bepaalt *of* er verwarmd mag worden, het
 
 Kijk bij twijfel naar `Heating Supply – target source`. Die staat op `external` zolang het externe target echt gebruikt wordt, en op `curve` zodra de stooklijn weer rekent. `Heating Curve Supply Target` blijft altijd het lokale stooklijnreferentie­doel tonen, ook terwijl een extern target actief is.
 
+## Regelprofiel Buffer (groot buffervat)
+
+Regelt OpenQuatt op de temperatuur van een groot buffervat (bijvoorbeeld 1000 liter) in plaats van op de directe aanvoer, dan reageert de gemeten temperatuur zo traag dat de gewone profielen `Comfort`, `Balanced` en `Stable` te snel stoppen en daarna met veel vermogen herstarten. Kies in dat geval onder `Heating Curve Control Profile` het profiel `Buffer`. De andere profielen veranderen hierdoor niet.
+
+Wat `Buffer` anders doet:
+
+- **Doordraaien op het laagste niveau:** zolang de warmtevraag actief is en de aanvoer onder `doel + 1 °C` blijft, vraagt OpenQuatt minimaal niveau 1 van één unit. De warmtepomp valt dus niet stil zodra de PID-uitvoer rond het doel nul wordt.
+- **Geen laaglast-stop:** de vroege stop vlak boven het doel is uitgeschakeld.
+- **Stoppen pas 1 °C boven het doel:** de aanvoer moet 5 minuten aaneengesloten op `doel + 1 °C` of hoger zitten, en de PID mag geen noemenswaardige vraag meer hebben. Een positieve PID-integraal kan het stoppen daarom een paar minuten uitstellen. In die bevestigingstijd blijft het laagste niveau actief.
+- **Herstart bij 1,5 °C tekort:** na een echte stop start OpenQuatt weer als de aanvoer 1,5 °C onder het doel zakt (na minimaal 5 minuten uit). Dat is een gewone MAINTAIN-start met oplopend vermogen, geen RECOVERY.
+- **RECOVERY pas bij een groot tekort:** vanaf 2 °C onder het doel, terug naar MAINTAIN bij 0,8 °C. Gewone dalingen worden daardoor opgevangen met het afgeremde, oplopende vermogen van MAINTAIN.
+- **Rustige niveaustappen:** omhoog elke 120 seconden (60 seconden in RECOVERY), omlaag elke 30 seconden.
+- **Tweede unit later:** bij `Duo` mag de tweede unit pas 15 minuten na de start van de eerste bijspringen.
+
+Let op:
+
+- Het profiel gaat uit van een buffer die een flink deel van de warmtevraag overbrugt. Met een klein vat of een warmtevraag onder het minimale vermogen van één unit blijft het pendelen groter dan hier beschreven.
+- Heeft de installatie een kamertemperatuur die vers en geldig is, dan stopt OpenQuatt alleen als de kamer niet kouder is dan het setpoint plus de warme grens, zoals bij de andere profielen. De buffer kan dan boven `doel + 1 °C` uitkomen; de aanvoer blijft begrensd door `Maximum water temperature`.
+- Bij `Duo` met `Share Load` springt de tweede unit bij een tekort vanaf ongeveer 0,5 °C bij als `Share Load Start Level` laag staat. Een hoger startniveau (bijvoorbeeld 4 of 5) houdt één unit langer alleen aan het werk; bekijk eerst de niveaus en starts per uur voordat je dit aanpast.
+- Een wijziging van het profiel zet de PID-integraal terug en start de regeling opnieuw.
+
 ## Welke instellingen zijn voor de meeste gebruikers het belangrijkst?
 
 Als je deze strategie afstelt, begin dan bijna altijd hier:

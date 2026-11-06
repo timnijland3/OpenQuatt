@@ -111,7 +111,7 @@ class Runtime {
       stop_snapshot.supply_c = stop::encode(supply_c, 100.0f);
       stop_snapshot.supply_stop_c =
           demand.valid ? stop::encode(target_c + (demand.stop_reason == oq_curve::STOP_LOW_LOAD
-                                                      ? 0.25f
+                                                      ? tuning.low_load_stop_delta_c
                                                       : std::max(tuning.stop_delta_c, tuning.start_delta_c + 0.10f)),
                                       100.0f)
                        : stop::UNKNOWN_VALUE;

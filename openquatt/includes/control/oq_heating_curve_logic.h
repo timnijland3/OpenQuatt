@@ -35,6 +35,13 @@ struct ControlProfileTuning {
   int dual_emergency_hold_min = 6;
   float dual_emergency_temp_err_c = 1.50f;
   float dual_disable_temp_err_max_c = 0.50f;
+  // Low-load stop: MAINTAIN stops early once the supply is this far above target and the PID demand is zero. The
+  // defaults keep the historical behaviour; a large-buffer profile turns it off so only the normal stop applies.
+  bool low_load_stop_enabled = true;
+  float low_load_stop_delta_c = 0.25f;
+  // Minimum continuous demand (demand scale, 1.0 = lowest level of one unit) kept in MAINTAIN while the heat request
+  // is active and the supply has not reached the stop band. 0 disables the floor (historical behaviour).
+  float maintain_floor_demand = 0.0f;
 };
 
 enum RestartReason : uint8_t {
@@ -166,6 +173,26 @@ inline ControlProfileTuning control_profile(const std::string& profile_option) {
     tuning.dual_emergency_hold_min = 8;
     tuning.dual_emergency_temp_err_c = 1.80f;
     tuning.dual_disable_temp_err_max_c = 0.40f;
+  } else if (profile_option == "Buffer") {
+    // Large buffer tank as the controlled temperature: slow dynamics, so keep one unit modulating at its lowest level
+    // instead of stopping early, stop only 1 K above target and answer ordinary dips proportionally rather than with
+    // a RECOVERY ramp to full power.
+    tuning.stop_delta_c = 1.00f;
+    tuning.off_confirm_ms = 300000UL;
+    tuning.restart_delta_c = 1.50f;
+    tuning.restart_bypass_extra_c = 1.00f;
+    tuning.off_reentry_min_ms = 300000UL;
+    tuning.recovery_enter_c = 2.00f;
+    tuning.recovery_exit_c = 0.80f;
+    tuning.outside_tau_s = 3600.0f;
+    tuning.steady_up_hold_s = 120;
+    tuning.steady_down_hold_s = 30;
+    tuning.recovery_up_hold_s = 60;
+    tuning.dual_startup_grace_s = 900;
+    tuning.dual_emergency_hold_min = 10;
+    tuning.dual_emergency_temp_err_c = 3.00f;
+    tuning.low_load_stop_enabled = false;
+    tuning.maintain_floor_demand = 1.0f;
   }
 
   return tuning;
@@ -282,10 +309,12 @@ inline bool elapsed_window_active(uint32_t now_ms, uint32_t started_ms, uint32_t
 inline DemandDecision decide_demand(const DemandInput& in, const ControlProfileTuning& requested_tuning,
                                     const DemandState& state) {
   DemandDecision out;
-  const float tuning_values[] = {
-      requested_tuning.start_delta_c,      requested_tuning.stop_delta_c,    requested_tuning.room_overheat_off_c,
-      requested_tuning.room_resume_heat_c, requested_tuning.restart_delta_c, requested_tuning.restart_bypass_extra_c,
-      requested_tuning.recovery_enter_c,   requested_tuning.recovery_exit_c, requested_tuning.trim_start_c};
+  const float tuning_values[] = {requested_tuning.start_delta_c,        requested_tuning.stop_delta_c,
+                                 requested_tuning.room_overheat_off_c,  requested_tuning.room_resume_heat_c,
+                                 requested_tuning.restart_delta_c,      requested_tuning.restart_bypass_extra_c,
+                                 requested_tuning.recovery_enter_c,     requested_tuning.recovery_exit_c,
+                                 requested_tuning.trim_start_c,         requested_tuning.low_load_stop_delta_c,
+                                 requested_tuning.maintain_floor_demand};
   bool tuning_valid = true;
   for (float value : tuning_values) tuning_valid = tuning_valid && isfinite(value);
   if (in.demand_max <= 0 || !isfinite(in.pid_output) || !isfinite(in.supply_target_c) || !isfinite(in.supply_c) ||
@@ -312,10 +341,10 @@ inline DemandDecision decide_demand(const DemandInput& in, const ControlProfileT
   const bool room_allows_off = !room_valid || room_warm_for_off;
   const bool normal_stop = !in.oil_return_mask_active && in.supply_c >= in.supply_target_c + tuning.stop_delta_c &&
                            demand <= tuning.off_pid_max_f && room_allows_off;
-  const bool low_load_stop = !in.oil_return_mask_active && state.heat_request_active && state.regime_code == 2 &&
-                             out.demand_pre_guardrail <= 0 &&
+  const bool low_load_stop = tuning.low_load_stop_enabled && !in.oil_return_mask_active && state.heat_request_active &&
+                             state.regime_code == 2 && out.demand_pre_guardrail <= 0 &&
                              (!room_valid || in.room_c >= in.room_setpoint_c - tuning.room_resume_heat_c) &&
-                             in.supply_c >= in.supply_target_c + 0.25f;
+                             in.supply_c >= in.supply_target_c + tuning.low_load_stop_delta_c;
 
   if (out.next.heat_request_active) {
     if (normal_stop || low_load_stop) {
@@ -386,6 +415,14 @@ inline DemandDecision decide_demand(const DemandInput& in, const ControlProfileT
   out.demand_continuous = !out.next.heat_request_active ? 0.0f
                           : out.next.regime_code == 1   ? std::max(demand_continuous, static_cast<float>(demand))
                                                         : std::min(demand_continuous, static_cast<float>(demand));
+  // MAINTAIN caps and a zero PID output would otherwise drop the dispatch to nothing while the request is still
+  // active. The floor keeps the lowest level of one unit running until the stop band is reached; an armed stop keeps
+  // it until the confirmation completes, so the unit neither idles nor restarts inside that window.
+  if (out.next.heat_request_active && out.next.regime_code == 2 && tuning.maintain_floor_demand > 0.0f &&
+      (in.supply_c < in.supply_target_c + tuning.stop_delta_c || out.next.stop_arm_ms != 0)) {
+    out.demand_continuous =
+        std::max(out.demand_continuous, std::min(tuning.maintain_floor_demand, static_cast<float>(in.demand_max)));
+  }
   out.demand = demand;
   out.valid = true;
   return out;

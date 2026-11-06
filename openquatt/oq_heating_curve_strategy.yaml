@@ -143,6 +143,7 @@ select:
       - Comfort
       - Balanced
       - Stable
+      - Buffer
     initial_option: Balanced
     entity_category: config
     on_value:

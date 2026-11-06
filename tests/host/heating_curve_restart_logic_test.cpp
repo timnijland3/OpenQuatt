@@ -222,6 +222,189 @@ void test_outside_filter_target_and_cadence_rollover() {
   assert(elapsed_window_active(1000U, UINT32_MAX - 1000U, 3000U));
   assert(!elapsed_window_active(2000U, UINT32_MAX - 1000U, 3000U));
 }
+ControlProfileTuning buffer() { return control_profile("Buffer"); }
+
+// The existing profiles must keep their exact behaviour: the new tuning fields default to the historical values.
+void test_new_tuning_fields_keep_existing_profiles() {
+  for (const char* name : {"Comfort", "Balanced", "Stable", "", "unknown"}) {
+    const auto profile = control_profile(name);
+    assert(profile.low_load_stop_enabled && near(profile.low_load_stop_delta_c, 0.25f));
+    assert(near(profile.maintain_floor_demand, 0.0f));
+  }
+  const auto balanced = control_profile("Balanced");
+  assert(near(balanced.stop_delta_c, 0.90f) && balanced.off_confirm_ms == 360000U &&
+         near(balanced.restart_delta_c, 0.80f));
+  assert(near(balanced.recovery_enter_c, 0.75f) && near(balanced.recovery_exit_c, 0.25f));
+  assert(balanced.steady_up_hold_s == 180 && balanced.steady_down_hold_s == 15 && balanced.recovery_up_hold_s == 45);
+  const auto comfort = control_profile("Comfort");
+  assert(near(comfort.stop_delta_c, 0.70f) && comfort.off_confirm_ms == 240000U &&
+         near(comfort.restart_delta_c, 0.60f));
+  assert(near(comfort.recovery_enter_c, 0.55f) && near(comfort.recovery_exit_c, 0.15f));
+  assert(comfort.steady_up_hold_s == 90 && comfort.steady_down_hold_s == 10 && comfort.recovery_up_hold_s == 30);
+  const auto stable = control_profile("Stable");
+  assert(near(stable.stop_delta_c, 1.10f) && stable.off_confirm_ms == 420000U && near(stable.restart_delta_c, 1.00f));
+  assert(near(stable.recovery_enter_c, 1.00f) && near(stable.recovery_exit_c, 0.35f));
+  assert(stable.steady_up_hold_s == 300 && stable.steady_down_hold_s == 30 && stable.recovery_up_hold_s == 75);
+  // Existing profiles still stop on low load and have no demand floor above target.
+  for (const char* name : {"Comfort", "Balanced", "Stable"}) {
+    auto in = input();
+    in.pid_output = 0.0f;
+    in.supply_c = in.supply_target_c + 0.30f;
+    const auto out = decide_demand(in, control_profile(name), active());
+    assert(out.valid && near(out.demand_continuous, 0.0f));
+    in.supply_c = in.supply_target_c - 0.30f;
+    assert(near(decide_demand(in, control_profile(name), active()).demand_continuous, 0.0f));
+  }
+}
+
+void test_buffer_profile_values() {
+  const auto profile = buffer();
+  assert(!profile.low_load_stop_enabled && near(profile.maintain_floor_demand, 1.0f));
+  assert(near(profile.stop_delta_c, 1.0f) && profile.off_confirm_ms == 300000U);
+  assert(near(profile.recovery_enter_c, 2.0f) && near(profile.recovery_exit_c, 0.8f));
+  assert(near(profile.restart_delta_c, 1.5f) && profile.off_reentry_min_ms == 300000U);
+  assert(profile.steady_up_hold_s == 120 && profile.steady_down_hold_s == 30 && profile.recovery_up_hold_s == 60);
+  auto invalid = buffer();
+  invalid.maintain_floor_demand = NAN;
+  assert(!decide_demand(input(), invalid, active()).valid);
+  invalid = buffer();
+  invalid.low_load_stop_delta_c = INFINITY;
+  assert(!decide_demand(input(), invalid, active()).valid);
+}
+
+// Above target the PID output is zero, yet the Buffer profile keeps the lowest level of one unit requested and never
+// takes the low-load stop that Balanced takes after 90 s.
+void test_buffer_floor_and_no_low_load_stop() {
+  auto in = input();
+  in.pid_output = 0.0f;
+  in.supply_c = in.supply_target_c + 0.30f;
+  auto state = active(2);
+  uint32_t t = 1000U;
+  for (int tick = 0; tick < 360; ++tick, t += 10000U) {  // one hour, ticks every 10 s
+    in.now_ms = t;
+    const auto out = decide_demand(in, buffer(), state);
+    assert(out.valid && out.next.heat_request_active && out.stop_reason == STOP_NONE);
+    assert(out.next.stop_arm_ms == 0 && out.next.regime_code == 2);
+    assert(near(out.demand_continuous, 1.0f) && out.demand == 1);
+    state = out.next;
+  }
+  // Balanced with the same input arms the low-load stop and stops after 90 s.
+  state = active(2);
+  in.now_ms = 1000U;
+  state = decide_demand(in, tuning(), state).next;
+  assert(state.stop_arm_ms == 1000U);
+  in.now_ms = 91000U;
+  const auto balanced = decide_demand(in, tuning(), state);
+  assert(!balanced.next.heat_request_active && balanced.stop_reason == STOP_LOW_LOAD);
+  // Below target with a zero PID output (capped MAINTAIN) the floor also applies.
+  in.supply_c = in.supply_target_c - 0.50f;
+  const auto below = decide_demand(in, buffer(), active(2));
+  assert(below.next.regime_code == 2 && near(below.demand_continuous, 1.0f));
+  // A demand above the floor is not lowered by it.
+  in.pid_output = 0.5f;
+  in.supply_c = in.supply_target_c - 1.0f;
+  assert(near(decide_demand(in, buffer(), active(2)).demand_continuous, 10.0f));
+  // The floor never exceeds the demand scale.
+  in.demand_max = 1;
+  in.pid_output = 0.0f;
+  assert(near(decide_demand(in, buffer(), active(2)).demand_continuous, 1.0f));
+}
+
+void test_buffer_stops_one_kelvin_above_target_after_confirmation() {
+  auto in = input();
+  in.pid_output = 0.0f;
+  auto state = active(2);
+  // Just below the stop band: no stop, no arming, even after hours.
+  in.supply_c = in.supply_target_c + 0.99f;
+  for (uint32_t t = 1000U; t < 4U * 3600U * 1000U; t += 60000U) {
+    in.now_ms = t;
+    const auto out = decide_demand(in, buffer(), state);
+    assert(out.next.heat_request_active && out.next.stop_arm_ms == 0 && near(out.demand_continuous, 1.0f));
+    state = out.next;
+  }
+  // Reaching target + 1.0 K arms the stop; the unit keeps its floor level until the confirmation has elapsed.
+  in.supply_c = in.supply_target_c + 1.0f;
+  in.now_ms = 1000U;
+  auto out = decide_demand(in, buffer(), active(2));
+  assert(out.next.heat_request_active && out.next.stop_arm_ms == 1000U && out.stop_reason == STOP_NONE);
+  assert(near(out.demand_continuous, 1.0f));
+  state = out.next;
+  in.now_ms = 1000U + 299999U;
+  out = decide_demand(in, buffer(), state);
+  assert(out.next.heat_request_active && near(out.demand_continuous, 1.0f));
+  in.now_ms = 1000U + 300000U;
+  out = decide_demand(in, buffer(), state);
+  assert(!out.next.heat_request_active && out.stop_reason == STOP_NORMAL && out.next.regime_code == 0);
+  assert(out.next.off_since_ms == 1000U + 300000U && near(out.demand_continuous, 0.0f) && out.demand == 0);
+  // Falling back below the band during the confirmation cancels it; the floor keeps running.
+  in.supply_c = in.supply_target_c + 0.90f;
+  in.now_ms = 1000U + 200000U;
+  out = decide_demand(in, buffer(), state);
+  assert(out.next.heat_request_active && out.next.stop_arm_ms == 0 && near(out.demand_continuous, 1.0f));
+  // A PID output that is still positive (integral term) blocks the normal stop, as in the other profiles.
+  in.supply_c = in.supply_target_c + 1.0f;
+  in.pid_output = 0.2f;
+  in.now_ms = 1000U + 300000U;
+  assert(decide_demand(in, buffer(), state).next.heat_request_active);
+  // A warm-room requirement is unchanged: a fresh, cold room blocks the stop.
+  in.pid_output = 0.0f;
+  in.room_data_fresh = true;
+  in.room_c = 20.0f;
+  assert(decide_demand(in, buffer(), state).next.heat_request_active);
+}
+
+// An ordinary dip is answered proportionally in MAINTAIN; only a large deficit starts a RECOVERY ramp.
+void test_buffer_recovery_only_for_large_deficit() {
+  auto in = input();
+  in.pid_output = 1.0f;
+  in.supply_c = in.supply_target_c - 1.0f;
+  auto out = decide_demand(in, buffer(), active(2));
+  assert(out.next.regime_code == 2 && near(out.demand_continuous, 20.0f));
+  in.supply_c = in.supply_target_c - 1.99f;
+  assert(decide_demand(in, buffer(), active(2)).next.regime_code == 2);
+  in.supply_c = in.supply_target_c - 2.0f;
+  out = decide_demand(in, buffer(), active(2));
+  assert(out.next.regime_code == 1 && out.demand >= 2);
+  // Realistic PID output: 0.28 per K plus a small integral term gives a proportional MAINTAIN demand at 1 K ...
+  in.pid_output = 0.30f;
+  in.supply_c = in.supply_target_c - 1.0f;
+  out = decide_demand(in, buffer(), active(2));
+  assert(out.next.regime_code == 2 && near(out.demand_continuous, 6.0f));
+  // ... and the entry into RECOVERY still needs the PID to ask for level 8 or more.
+  in.pid_output = 0.30f;
+  in.supply_c = in.supply_target_c - 2.2f;
+  assert(decide_demand(in, buffer(), active(2)).next.regime_code == 2);
+  // RECOVERY ratchets up while the deficit is large and leaves at 0.8 K.
+  in.pid_output = 1.0f;
+  in.applied_total_level = 5;
+  in.supply_c = in.supply_target_c - 0.81f;
+  assert(decide_demand(in, buffer(), active(1)).next.regime_code == 1);
+  in.supply_c = in.supply_target_c - 0.80f;
+  assert(decide_demand(in, buffer(), active(1)).next.regime_code == 2);
+}
+
+// A restart after a real stop happens at the 1.5 K band and starts in MAINTAIN, not in RECOVERY.
+void test_buffer_restart_band_and_lock() {
+  auto in = input();
+  in.pid_output = 0.42f;
+  const DemandState off{false, 0, 1000U, false, false, 0};
+  in.now_ms = 1000U + 400000U;  // off-lock (300 s) elapsed
+  in.supply_c = in.supply_target_c - 1.49f;
+  auto out = decide_demand(in, buffer(), off);
+  assert(!out.next.heat_request_active && out.demand == 0);
+  in.supply_c = in.supply_target_c - 1.5f;
+  out = decide_demand(in, buffer(), off);
+  assert(out.next.heat_request_active && out.restart_reason == RESTART_WATER_BAND && out.next.regime_code == 2);
+  assert(out.demand_continuous > 1.0f && out.demand_continuous < 10.0f);  // proportional, nowhere near full power
+  // Inside the off-lock the restart waits ...
+  in.now_ms = 1000U + 299999U;
+  out = decide_demand(in, buffer(), off);
+  assert(!out.next.heat_request_active && out.next.restart_inhibit_active);
+  // ... unless the buffer is far below target (1.5 K + 1.0 K), which also warrants the RECOVERY ramp.
+  in.supply_c = in.supply_target_c - 2.5f;
+  out = decide_demand(in, buffer(), off);
+  assert(out.next.heat_request_active && out.next.regime_code == 1);
+}
 }  // namespace
 int main() {
   test_restart_matrix();
@@ -233,5 +416,11 @@ int main() {
   test_restart_lock_and_regimes();
   test_maintain_caps();
   test_outside_filter_target_and_cadence_rollover();
+  test_new_tuning_fields_keep_existing_profiles();
+  test_buffer_profile_values();
+  test_buffer_floor_and_no_low_load_stop();
+  test_buffer_stops_one_kelvin_above_target_after_confirmation();
+  test_buffer_recovery_only_for_large_deficit();
+  test_buffer_restart_band_and_lock();
   return 0;
 }
