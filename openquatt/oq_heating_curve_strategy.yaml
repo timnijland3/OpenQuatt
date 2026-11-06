@@ -231,6 +231,22 @@ number:
     optimistic: true
     initial_value: 30
 
+  # Minimum heating demand (0..20 scale) the "Buffer" profile keeps while the
+  # supply is below the stop band. 1 gives one unit at its lowest level; higher
+  # values lift the minimum modulation level. Ignored by other profiles.
+  - platform: template
+    id: oq_buffer_floor_demand
+    name: "Buffer Minimum Demand"
+    icon: mdi:arrow-collapse-down
+    entity_category: config
+    min_value: 1
+    max_value: 10
+    step: 0.5
+    mode: slider
+    restore_value: true
+    optimistic: true
+    initial_value: 1
+
   - platform: template
     id: heating_curve_pid_kp
     name: "Heating Curve PID Kp"

@@ -151,6 +151,15 @@ import { getCurvePointDraft, getSimpleCurveDraft } from "../core/simple-curve.js
     </div><p class="oq-simple-curve-target-note">${escapeHtml(notes.join(" "))}</p>`;
   }
 
+  function renderBufferFloorField() {
+    if (getEntityValue("curveControlProfile") !== "Buffer") return "";
+    return renderSettingsNumberField(
+      "bufferFloorDemand",
+      t("settingsHeating.bufferFloorTitle"),
+      t("settingsHeating.bufferFloorCopy"),
+    );
+  }
+
   export function renderHeatingCurveAdvancedFields() {
     const fields = [
       renderSettingsNumberField("heatingCurvePidKp", t("settingsHeating.pidKpTitle"), t("settingsHeating.pidKpCopy")),
@@ -748,6 +757,7 @@ import { getCurvePointDraft, getSimpleCurveDraft } from "../core/simple-curve.js
           </div>
           <div class="oq-settings-grid">
             ${renderHeatingCurveProfileField()}
+            ${renderBufferFloorField()}
           </div>
           ${renderSettingsCurveInputs()}
           ${renderDuoDispatchFields()}

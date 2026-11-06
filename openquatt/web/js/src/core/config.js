@@ -615,6 +615,7 @@
     ["phFastIntentCode", DOMAIN_SENSOR, "Power House fast intent code"],
     ["debugStaticSnapshot", DOMAIN_TEXT_SENSOR, "Debug static snapshot"],
     ["curveControlProfile", DOMAIN_SELECT, "Heating Curve Control Profile", false],
+    ["bufferFloorDemand", DOMAIN_NUMBER, "Buffer Minimum Demand"],
     ["heatingCurvePidKp", DOMAIN_NUMBER, "Heating Curve PID Kp"],
     ["heatingCurvePidKi", DOMAIN_NUMBER, "Heating Curve PID Ki"],
     ["heatingCurvePidKd", DOMAIN_NUMBER, "Heating Curve PID Kd"],
@@ -1426,6 +1427,7 @@
     ...CURVE_POINTS.map((point) => point.key),
     "curveFallbackSupply",
     "curveControlProfile",
+    "bufferFloorDemand",
     "heatingCurvePidKp",
     "heatingCurvePidKi",
     "heatingCurvePidKd",
@@ -2294,6 +2296,7 @@
       labelKey: "backupSections.heatingCurve",
       keys: [
         "curveControlProfile",
+        "bufferFloorDemand",
         "curveFallbackSupply",
         ...CURVE_POINTS.map((point) => point.key),
         "heatingCurvePidKp",

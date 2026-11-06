@@ -1035,6 +1035,8 @@ export default {
   settingsHeating: {
     duoDispatchTitle: "Duo dispatch mode",
     duoDispatchCopy: "Determines how the second heat pump joins in.\n\n1 Running / 1 Standby (default)\nODU1: 2 → 4 → 6 → 8 → 9\nODU2: stays off until ODU1 is almost at full load\n\nShare Load\nODU1: holds at the start level\nODU2: joins in instead of ramping ODU1 up further\nAfterwards both units ramp up together",
+    bufferFloorTitle: "Buffer minimum power",
+    bufferFloorCopy: "Only for the Buffer profile. The lowest power (scale 0–20) the heat pump keeps running while the buffer is below the stop band. 1 is one unit at its lowest level; about 5 gives one unit at level 2 and 6 at level 3. As the buffer warms up this tapers back to level 1 gradually, after which the stop follows. Default 1.",
     duoShareLoadStartTitle: "Share Load start level",
     duoShareLoadStartCopy: "Only active in \"Share Load\" mode. Level at which ODU1 holds before ODU2 joins: if the system needs more, ODU2 starts instead of ramping ODU1 up further. Adjustable from 2 to 9, default 2.",
     simpleTitle: "Set heating curve",

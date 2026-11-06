@@ -1035,6 +1035,8 @@ export default {
   settingsHeating: {
     duoDispatchTitle: "Werkverdeling Duo",
     duoDispatchCopy: "Bepaalt hoe de tweede warmtepomp erbij komt.\n\n1 draait / 1 stand-by (standaard)\nODU1: 2 → 4 → 6 → 8 → 9\nODU2: blijft uit tot ODU1 bijna vol draait\n\nBelasting verdelen\nODU1: blijft hangen op het startniveau\nODU2: komt erbij i.p.v. ODU1 verder op te voeren\nDaarna lopen beide units samen verder op",
+    bufferFloorTitle: "Minimaal vermogen Buffer",
+    bufferFloorCopy: "Alleen voor het profiel Buffer. Het laagste vermogen (schaal 0–20) dat de warmtepomp blijft draaien zolang het vat onder de stopband zit. 1 is één unit op het laagste niveau; ongeveer 5 geeft één unit op niveau 2 en 6 op niveau 3. Bij een warmer wordend vat zakt dit geleidelijk terug naar niveau 1, daarna volgt de stop. Standaard 1.",
     duoShareLoadStartTitle: "Startniveau verdelen",
     duoShareLoadStartCopy: "Alleen actief bij \"Belasting verdelen\". Niveau waarop ODU1 blijft hangen voordat ODU2 meedoet: vraagt het systeem meer, dan start ODU2 in plaats van ODU1 verder op te voeren. Instelbaar van 2 t/m 9, standaard 2.",
     simpleTitle: "Stooklijn instellen",

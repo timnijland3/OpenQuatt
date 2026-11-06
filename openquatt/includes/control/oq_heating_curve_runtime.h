@@ -682,8 +682,13 @@ class Runtime {
   esphome::openquatt_decision_log::heating_stop::Snapshot stop_snapshot_;
   static constexpr uint32_t kOilReturnHoldMs = 180000UL;
   oq_curve::ControlProfileTuning tuning_() const {
-    return oq_curve::control_profile(
+    auto tuning = oq_curve::control_profile(
         id(oq_curve_control_profile).has_state() ? id(oq_curve_control_profile).current_option() : std::string());
+    // Profiles with a MAINTAIN floor (Buffer) let the user choose its height; 1 reproduces the profile default.
+    const float floor_demand = id(oq_buffer_floor_demand).state;
+    if (tuning.maintain_floor_demand > 0.0f && std::isfinite(floor_demand) && floor_demand >= 1.0f)
+      tuning.maintain_floor_demand = floor_demand;
+    return tuning;
   }
   static bool working_mode_heating_(float mode) { return std::isfinite(mode) && std::lround(mode) == 2; }
   void reset_control_() {

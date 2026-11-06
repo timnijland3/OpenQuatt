@@ -420,8 +420,17 @@ inline DemandDecision decide_demand(const DemandInput& in, const ControlProfileT
   // it until the confirmation completes, so the unit neither idles nor restarts inside that window.
   if (out.next.heat_request_active && out.next.regime_code == 2 && tuning.maintain_floor_demand > 0.0f &&
       (in.supply_c < in.supply_target_c + tuning.stop_delta_c || out.next.stop_arm_ms != 0)) {
-    out.demand_continuous =
-        std::max(out.demand_continuous, std::min(tuning.maintain_floor_demand, static_cast<float>(in.demand_max)));
+    // A floor above the lowest level tapers off linearly between the target and the stop band, so a warming buffer
+    // steps the units down gradually (for example level 3, 2, 1) before the stop band ends the request.
+    float floor_demand = tuning.maintain_floor_demand;
+    if (floor_demand > 1.0f) {
+      const float warm_c = in.supply_c - in.supply_target_c;
+      const float taper = (std::isfinite(warm_c) && tuning.stop_delta_c > 0.0f)
+                              ? std::max(0.0f, std::min(1.0f, warm_c / tuning.stop_delta_c))
+                              : 1.0f;
+      floor_demand -= (floor_demand - 1.0f) * taper;
+    }
+    out.demand_continuous = std::max(out.demand_continuous, std::min(floor_demand, static_cast<float>(in.demand_max)));
   }
   out.demand = demand;
   out.valid = true;

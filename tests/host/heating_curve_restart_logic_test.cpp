@@ -310,6 +310,40 @@ void test_buffer_floor_and_no_low_load_stop() {
   assert(near(decide_demand(in, buffer(), active(2)).demand_continuous, 1.0f));
 }
 
+// A raised floor holds its level up to the target and then tapers linearly to the lowest level at the stop band, so a
+// warming buffer steps the units down (for example 3, 2, 1) before the stop. The default floor of 1 stays constant.
+void test_buffer_floor_tapers_towards_stop_band() {
+  auto in = input();
+  in.pid_output = 0.0f;
+  auto raised = buffer();
+  raised.maintain_floor_demand = 6.0f;
+  const auto demand_at = [&](float warm_c, const ControlProfileTuning& profile) {
+    in.supply_c = in.supply_target_c + warm_c;
+    const auto out = decide_demand(in, profile, active(2));
+    assert(out.valid && out.next.heat_request_active && out.next.regime_code == 2);
+    return out.demand_continuous;
+  };
+  assert(near(demand_at(-0.5f, raised), 6.0f));
+  assert(near(demand_at(0.0f, raised), 6.0f));
+  assert(near(demand_at(0.25f, raised), 4.75f));
+  assert(near(demand_at(0.5f, raised), 3.5f));
+  assert(near(demand_at(0.75f, raised), 2.25f));
+  float previous = 6.0f;
+  for (float warm = 0.0f; warm < 0.99f; warm += 0.05f) {  // never rises while the buffer warms up
+    const float value = demand_at(warm, raised);
+    assert(value <= previous + 0.001f && value >= 1.0f);
+    previous = value;
+  }
+  // At the stop band the stop arms and the lowest level stays requested until the confirmation completes.
+  in.supply_c = in.supply_target_c + 1.0f;
+  const auto armed = decide_demand(in, raised, active(2));
+  assert(armed.next.stop_arm_ms != 0 && near(armed.demand_continuous, 1.0f));
+  // The default floor stays constant over the whole window, and the demand scale still limits a raised floor.
+  assert(near(demand_at(0.5f, buffer()), 1.0f));
+  in.demand_max = 4;
+  assert(near(demand_at(0.0f, raised), 4.0f));
+}
+
 void test_buffer_stops_one_kelvin_above_target_after_confirmation() {
   auto in = input();
   in.pid_output = 0.0f;
@@ -419,6 +453,7 @@ int main() {
   test_new_tuning_fields_keep_existing_profiles();
   test_buffer_profile_values();
   test_buffer_floor_and_no_low_load_stop();
+  test_buffer_floor_tapers_towards_stop_band();
   test_buffer_stops_one_kelvin_above_target_after_confirmation();
   test_buffer_recovery_only_for_large_deficit();
   test_buffer_restart_band_and_lock();
