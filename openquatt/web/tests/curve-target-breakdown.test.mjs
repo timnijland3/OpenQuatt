@@ -45,7 +45,7 @@ test("het effectieve doel blijft firmwaredata met zichtbare afronding, grens en 
 });
 
 test("afrondingsstappen volgen het bevestigde profiel en wisselen mee met de taal", () => {
-  for (const [profile, step] of [["Comfort", "0,25"], ["Balanced", "0,5"], ["Stable", "1"]]) {
+  for (const [profile, step] of [["Comfort", "0,25"], ["Balanced", "0,5"], ["Buffer", "0,5"], ["Stable", "1"]]) {
     setTargetEntities({ curveControlProfile: profile });
     assert.ok(renderSettingsCurveInputs().includes(`stappen van ${step} °C`));
   }

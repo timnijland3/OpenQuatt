@@ -130,5 +130,44 @@ int main() {
     // No demand means no target in either mode.
     assert(duo_pair_target_power_w(DuoDispatchMode::SHARE_LOAD, true, 0.0f, single_cap_w, duo_cap_w) == 0.0f);
   }
+
+  // Buffer profile floor (continuous demand 1.0 of 20) in MAINTAIN with Share Load start level 3: the dispatch must
+  // pick one unit on level 1 and must not add or keep a second unit.
+  {
+    using oq_curve::better_dispatch_candidate;
+    using oq_curve::DispatchCandidate;
+    using oq_curve::duo_pair_allowed;
+    using oq_curve::phase_target_power_w;
+    using oq_curve::power_capped_demand_u;
+    const float unit_w[] = {0.0f, 2500.0f, 3300.0f, 4000.0f, 4700.0f, 5300.0f, 5900.0f, 6500.0f, 7000.0f};
+    constexpr int max_level = 8;
+    const auto th = duo_enable_thresholds(DuoDispatchMode::SHARE_LOAD, max_level, level_cap, false, 3);
+    const float duo_cap_w = 2.0f * unit_w[max_level];
+    const float demand_u = power_capped_demand_u(1.0f, 1, 20);
+    assert(demand_u > 0.0f && approx(demand_u, 0.05f));
+    const float target_w = phase_target_power_w(false, demand_u, unit_w[max_level], duo_cap_w);
+    DispatchCandidate best_single;
+    for (int level = 1; level <= th.single_search_max_level; ++level) {
+      const DispatchCandidate item{true, level, 0, unit_w[level], std::fabs(unit_w[level] - target_w), 1, level, 0};
+      if (better_dispatch_candidate(item, best_single, 0, 0, true)) best_single = item;
+    }
+    assert(best_single.valid && best_single.hp1_level == 1 && best_single.hp2_level == 0);
+    DispatchCandidate best_duo;
+    for (int first = 1; first <= max_level; ++first)
+      for (int second = 1; second <= max_level; ++second) {
+        if (!duo_pair_allowed(DuoDispatchMode::SHARE_LOAD, first, second, false)) continue;
+        const float power_w = unit_w[first] + unit_w[second];
+        const DispatchCandidate item{
+            true, first, second, power_w, std::fabs(power_w - target_w), 2, std::abs(first - second), 0};
+        if (better_dispatch_candidate(item, best_duo, 0, 0, true)) best_duo = item;
+      }
+    assert(best_duo.valid && best_duo.hp1_level == 1 && best_duo.hp2_level == 1);
+    // The second unit is not worth adding (enable condition) ...
+    assert(!(best_duo.error_w + th.enable_margin_w < best_single.error_w));
+    assert(1.0f / 20.0f < th.enable_min_u);
+    // ... and an already running pair counts as sufficiently served by a single unit (disable condition).
+    assert(best_single.error_w <= best_duo.error_w + th.disable_margin_w);
+    assert(1.0f / 20.0f <= th.disable_max_u);
+  }
   return 0;
 }

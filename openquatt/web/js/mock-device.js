@@ -2179,7 +2179,7 @@
     setEntity("select", "Heating Curve Control Profile", {
       value: "Balanced",
       state: "Balanced",
-      option: ["Comfort", "Balanced", "Stable"],
+      option: ["Comfort", "Balanced", "Stable", "Buffer"],
     });
     setEntity("select", "Cooling Without Dew Point", {
       value: "Dew point required",

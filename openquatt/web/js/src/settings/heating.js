@@ -131,7 +131,7 @@ import { getCurvePointDraft, getSimpleCurveDraft } from "../core/simple-curve.js
     ];
     const external = getEntityValue("heatingSupplyTargetActiveSource") === "external";
     const profile = state.entities.curveControlProfile;
-    const step = { Comfort: 0.25, Balanced: 0.5, Stable: 1 }[profile?.value ?? profile?.state];
+    const step = { Comfort: 0.25, Balanced: 0.5, Stable: 1, Buffer: 0.5 }[profile?.value ?? profile?.state];
     const notes = [external
       ? t("settingsHeating.targetExternalNote")
       : Number.isFinite(step)
@@ -389,6 +389,12 @@ import { getCurvePointDraft, getSimpleCurveDraft } from "../core/simple-curve.js
         label: t("settingsHeating.curveStableLabel"),
         meta: t("settingsHeating.curveStableMeta"),
         copy: t("settingsHeating.curveStableCopy"),
+      },
+      {
+        value: "Buffer",
+        label: t("settingsHeating.curveBufferLabel"),
+        meta: t("settingsHeating.curveBufferMeta"),
+        copy: t("settingsHeating.curveBufferCopy"),
       },
     ];
 
